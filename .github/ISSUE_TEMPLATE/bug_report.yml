@@ -1,0 +1,85 @@
+name: Bug report
+description: Something in Familiar is broken (addon, companion, overlay, link, an agent)
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. **Remove personal paths, account names and conversation text** from everything you paste: this issue is public.
+  - type: input
+    id: companion
+    attributes:
+      label: Companion version / build
+      description: The copyable build line under "Companion controls" in the control panel.
+      placeholder: "Familiar v0.1.0 | Running commit: abcdef… | Source: clean"
+    validations:
+      required: true
+  - type: input
+    id: wow
+    attributes:
+      label: WoW client version
+      description: The `Version` value from `.build.info` in your World of Warcraft folder for the Forever client, or the first line of `/fam diag`.
+      placeholder: "1.60.2.12345"
+    validations:
+      required: true
+  - type: dropdown
+    id: display
+    attributes:
+      label: Display mode
+      options:
+        - Windowed
+        - Windowed (Fullscreen)
+        - Fullscreen
+        - Not sure
+    validations:
+      required: true
+  - type: input
+    id: monitors
+    attributes:
+      label: Monitors and scaling
+      description: Count, resolution(s), Windows scaling %, HDR on/off, which monitor the game is on.
+      placeholder: "2 × 2560x1440 @ 125%, HDR off, game on primary"
+    validations:
+      required: true
+  - type: dropdown
+    id: agents
+    attributes:
+      label: Agents in use
+      multiple: true
+      options:
+        - None / not agent-related
+        - Claude (API key)
+        - Claude (Claude Code sign-in)
+        - Codex (desktop app)
+        - Codex (npm CLI)
+        - Hermes
+        - Grok Build
+        - Other ACP agent
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: What happened, and how to reproduce
+      description: Steps, what you expected, what you saw. Screenshots help (crop out anything private).
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics (optional)
+      description: Output of `/fam diag` and the link details from the control panel.
+      render: text
+  - type: textarea
+    id: log
+    attributes:
+      label: Companion log excerpt (optional)
+      description: Control panel → Open log file. Trim to the relevant minute; the log can contain folder paths, remove them.
+      render: text
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: Confirm
+      options:
+        - label: I removed personal paths, account details and conversation text I don't want public.
+          required: true

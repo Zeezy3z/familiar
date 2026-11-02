@@ -1,0 +1,24 @@
+name: Feature request
+description: Propose something Familiar should do
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do in game that Familiar doesn't let you?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: What should change (addon, companion, overlay, control panel, an agent adapter)?
+    validations:
+      required: true
+  - type: checkboxes
+    id: boundary
+    attributes:
+      label: Boundaries
+      options:
+        - label: This does not need Familiar to send input to the game, read game memory, or auto-approve agent actions from the game.
+          required: true

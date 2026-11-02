@@ -1,0 +1,204 @@
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import { describe, expect, it, vi } from "vitest";
+import { CodexBackend, prettyCommand } from "../src/agents/codex";
+import { ClaudeBackend } from "../src/agents/claude";
+import type { AgentEvent } from "../src/agents/types";
+import { editPreview, summarizeTool, truncatePreview } from "../src/agents/types";
+import { projectRootOf } from "../src/hub/projects";
+import { DEFAULT_CONFIG, isExcluded } from "../src/hub/config";
+import { luaString } from "../src/main/wow";
+
+describe("display helpers", () => {
+  it("Claude's actual plan approval preserves the 4,000-character preview cap and marks the omitted text", async () => {
+    const backend = new ClaudeBackend({ log: () => {}, version: "test" });
+    const events: AgentEvent[] = [];
+    backend.on(e => events.push(e));
+    const signal = new AbortController();
+    const result = (backend as any).canUseTool({ threadId: "fixture", approvals: new Map() }, "ExitPlanMode", { plan: "x".repeat(4012) }, { signal: signal.signal });
+    expect(events[0]).toMatchObject({ type: "approval", kind: "planExit", detail: "x".repeat(4000) + "\n… (12 characters omitted from this preview)", canAlways: false });
+    signal.abort();
+    expect(await result).toMatchObject({ behavior: "deny" });
+  });
+
+  it("Codex's actual permission approval preserves the 600-character preview cap and marks omitted text", () => {
+    const backend = new CodexBackend({ log: () => {}, version: "test" });
+    const events: AgentEvent[] = [];
+    backend.on(e => events.push(e));
+    (backend as any).byNative.set("native", "fixture");
+    const permissions = { description: "x".repeat(650) };
+    (backend as any).onRequest(1, "item/permissions/requestApproval", { threadId: "native", permissions });
+    expect(events[0]).toMatchObject({ type: "approval", kind: "permissions", detail: truncatePreview(JSON.stringify(permissions, null, 1), 600), canAlways: true });
+  });
+  it("capped provider previews identify text that expansion cannot recover", () => {
+    for (const limit of [600, 4000]) {
+      const text = "x".repeat(limit) + "omitted";
+      expect(truncatePreview(text, limit)).toBe("x".repeat(limit) + "\n… (7 characters omitted from this preview)");
+      expect(truncatePreview(text.slice(0, limit), limit)).toBe(text.slice(0, limit));
+    }
+    const text = Array.from({ length: 65 }, (_, i) => `line ${i}`).join("\n");
+    const preview = editPreview("Write", { file_path: "fixture.txt", content: text })!;
+    expect(preview).toContain("+line 59\n… (5 lines omitted from this preview)");
+    expect(preview).not.toContain("+line 60");
+  });
+  it("prettyCommand shortens Codex shell invocations", () => {
+    const raw = String.raw`"D:\\Users\\alice\\AppData\\Local\\Microsoft\\WindowsApps\\pwsh.exe" -NoProfile -Command "Get-Content -LiteralPath 'D:\\src\\familiar\\companion\\package.json'"`;
+    expect(prettyCommand(raw)).toBe(String.raw`Get-Content -LiteralPath 'D:\src\familiar\companion\package.json'`);
+    expect(prettyCommand(String.raw`"C:\Windows\System32\cmd.exe" /c dir`)).toBe("dir");
+    expect(prettyCommand("git status")).toBe("git status");
+  });
+
+  it("summarizeTool picks the meaningful field", () => {
+    expect(summarizeTool("Bash", { command: "npm test", description: "run tests" })).toBe("npm test");
+    expect(summarizeTool("Read", { file_path: "D:\\src\\x.ts" })).toBe("D:\\src\\x.ts");
+    expect(summarizeTool("Grep", { pattern: "TODO" })).toBe("TODO");
+  });
+});
+
+describe("Codex keeps Ask first", () => {
+  /** A CodexBackend whose app-server is a recorder (no codex.exe, no model calls). */
+  function recorded() {
+    const backend = new CodexBackend({ log: () => {}, version: "test" });
+    const calls: { method: string; params: any }[] = [];
+    (backend as any).rpc = {
+      request: async (method: string, params: any) => {
+        calls.push({ method, params });
+        return method === "turn/start" ? { turn: { id: `turn${calls.length}` } } : { thread: { id: `native${calls.length}` }, model: "gpt-test" };
+      },
+    };
+    (backend as any).st = { ready: true, models: [] };
+    return { backend, calls };
+  }
+
+  it("chats start with Codex's shell switched off and any approval routed to the player", async () => {
+    const { backend, calls } = recorded();
+    await backend.open({ threadId: "chat1", cwd: "C:\\Familiar\\chat", mode: "ask", chat: { instructions: "chat" } });
+    expect(calls[0]).toMatchObject({
+      method: "thread/start",
+      params: { approvalsReviewer: "user", sandbox: "read-only", config: { web_search: "live", features: { shell_tool: false, unified_exec: false } } },
+    });
+    expect(calls[0].params.approvalPolicy).not.toBe("never"); // with "never", nothing Codex would ask about reaches the game
+  });
+
+  it("project quests send approvals to the player, not to Codex's own reviewer, except in Auto-review", async () => {
+    const { backend, calls } = recorded();
+    for (const mode of ["ask", "edits", "plan", "auto"] as const) await backend.open({ threadId: mode, cwd: "D:\\src\\X", mode });
+    expect(calls.map((c) => c.params.approvalsReviewer)).toEqual(["user", "user", "user", "auto_review"]);
+    // Leaving Auto-review mid-quest hands approvals back to the player on the next turn.
+    await backend.setMode("auto", "ask");
+    await backend.send("auto", "next");
+    expect(calls.at(-1)).toMatchObject({ method: "turn/start", params: { approvalsReviewer: "user" } });
+  });
+});
+
+describe("one owner per thread: the agent's own app or Familiar", () => {
+  it("Codex: a thread the Codex app has open is seen from its writer lock; handing over lets go of Familiar's hold", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "familiar-codex-home-"));
+    const locks = path.join(home, "thread-writer-locks");
+    fs.mkdirSync(locks);
+    const before = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = home;
+    try {
+      const backend = new CodexBackend({ log: () => {}, version: "test" });
+      const calls: { method: string; params: any }[] = [];
+      (backend as any).rpc = {
+        request: async (method: string, params: any) => {
+          calls.push({ method, params });
+          if (method === "thread/list") return { data: [{ id: "app-thread", name: "In the app", cwd: "D:\\src\\X" }, { id: "idle-thread", name: "Idle", cwd: "D:\\src\\X" }] };
+          return { thread: { id: "mine" }, model: "gpt-test" };
+        },
+      };
+      (backend as any).st = { ready: true, models: [] };
+      fs.writeFileSync(path.join(locks, "app-thread.lock"), "");
+      expect(backend.heldElsewhere("app-thread")).toBe(true);
+      expect(backend.heldElsewhere("idle-thread")).toBe(false);
+      expect((await backend.listThreads({})).map((t) => [t.nativeId, t.open])).toEqual([["app-thread", true], ["idle-thread", false]]);
+      // Familiar's own app-server takes the same lock while it has the thread: that's not "elsewhere".
+      await backend.open({ threadId: "q1", cwd: "D:\\src\\X", mode: "ask" });
+      fs.writeFileSync(path.join(locks, "mine.lock"), "");
+      expect(backend.heldElsewhere("mine")).toBe(false);
+      expect(await backend.handOff("q1", "mine")).toBe("codex://threads/mine");
+      expect(calls.at(-1)).toEqual({ method: "thread/unsubscribe", params: { threadId: "mine" } });
+      expect(backend.isOpen("q1")).toBe(false);
+      fs.rmSync(path.join(locks, "mine.lock")); // the app-server drops its lock once unsubscribed
+      expect(backend.heldElsewhere("mine")).toBe(false);
+    } finally {
+      if (before === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = before;
+    }
+  });
+
+  it("Claude: handing over closes Familiar's session and links the Claude app to the same session", async () => {
+    const backend = new ClaudeBackend({ log: () => {}, version: "test" });
+    const id = "6f1c2c1e-0000-4000-8000-000000000001";
+    await backend.open({ threadId: "q1", cwd: "D:\\src\\X", mode: "ask", resumeNativeId: id });
+    expect(backend.isOpen("q1")).toBe(true);
+    expect(await backend.handOff("q1", id)).toBe(`claude://resume?session=${id}`);
+    expect(backend.isOpen("q1")).toBe(false);
+  });
+});
+
+describe("projects & boundaries", () => {
+  it("maps worktrees to their project", () => {
+    expect(projectRootOf("D:\\src\\alpha\\.claude\\worktrees\\busy-euclid")).toBe("D:\\src\\alpha");
+    expect(projectRootOf("D:\\src\\alpha-worktrees\\feature-x")).toBe("D:\\src\\alpha");
+    expect(projectRootOf("D:\\src\\beta")).toBe("D:\\src\\beta");
+  });
+
+  it("excludes configured paths", () => {
+    const cfg = { ...DEFAULT_CONFIG, exclude: [...DEFAULT_CONFIG.exclude, "\\private-vault"] };
+    for (const p of ["D:\\src\\private-vault", "D:\\src\\private-vault\\notes", "D:\\src\\alpha\\node_modules\\x", "D:\\src\\alpha\\.git\\hooks"])
+      expect(isExcluded(p, cfg), p).toBe(true);
+    for (const p of ["D:\\src\\alpha", "D:\\src\\alpha-worktrees", "D:\\src\\beta", "D:\\src\\alpha\\.github"]) expect(isExcluded(p, cfg), p).toBe(false);
+  });
+});
+
+describe("FamiliarSync lua strings", () => {
+  it("escapes quotes, backslashes, newlines, control chars and WoW pipes", () => {
+    expect(luaString('a "b" \\ c\nd|e\u0001')).toBe('"a \\"b\\" \\\\ c\\nd||e\\001"');
+  });
+});
+
+describe("Claude automatic retry", () => {
+  it("retries a prompt that failed before anything happened, never one whose tools already ran", async () => {
+    vi.useFakeTimers();
+    try {
+      const b = new ClaudeBackend({ log: () => {}, version: "t" });
+      const events: AgentEvent[] = [];
+      b.on((e) => events.push(e));
+      await b.open({ threadId: "q1", cwd: "D:\src\X", mode: "ask" });
+      const prompts: string[] = [];
+      const turns: (() => AsyncGenerator<any>)[] = [];
+      // Stand-in for the SDK query: each start plays the next scripted turn.
+      (b as any).startQuery = async (l: any) => {
+        l.input = { push: (m: any) => prompts.push(m.message.content), end() {} };
+        l.q = turns.shift()!();
+        (b as any).consume(l, l.q);
+      };
+      const later = () => new Promise((r) => setTimeout(r, 10)); // the API answers after the prompt went in
+      const overloaded = () => new Error("API Error: 529 overloaded_error");
+
+      turns.push(async function* () { await later(); throw overloaded(); }, async function* () { await later(); });
+      await b.send("q1", "what changed?");
+      await vi.advanceTimersByTimeAsync(6_000);
+      expect(prompts).toEqual(["what changed?", "what changed?"]);
+      expect(events.at(-1)).toMatchObject({ type: "done", status: "completed" });
+
+      turns.push(async function* () {
+        await later();
+        yield { type: "assistant", message: { id: "m1", content: [{ type: "tool_use", id: "tu1", name: "Bash", input: { command: "mv a b" } }] } };
+        yield { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "tu1", content: "ok" }] } };
+        throw overloaded();
+      }, async function* () { await later(); });
+      prompts.length = 0;
+      await b.send("q1", "rename the files");
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(events.some((e) => e.type === "tool" && e.toolId === "tu1")).toBe(true);
+      expect(prompts).toEqual(["rename the files"]); // `mv` already ran: sending it again would repeat it
+      expect(events.at(-1)).toMatchObject({ type: "done", threadId: "q1", status: "failed", error: expect.stringContaining("529") });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

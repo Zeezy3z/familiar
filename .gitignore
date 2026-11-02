@@ -1,0 +1,19 @@
+# deps / build
+node_modules/
+companion/dist/
+companion/out/
+*.log
+.DS_Store
+Thumbs.db
+
+# local config + runtime state (may contain project transcripts)
+companion/config.local.json
+.familiar/
+*.local.*
+
+# never commit secrets
+.env
+.env.*
+
+# agent lanes (git worktrees under .claude/worktrees) and local agent settings
+.claude/

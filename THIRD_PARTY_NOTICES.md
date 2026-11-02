@@ -1,0 +1,51 @@
+# Third-party notices
+
+Familiar is MIT-licensed (see [LICENSE](LICENSE)). It depends on the packages below. They are
+installed from the npm registry on your own machine by `Run Familiar.cmd` (`npm ci`); this
+repository does not redistribute them. Each package's licence text is in its folder under
+`companion/node_modules/`. Versions are those pinned in `companion/package-lock.json` for 0.1.0.
+
+## Runtime dependencies (companion)
+
+| Package | Version | Licence | Notes |
+|---|---|---|---|
+| @agentclientprotocol/sdk | 1.7.0 | Apache-2.0 | ACP client for Hermes, Grok Build and other ACP agents. |
+| @anthropic-ai/claude-agent-sdk (with its platform package @anthropic-ai/claude-agent-sdk-win32-x64) | 0.3.293 | Proprietary: "© Anthropic PBC. All rights reserved. Use is subject to the Legal Agreements outlined here: https://code.claude.com/docs/en/legal-and-compliance." | Contains the unmodified Claude Code binary. Installed from npm on your machine at first run, under Anthropic's terms; not bundled by `scripts/build.mjs` (marked `external`), not committed and not redistributed by this repository. Familiar never modifies it. |
+| @fontsource/marcellus | 5.3.0 | SIL Open Font License 1.1 (OFL-1.1) | Font "Marcellus", Copyright (c) 2012 Brian J. Bonislawsky DBA Astigmatic (AOETI), with Reserved Font Name "Marcellus". `scripts/build.mjs` copies `marcellus-latin-400-normal.woff2` into the local `dist/assets/` for the overlay and control panel. |
+| dompurify | 3.4.16 | MPL-2.0 OR Apache-2.0 | Used under the Apache-2.0 option. |
+| highlight.js | 11.12.0 | BSD-3-Clause | Copyright (c) 2006, Ivan Sagalaev. |
+| koffi | 3.3.2 | MIT | Copyright (C) 2026 Niels Martignène. Win32 FFI (window tracking). |
+| marked | 18.0.14 | MIT | Copyright (c) 2018+, MarkedJS; Copyright (c) 2011-2018, Christopher Jeffrey. |
+
+Transitive runtime dependencies are listed in `companion/package-lock.json`; their licences are
+permissive (MIT, ISC, BSD, Apache-2.0, Unlicense), including @anthropic-ai/sdk 0.131.0 (MIT).
+
+## Development dependencies
+
+| Package | Version | Licence |
+|---|---|---|
+| electron | 44.5.1 | MIT (bundles Chromium and Node.js, each with its own notices inside the Electron distribution) |
+| esbuild | 0.28.2 | MIT |
+| fengari | 0.1.5 | MIT (Lua 5.3 VM in JavaScript, used by the headless addon tests) |
+| tsx | 4.23.15 | MIT |
+| typescript | 7.0.2 | Apache-2.0 |
+| vitest | 5.0.3 | MIT |
+| @types/node | 26.6.4 | MIT |
+
+## SIL Open Font License 1.1
+
+The Marcellus font is licensed under the SIL Open Font License, Version 1.1. The full licence
+text ships with the package at `companion/node_modules/@fontsource/marcellus/LICENSE` and is
+available at https://openfontlicense.org/open-font-license-official-text/. Under the OFL the font
+may be bundled with software under any licence; it may not be sold by itself, and modified
+versions may not use the Reserved Font Name "Marcellus".
+
+## Other
+
+* World of Warcraft, its API and the `Interface\Icons\Spell_Shadow_SummonImp` icon referenced by
+  the addon are © Blizzard Entertainment. The icon is referenced by game path and is not included
+  in this repository. Familiar is a fan project, not affiliated with or endorsed by Blizzard
+  Entertainment.
+* "Claude" and "Claude Code" are trademarks of Anthropic; "Codex" is a trademark of OpenAI.
+  Familiar runs these tools as installed by the user; it is not built, endorsed or partnered by
+  either company.

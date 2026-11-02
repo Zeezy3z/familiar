@@ -1,0 +1,21 @@
+name: Suggest a change
+description: A quick idea or change request (also the target of the in-app "Suggest a change" box)
+title: "[Suggest] "
+labels: ["familiar:suggest"]
+body:
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: Suggestion
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Versions (optional; edit freely)
+      description: Familiar version, WoW client version, Windows version. No paths or conversation text.
+      render: text
+  - type: markdown
+    attributes:
+      value: |
+        Nothing is sent until you press **Submit new issue**. The maintainer reviews every suggestion.

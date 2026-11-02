@@ -1,0 +1,117 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'">
+<title>Familiar</title>
+<style>
+  @font-face { font-family: "Familiar Display"; src: url("assets/marcellus-latin-400-normal.woff2") format("woff2"); }
+  :root { --gold: #ffd100; --text: #e9e2d2; --muted: #afa595; --bg: #0b0a0d; --card: #15131a; --ok: #7dd96b; --warn: #ff9d2e; --err: #ff5a4f; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 13px "Segoe UI", system-ui, sans-serif; }
+  header { padding: 14px 18px 8px; display: flex; align-items: baseline; gap: 12px; border-bottom: 1px solid #2a2418; }
+  h1 { font-family: "Familiar Display", Georgia, serif; color: var(--gold); font-weight: normal; margin: 0; font-size: 24px; text-shadow: 1px 1px 0 #000; }
+  .ver { color: var(--muted); }
+  #build-id { box-sizing: border-box; width: 100%; background: #0b0a0d; border: 1px solid #3a3122; color: var(--text); padding: 6px; font: 11px Consolas, monospace; }
+  main { padding: 12px 18px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; max-width: 1000px; margin: auto; }
+  .card { background: var(--card); border: 1px solid #2a2418; border-radius: 4px; padding: 10px 12px; }
+  .card h2 { font-family: "Familiar Display", Georgia, serif; color: var(--gold); font-size: 15px; font-weight: normal; margin: 0 0 6px; }
+  .kv { display: grid; grid-template-columns: 110px 1fr; gap: 2px 8px; }
+  .kv div:nth-child(odd) { color: var(--muted); }
+  .ok { color: var(--ok); } .warn { color: var(--warn); } .err { color: var(--err); } .muted { color: var(--muted); }
+  .wide { grid-column: 1 / -1; }
+  #log { height: 190px; overflow: auto; font: 11px Consolas, monospace; white-space: pre-wrap; color: #bdb5a4; }
+  button { background: linear-gradient(180deg, #5a1010, #2a0505); color: var(--gold); border: 1px solid #8a6d1f; border-radius: 3px; padding: 4px 12px; font-family: "Familiar Display", Georgia, serif; cursor: pointer; }
+  button:hover { filter: brightness(1.3); }
+  .btns { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+  ul { margin: 4px 0; padding-left: 18px; } li { margin: 2px 0; }
+  .hint { color: var(--muted); font-size: 12px; line-height: 1.5; }
+  #onboard { border-color: #8a6d1f; }
+  .prov { display: grid; grid-template-columns: 22px 120px 1fr auto; gap: 6px 10px; align-items: center; padding: 6px 0; border-top: 1px solid #221d14; }
+  .prov:first-child { border-top: none; }
+  .prov .g { color: var(--gold); font-size: 16px; text-align: center; }
+  .prov .n { font-family: "Familiar Display", Georgia, serif; font-size: 14px; }
+  .prov .d { color: var(--muted); font-size: 12px; }
+  .prov .d code { color: #cfc6b2; user-select: all; }
+  .prov .a { display: flex; gap: 6px; align-items: center; white-space: nowrap; }
+  .prov.off .n, .prov.off .g { opacity: .45; }
+  button.small { padding: 2px 8px; font-size: 12px; }
+  select { background: #1d1a22; color: var(--text); border: 1px solid #3a3122; border-radius: 3px; padding: 2px 4px; }
+  button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px solid var(--gold); outline-offset: 3px; }
+  button:disabled { opacity: .6; cursor: wait; }
+  a { color: var(--gold); }
+  #journey { border-color: #665321; background: linear-gradient(120deg, #262016, var(--card)); }
+  #journey h2 { font-size: 21px; margin-bottom: 8px; }
+  #journey-text { margin: 0; line-height: 1.5; max-width: 70ch; }
+  .steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; padding: 10px 0 0; list-style: none; }
+  .steps li { border-top: 1px solid #665321; padding-top: 6px; }
+  .steps b { display: block; font-weight: 600; margin-bottom: 3px; }
+  #journey-action { display: inline-block; margin-top: 10px; }
+  #journey-action[hidden] { display: none; }
+  #feedback:empty { display: none; }
+  #feedback { margin: 0; padding: 8px 12px; border: 1px solid #665321; }
+  [data-action-feedback] { margin: 8px 0; padding: 6px 8px; border: 1px solid var(--err); background: #211114; }
+  [data-action-feedback]:empty { display: none; }
+  .diagnostics summary { cursor: pointer; padding: 8px 0; color: var(--gold); font-family: "Familiar Display", Georgia, serif; }
+  .diagnostic-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+  .kv div, .prov .d { overflow-wrap: anywhere; }
+  @media (max-width: 650px) {
+    main, .diagnostic-grid { grid-template-columns: minmax(0, 1fr); }
+    .prov { grid-template-columns: 22px 90px minmax(0, 1fr); }
+    .prov .a { grid-column: 2 / -1; flex-wrap: wrap; white-space: normal; }
+    .steps { grid-template-columns: 1fr; gap: 4px; }
+  }
+</style>
+</head>
+<body>
+<header><h1>Familiar</h1><span class="ver" id="ver"></span><span id="linkbadge"></span></header>
+<main>
+  <section class="card wide" id="journey" aria-labelledby="journey-title">
+    <h2 id="journey-title" aria-live="polite"></h2><p id="journey-text"></p>
+    <ol class="steps" id="journey-steps"></ol><a id="journey-action" hidden></a>
+  </section>
+  <p class="wide" id="feedback" role="status"></p>
+  <section class="card wide" id="onboard" hidden><h2>Choose your familiars</h2>
+    <div class="hint">Familiar can talk to several agents. Tick the ones you want to use in game — each signs in with its own
+      account (a subscription via your browser, or an API key in that tool's own settings). Familiar never installs agents
+      for you. Sign-ins stay in each agent’s own files; prompts go to the agent you choose.</div>
+    <div class="btns"><button id="b-chosen">Keep these choices</button></div>
+  </section>
+  <section class="card wide" id="familiars"><h2>Familiars</h2><div id="providers"></div>
+    <div class="prov" id="chatset"><span class="g">✉</span><span class="n">Chat</span>
+      <span class="d">Claude or Codex for the in-game Chats zone (no project; web search only)<span id="chat-status" class="hint" role="status" style="display:block"></span></span>
+      <span class="a"><select id="chat-agent" aria-label="Chat agent" aria-describedby="chat-status"></select><select id="chat-model" aria-label="Chat model" aria-describedby="chat-status"></select><select id="chat-effort" aria-label="Chat effort" aria-describedby="chat-status"><option>low</option><option>medium</option><option>high</option></select></span></div>
+    <div class="kv" id="agents"></div></section>
+  <section class="card"><h2>In game</h2>
+    <div class="kv">
+      <div>Text size</div><div><select id="ui-font" aria-label="In-game text size"></select></div>
+      <div>Quiet play</div><div><label class="hint"><input type="checkbox" id="ui-quiet"> Keep ordinary completion notifications quiet until I turn this off</label><div class="hint">Replies wait in your catch-up notes when you open /fam. Approvals and failures keep their attention cues; agents continue working.</div></div>
+      <div>New quests start in</div><div><select id="ui-mode" aria-label="Mode for new quests"><option value="ask">Ask first</option><option value="edits">Accept edits</option><option value="plan">Plan only</option><option value="auto">Auto</option></select><div class="hint">Auto lets Claude's safety check approve routine actions and still asks you about risky ones. Change any quest with Mode.</div></div>
+      <div>Sounds</div><div><label class="hint"><input type="checkbox" id="ui-sound"> Chime when a quest finishes, needs approval or fails</label></div>
+      <div>Notices</div><div><label class="hint"><input type="checkbox" id="ui-raid"> As raid warnings (big, mid-screen); off: small, in the Familiar window</label></div>
+    </div>
+    <div class="hint">Also in game: /fam font bigger | smaller | reset, /fam sound on | off, /fam warnings on | off</div></section>
+  <section class="card"><h2>Find your way back</h2>
+    <div class="hint"><b>/fam</b> opens your Quest Log; the minimap imp does too. Pick a quest to read or continue it. <b>Text</b> opens a copyable transcript from the last /reload. <b>Ctrl+Up</b> recalls your last message.</div>
+    <div class="hint">Close this panel to keep Familiar in the tray. Double-click <b>Run Familiar.cmd</b> or choose <b>Open Familiar</b> from the tray to return.</div>
+  </section>
+  <section class="card wide"><h2>Companion controls</h2>
+    <p id="build-summary" class="hint"></p>
+    <input id="build-id" readonly aria-label="Copyable running build identity">
+    <p><b id="restart-title"></b> <span class="hint" id="restart-state"></span></p>
+    <p class="hint">Companion source updates take effect after a full Familiar restart. Once quests have settled, choose <b>Quit</b> from the tray, then open <b>Run Familiar.cmd</b>. Opening the launcher while Familiar runs only opens this panel. Reload config changes settings; it does not reload app code. Addon changes load on your next WoW launch or a user-initiated /reload.</p>
+    <div class="btns"><button id="b-config">Open config</button><button id="b-reload">Reload config</button><button id="b-logs">Open log file</button><button id="b-refresh">Rescan desktop threads</button><button id="b-pause">Pause overlay</button>
+      <label class="hint"><input type="checkbox" id="c-login"> Start Familiar when I sign in to Windows</label></div>
+  </section>
+  <details class="wide diagnostics"><summary>Link details &amp; troubleshooting</summary><div class="diagnostic-grid">
+    <section class="card"><h2>Runestrip link</h2><div class="kv" id="link"></div></section>
+    <section class="card"><h2>World of Warcraft</h2><div class="kv" id="game"></div></section>
+    <section class="card wide"><h2>Addon</h2><div class="kv" id="addon"></div><ul id="notes" class="hint"></ul>
+      <div class="btns"><button id="b-install">Reinstall addon</button><button id="b-toast">Test overlay</button></div>
+      <p class="hint">After a first install, restart WoW once and enable Familiar in AddOns. If messages did not arrive, /reload checks the saved outbox; /fam resend retries unconfirmed messages. Check the conversation before resending.</p>
+    </section>
+    <section class="card wide"><h2>Log</h2><div id="log" tabindex="0" aria-label="Companion log"></div></section>
+  </div></details>
+</main>
+<script src="control.js"></script>
+</body>
+</html>

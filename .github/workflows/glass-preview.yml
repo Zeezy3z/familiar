@@ -1,0 +1,57 @@
+name: Glass preview smoke
+on:
+  # addon/** too: npm test runs the addon API-conformance and Lua<->TS codec parity checks.
+  pull_request:
+    paths: ['companion/**', 'addon/**', '.github/workflows/glass-preview.yml']
+  push:
+    branches: [main]
+    paths: ['companion/**', 'addon/**', '.github/workflows/glass-preview.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  preview:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: companion
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: companion/package-lock.json
+      - name: Install locked application dependencies without install hooks
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Check and build actual renderers
+        run: |
+          npm run typecheck
+          npm test
+          npm run build
+      - name: Install isolated pinned browser QA tooling
+        run: |
+          npm install --prefix "$RUNNER_TEMP/familiar-qa" --no-package-lock --ignore-scripts --no-audit --no-fund playwright@1.56.1
+          node "$RUNNER_TEMP/familiar-qa/node_modules/playwright/cli.js" install --with-deps chromium
+      - name: Exercise synthetic Glass and capture evidence
+        env:
+          FAMILIAR_QA_MODULE: ${{ runner.temp }}/familiar-qa/node_modules/playwright/index.mjs
+        run: node scripts/preview-smoke.mjs
+      - name: Upload screenshots, trace, and checks
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: glass-preview-${{ github.event.pull_request.head.sha || github.sha }}
+          path: companion/preview-evidence/
+          if-no-files-found: warn
+          retention-days: 14
