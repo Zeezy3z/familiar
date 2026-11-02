@@ -20,7 +20,8 @@ function optedOut(p: string): boolean {
 /** The home folder or a drive root is never a zone: an agent there would see everything. */
 function tooBroad(p: string): boolean {
   const n = normPath(p);
-  return /^[a-z]:$/.test(n) || n === normPath(os.homedir());
+  // A drive root (`C:`), the POSIX root (`/`, as on CI), or the home folder.
+  return /^[a-z]:$/.test(n) || n === "" || n === "/" || path.parse(p).root === p || n === normPath(os.homedir());
 }
 
 export interface Project {
