@@ -32,7 +32,15 @@ window (see [Signing in](#signing-in)).
 | Game | World of Warcraft: Forever installed through Battle.net (client folder `_forever_`), display mode **Windowed** or **Windowed (Fullscreen)** |
 | Runtime | [Node.js](https://nodejs.org) 24 or newer (LTS) |
 | Disk | ~800 MB for dependencies (Electron, Claude Agent SDK) |
-| Agents | At least one, already installed and signed in: Claude (an `ANTHROPIC_API_KEY`, or Claude Code signed in), Codex (desktop app), or an ACP agent (Hermes, Grok Build, …) |
+| Agents | At least one, already installed and signed in: **Claude Code** (signed in, or an `ANTHROPIC_API_KEY`) or **Codex** (desktop app). Optional extras: an ACP agent such as Hermes or Grok Build |
+
+### Before you start
+
+1. Install Node.js: go to [nodejs.org](https://nodejs.org), click the green **LTS** button, open the
+   downloaded file and keep clicking **Next** until it says **Finish**.
+2. Double-click `Run Familiar.cmd` in the Familiar folder.
+3. A black window opens and scrolls while Familiar installs. The first run takes several minutes:
+   leave it open. When it finishes, Familiar's window and a tray icon (bottom right) appear.
 
 ## Safety at a glance
 
@@ -98,8 +106,8 @@ when I sign in to Windows**, or `/fam autostart on` in game.
 | `Continue in Claude app` / `Continue in Codex app` (quest header), `/fam open` | hand the selected quest or desktop thread to the agent's own app, same conversation. One owner at a time: while the app has it open, sending from WoW asks you to close it there and press Retry, or continue as a copy |
 | `/fam show claude` · `codex` · `all` | filter the Quest Log by agent |
 | `+ Chat` / `/fam ask <question>` | chat without a project (see [Chats](#chats)). `/fam ask` continues your latest chat; `/fam ask new <question>` starts another |
-| `Approve` / `Deny` / `Always` | answer the agent's pending request by clicking the card on the Glass, the Approve button, or your Approve keybind. Register that key in the control panel (**Approve key**, e.g. `F9` or `CTRL-F9`) so Familiar can check it was really pressed. `/fam approve` and `/fam always` only remind you of this; `/fam deny` and `/fam stop` work from chat. `Always` also allows that kind of action for the rest of this quest (not other quests). See [What can talk to your agents](#what-can-talk-to-your-agents) |
-| `Mode` | switches the quest between **Ask first** and **Plan only**, with a click on the Mode button. **Accept edits** and **Auto** can be chosen only in the desktop control panel (**New quests start in**); new quests start in Ask first unless you change that |
+| `Approve` / `Deny` / `Always` | answer the agent's pending request by clicking the card on the Glass, the Approve button, or your Approve keybind. Register that key in the control panel (**Approve key**, e.g. `F9` or `CTRL-F9`) so Familiar can check it was really pressed. `/fam approve` and `/fam always` only remind you of this; `/fam deny` and `/fam stop` work from chat. `Always` also allows that kind of action for the rest of this quest (not other quests); that is how long it lasts with Claude and Codex, while other agents (Hermes, Grok) choose the scope themselves and may remember it longer. See [What can talk to your agents](#what-can-talk-to-your-agents) |
+| `Mode` | switches the quest between **Ask first** and **Plan only**, with a click on the Mode button. **Accept edits** and **Auto** can be chosen only in the desktop control panel (**New quests start in**); new quests start in Ask first unless you change that. Plan only asks the agent not to change anything: Claude uses its own plan mode, and Codex gets a read-only sandbox plus an instruction. If the agent tries anyway, you still get an approval card |
 | `/fam focus game` · `stay` | after Enter/Send, give the keyboard back to WoW (default) or keep typing in Familiar |
 | `Model` | open the model list in the details pane; click one to use it |
 | `Text` | native, copyable transcript (from the last `/reload`) |
@@ -237,10 +245,11 @@ sign-in and their own privacy terms. Familiar identifies itself to them as a cli
   encodes what you are sending; crop it out: it is 256×16 pixels in the game window's top-left
   corner (use a *Crop/Pad* filter on the source), and `/fam strip dim` makes it near-black.
   (The OBS steps are untested across OBS versions.)
-* **Hide names (for streaming):** control panel → **In game** → **Hide names**, or
+* **Hide names (for streaming):** control panel → **In game** → **Hide names** (the `/fam private` command and `privateMode` config key keep their names), or
   `/fam private on|off`. Zones show as *Project 1, 2, …* and quests as *Quest #1, #2, …* (chats as
-  *Chat #n*), desktop threads are hidden, notices and raid warnings say only "Claude needs
-  approval", "Codex finished" or "Quest failed", nothing is spoken, and the FamiliarSync snapshot
+  *Chat #n*), desktop threads are hidden, notices and raid warnings say only
+  `Finished · Claude`, `Needs approval · Claude` or `Failed · Claude` (normally they also name the project
+  and quest, never the reply text), nothing is spoken, and the FamiliarSync snapshot
   holds no titles and no transcript. It hides names, not content: replies, tool lines, approval
   cards and what you type stay visible on screen and can contain file names or paths. Your real
   names and conversations are kept on your PC as before.
