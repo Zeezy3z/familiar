@@ -69,7 +69,7 @@ function render(s: any) {
   $("agents").innerHTML = kv([
     ...Object.entries<any>(b)
       .filter(([id]) => (s.providers ?? []).find((p: any) => p.id === id)?.enabled !== false)
-      .map(([id, x]): [string, unknown, string] => [x?.label ?? id, be(x), x?.ready ? "ok" : x?.error ? "err" : ""]),
+      .map(([id, x]): [string, unknown, string] => [x?.label ?? (s.providers ?? []).find((p: any) => p.id === id)?.label ?? id, be(x), x?.ready ? "ok" : x?.error ? "err" : ""]),
     ["Quests", s.threads],
     ["Zones", s.projects],
   ]);
@@ -256,12 +256,16 @@ function renderUi(ui?: { fontScale: number; sound: boolean; raidWarnings: boolea
   const key = $("ui-approve-key") as HTMLInputElement;
   if (document.activeElement !== key) key.value = ui.approveKey ?? "";
 }
-const setUi = (patch: object) => act("In-game display preferences updated", () => bridge.invoke("uiSettings", patch).then(renderUi));
+const setUi = (patch: object, message = "In-game display preferences updated") => act(message, () => bridge.invoke("uiSettings", patch).then(renderUi));
+const modeNames: Record<string, string> = { ask: "Ask first", edits: "Accept edits", plan: "Plan only", auto: "Auto" };
 fontSel.addEventListener("change", () => setUi({ fontScale: Number(fontSel.value) }));
 $("ui-sound").addEventListener("change", (e) => setUi({ sound: (e.target as HTMLInputElement).checked }));
 $("ui-quiet").addEventListener("change", (e) => setUi({ quiet: (e.target as HTMLInputElement).checked }));
 $("ui-private").addEventListener("change", (e) => setUi({ privateMode: (e.target as HTMLInputElement).checked }));
-$("ui-mode").addEventListener("change", (e) => setUi({ defaultMode: (e.target as HTMLSelectElement).value }));
+$("ui-mode").addEventListener("change", (e) => {
+  const mode = (e.target as HTMLSelectElement).value;
+  setUi({ defaultMode: mode }, `New quests will start in ${modeNames[mode] ?? mode}`);
+});
 $("ui-approve-key").addEventListener("change", (e) => setUi({ approveKey: (e.target as HTMLInputElement).value }));
 $("ui-raid").addEventListener("change", (e) => setUi({ raidWarnings: (e.target as HTMLInputElement).checked }));
 btn("b-pause", "Overlay preference updated", async () => {
