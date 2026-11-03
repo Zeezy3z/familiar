@@ -129,7 +129,7 @@ body.hidden { opacity: 0; }
 .qbar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-top: 3px; }
 .qbar .qapp { margin: 0; }
 .qmode { font-family: var(--display); font-size: var(--small-font); color: var(--gold); text-shadow: 1px 1px 0 #000; }
-.qmode::after { content: " ·"; color: var(--muted); }
+.qmode:has(~ .qstate)::after { content: " ·"; color: var(--muted); } /* only when a status label follows */
 .qmode.hot { color: var(--warn); }
 /* In a narrow pane the chip would wrap the bar onto a second header line (and move the reader's
    place when switching to Focus); the mode is still in Details there. */
