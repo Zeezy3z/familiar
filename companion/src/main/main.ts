@@ -49,7 +49,7 @@ import { RUNNING_BUILD } from "./build";
 import { devEnabled, serveDevHooks } from "./dev-hooks";
 import { changedConfigKeys, describeAddonMessage, describeOverlayAction, diagnosticsText, logLine, redact, rotateLog } from "./log-file";
 
-const VERSION = "0.1.0";
+const VERSION = "0.1.1";
 
 // ---- never show Electron error dialogs; log instead ------------------------------------------
 const logFile = path.join(appDataDir(), "familiar.log");
