@@ -19,7 +19,7 @@
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "^1.7.0",
-    "@anthropic-ai/claude-agent-sdk": "^0.3.293",
+    "@anthropic-ai/claude-agent-sdk": "^0.3.316",
     "@fontsource/marcellus": "^5.3.0",
     "dompurify": "^3.4.16",
     "highlight.js": "^11.12.0",
