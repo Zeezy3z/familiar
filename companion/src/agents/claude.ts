@@ -1,6 +1,6 @@
 // Claude backend: Claude Code via the Agent SDK. One long-lived query (streaming input) per open
-// thread; approvals arrive through canUseTool and wait for an in-game decision. Uses the user's
-// logged-in Claude Code subscription (no API key).
+// thread; approvals arrive through canUseTool and wait for an in-game decision. Uses
+// ANTHROPIC_API_KEY or the user's existing Claude Code sign-in; Familiar never sees credentials.
 import { randomUUID } from "node:crypto";
 import { StderrFilter } from "./acp";
 import { readDesktopSessions, readLiveSessions } from "./claude-desktop";

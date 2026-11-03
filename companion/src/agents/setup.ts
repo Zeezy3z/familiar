@@ -51,7 +51,7 @@ const KNOWN: Record<string, Known> = {
     // The Agent SDK ships its own Claude Code; the CLI is only needed to sign in.
     installed: () => resolveCommand("claude") ?? "sdk",
     signedIn: () => exists(home, ".claude", ".credentials.json") || !!process.env.ANTHROPIC_API_KEY,
-    how: "Claude subscription (browser sign-in) or ANTHROPIC_API_KEY",
+    how: "ANTHROPIC_API_KEY, or your installed Claude Code's existing sign-in",
     login: (exe) => (exe === "sdk" ? null : [exe, "/login"]),
   },
   codex: {

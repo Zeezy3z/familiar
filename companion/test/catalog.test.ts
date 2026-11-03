@@ -8,10 +8,10 @@ import { defaultRoots, readBusySessions, readDesktopSessions } from "../src/agen
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "familiar-catalog-"));
 
 describe("Claude desktop catalog", () => {
-  it("keeps a desktop thread's own mode for the game, except modes that skip asking", () => {
+  it("keeps a desktop thread's Plan only mode for the game; every other mode becomes Ask first", () => {
     const org = path.join(tmp, "modes", "acct", "org");
     fs.mkdirSync(org, { recursive: true });
-    const modes: Record<string, string | undefined> = { plan: "plan", acceptEdits: "edits", default: "ask", auto: "ask", bypassPermissions: "ask", dontAsk: "ask", somethingNew: "ask" };
+    const modes: Record<string, string | undefined> = { plan: "plan", acceptEdits: "ask", default: "ask", auto: "ask", bypassPermissions: "ask", dontAsk: "ask", somethingNew: "ask" };
     for (const pm of Object.keys(modes)) fs.writeFileSync(path.join(org, `local_${pm}.json`), JSON.stringify({ sessionId: `local_${pm}`, cliSessionId: pm, permissionMode: pm }));
     fs.writeFileSync(path.join(org, "local_none.json"), JSON.stringify({ sessionId: "local_none", cliSessionId: "none" }));
     const m = readDesktopSessions(path.join(tmp, "modes"));

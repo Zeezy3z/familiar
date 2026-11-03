@@ -140,11 +140,12 @@ function parse(file: string): DesktopSession | null {
   }
 }
 
-/** A desktop session's permission mode as a Familiar mode. Modes that skip asking (auto, bypass,
- * don't ask) and unknown ones become Ask first in the game; no recorded mode leaves the default. */
+/** A desktop session's permission mode as a Familiar mode. The game only reaches Ask first and Plan
+ * only, so plan stays and every other mode (accept edits, auto, bypass, don't ask, unknown) becomes
+ * Ask first; no recorded mode leaves the default. */
 function gameMode(permissionMode: unknown): Mode | undefined {
   if (typeof permissionMode !== "string" || !permissionMode) return undefined;
-  return permissionMode === "plan" ? "plan" : permissionMode === "acceptEdits" ? "edits" : "ask";
+  return permissionMode === "plan" ? "plan" : "ask";
 }
 
 function pidAlive(pid: number): boolean {
