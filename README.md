@@ -67,8 +67,8 @@ when I sign in to Windows**, or `/fam autostart on` in game.
 | `Continue in Claude app` / `Continue in Codex app` (quest header), `/fam open` | hand the selected quest or desktop thread to the agent's own app, same conversation. One owner at a time: while the app has it open, sending from WoW asks you to close it there and press Retry, or continue as a copy |
 | `/fam show claude` · `codex` · `all` | filter the Quest Log by agent |
 | `+ Chat` / `/fam ask <question>` | chat without a project (see [Chats](#chats)). `/fam ask` continues your latest chat; `/fam ask new <question>` starts another |
-| `Approve` / `Deny` / `Always` | answer the agent's pending request: the card on the Glass, the button, your keybind, or `/fam approve` · `deny` · `always`. Read the card first, and see [What can talk to your agents](#what-can-talk-to-your-agents) |
-| `Mode` | switches the quest between **Ask first** and **Plan only**. **Accept edits** and **Auto** can be chosen only in the desktop control panel (**New quests start in**); new quests start in Ask first unless you change that |
+| `Approve` / `Deny` / `Always` | answer the agent's pending request by clicking the card on the Glass, the Approve button, or your Approve keybind. Register that key in the control panel (**Approve key**, e.g. `F9` or `CTRL-F9`) so Familiar can check it was really pressed. `/fam approve` and `/fam always` only remind you of this; `/fam deny` and `/fam stop` work from chat. See [What can talk to your agents](#what-can-talk-to-your-agents) |
+| `Mode` | switches the quest between **Ask first** and **Plan only**, with a click on the Mode button. **Accept edits** and **Auto** can be chosen only in the desktop control panel (**New quests start in**); new quests start in Ask first unless you change that |
 | `/fam focus game` · `stay` | after Enter/Send, give the keyboard back to WoW (default) or keep typing in Familiar |
 | `Model` | open the model list in the details pane; click one to use it |
 | `Text` | native, copyable transcript (from the last `/reload`) |
@@ -205,12 +205,19 @@ sign-in and their own privacy terms. Familiar identifies itself to them as a cli
 The link from the game to your PC is a strip of pixels that the addon draws and the companion
 reads. WoW runs every addon in one shared Lua environment, so **anything that runs Lua in your WoW
 client — another addon, a WeakAura or UI-profile import string, a macro — can draw that strip, call
-Familiar's slash commands, send text to your agents as if you had typed it, and answer their
-approval cards** (`/fam approve`, `/fam always`). Familiar cannot tell the difference today, and no
-in-game secret could fix that: every addon sees the same globals.
+Familiar's slash commands, and send text to your agents as if you had typed it.** No in-game
+secret could stop that: every addon sees the same globals. So Familiar never lets a message from
+the game *decide* anything on its own:
 
-What limits the damage today:
-
+* **Approvals are matched to your real input.** Approve, Always, option answers, Continue/Retry
+  and Mode only count when the companion sees, read-only through Windows, that you released the
+  mouse on that button or card, or pressed the Approve key you registered in the control panel,
+  within about 1.5 seconds. Each click counts once, and a request must have been on screen for
+  0.4 s before it can be approved. A message that merely claims a click is ignored and logged.
+  Deny and Stop always work.
+* **Budgets and visibility.** From the game Familiar accepts at most 6 new quests and 20 messages
+  per 5 minutes, and shows **Started: <quest> (<zone>)** for every new quest. If you see one you
+  didn't start, `/fam stop`, then find the addon.
 * **Quests start in Ask first.** Everything the agent wants to run or change comes to you as a
   card, shown in full until it is answered.
 * **Riskier modes only from the desktop.** In game, Mode only switches between Ask first and Plan
@@ -220,13 +227,21 @@ What limits the damage today:
   start a quest that acts without asking you.
 * **No bypass modes.** Nothing in the game or the control panel reaches bypass-permissions /
   danger-full-access / yolo modes.
-* **Desktop side.** Agent output is rendered through a sanitizer; the companion opens no network
-  port (test hooks exist only in developer runs, on 127.0.0.1, with a per-run token).
+* **Desktop side.** Settings change only from the control panel window; the overlay and capture
+  pages cannot reach them or navigate anywhere. Agent output is rendered through a sanitizer. The
+  companion opens no network port (test hooks exist only in developer runs, on 127.0.0.1, with a
+  per-run token).
 
 What you should do: install addons and import strings only from sources you trust; keep **New
-quests start in** at **Ask first**; choose Auto only from the desktop app, and only when you trust
-every addon you run; read each card before you approve it. Planned: accepting in-game approvals
-only when they match a real click or key press on your PC.
+quests start in** at **Ask first**; register your Approve key if you want to approve from the
+keyboard; read each card before you approve it. What Familiar does **not** stop: an addon you
+installed that starts quests, sends prompts, denies or stops your agents, or archives threads. It
+can do what your keyboard can, short of approving.
+
+**Why did my click or key not approve?** Familiar approves only when it can match the approval to
+your mouse or your registered Approve key. If the game stalled or the request had only just
+appeared, click again. A keybind approval does nothing until that key is entered in the control
+panel.
 
 ## Is this allowed by Blizzard?
 

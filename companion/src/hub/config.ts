@@ -20,6 +20,9 @@ export interface Config {
   claudeExecutable?: string;
   claudeModel?: string;
   codexExe?: string;
+  /** WoW binding text of "Approve pending request" (e.g. "F9" or "CTRL-F9"), so an approval from that
+   * keybind can be checked against the real keyboard. Unset: keybind approvals are refused. */
+  approveKey?: string;
   /** Show desktop-app threads touched within this many days (pinned/starred/running: always). */
   externalDays: number;
   /** Hide threads archived in the Claude/Codex desktop apps. */

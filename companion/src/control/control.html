@@ -35,7 +35,7 @@
   .prov .a { display: flex; gap: 6px; align-items: center; white-space: nowrap; }
   .prov.off .n, .prov.off .g { opacity: .45; }
   button.small { padding: 2px 8px; font-size: 12px; }
-  select { background: #1d1a22; color: var(--text); border: 1px solid #3a3122; border-radius: 3px; padding: 2px 4px; }
+  select, input[type="text"] { background: #1d1a22; color: var(--text); border: 1px solid #3a3122; border-radius: 3px; padding: 2px 4px; }
   button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px solid var(--gold); outline-offset: 3px; }
   button:disabled { opacity: .6; cursor: wait; }
   a { color: var(--gold); }
@@ -86,6 +86,7 @@
       <div>Text size</div><div><select id="ui-font" aria-label="In-game text size"></select></div>
       <div>Quiet play</div><div><label class="hint"><input type="checkbox" id="ui-quiet"> Keep ordinary completion notifications quiet until I turn this off</label><div class="hint">Replies wait in your catch-up notes when you open /fam. Approvals and failures keep their attention cues; agents continue working.</div></div>
       <div>New quests start in</div><div><select id="ui-mode" aria-label="Mode for new quests"><option value="ask">Ask first</option><option value="edits">Accept edits</option><option value="plan">Plan only</option><option value="auto">Auto</option></select><div class="hint">Auto lets Claude's safety check approve routine actions and still asks you about risky ones. Change any quest with Mode.</div></div>
+      <div>Approve key</div><div><input type="text" id="ui-approve-key" maxlength="24" spellcheck="false" autocomplete="off" placeholder="F9" aria-label="Approve key (as bound in WoW, e.g. F9 or CTRL-F9)"><div class="hint">Approve key (as bound in WoW, e.g. F9 or CTRL-F9): type the key you bound to <i>Approve pending request</i> (Options → Keybindings → AddOns → Familiar). Familiar checks it was really pressed. Without it, approve by clicking the card or the Approve button.</div></div>
       <div>Sounds</div><div><label class="hint"><input type="checkbox" id="ui-sound"> Chime when a quest finishes, needs approval or fails</label></div>
       <div>Notices</div><div><label class="hint"><input type="checkbox" id="ui-raid"> As raid warnings (big, mid-screen); off: small, in the Familiar window</label></div>
     </div>

@@ -243,19 +243,22 @@ $("journey-action").addEventListener("click", (e) => {
 // In game: text size, sounds, notices as raid warnings.
 const fontSel = $("ui-font") as HTMLSelectElement;
 for (let p = 80; p <= 160; p += 10) fontSel.add(new Option(`${p}%${p === 100 ? " (default)" : ""}`, String(p / 100)));
-function renderUi(ui?: { fontScale: number; sound: boolean; raidWarnings: boolean; quiet?: boolean; defaultMode?: string }) {
+function renderUi(ui?: { fontScale: number; sound: boolean; raidWarnings: boolean; quiet?: boolean; defaultMode?: string; approveKey?: string }) {
   if (!ui) return;
   if (document.activeElement !== fontSel) fontSel.value = String(Math.round(ui.fontScale * 10) / 10);
   ($("ui-sound") as HTMLInputElement).checked = ui.sound;
   ($("ui-raid") as HTMLInputElement).checked = ui.raidWarnings;
   ($("ui-quiet") as HTMLInputElement).checked = !!ui.quiet;
   if (ui.defaultMode) ($("ui-mode") as HTMLSelectElement).value = ui.defaultMode;
+  const key = $("ui-approve-key") as HTMLInputElement;
+  if (document.activeElement !== key) key.value = ui.approveKey ?? "";
 }
 const setUi = (patch: object) => act("In-game display preferences updated", () => window.familiar.invoke("uiSettings", patch).then(renderUi));
 fontSel.addEventListener("change", () => setUi({ fontScale: Number(fontSel.value) }));
 $("ui-sound").addEventListener("change", (e) => setUi({ sound: (e.target as HTMLInputElement).checked }));
 $("ui-quiet").addEventListener("change", (e) => setUi({ quiet: (e.target as HTMLInputElement).checked }));
 $("ui-mode").addEventListener("change", (e) => setUi({ defaultMode: (e.target as HTMLSelectElement).value }));
+$("ui-approve-key").addEventListener("change", (e) => setUi({ approveKey: (e.target as HTMLInputElement).value }));
 $("ui-raid").addEventListener("change", (e) => setUi({ raidWarnings: (e.target as HTMLInputElement).checked }));
 btn("b-pause", "Overlay preference updated", async () => {
   paused = await window.familiar.invoke("pause", !paused);

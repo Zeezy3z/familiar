@@ -82,6 +82,9 @@ describe("Familiar addon (headless)", () => {
     for (const k of ["list", "detail", "status", "win"]) expect(Array.isArray(l[k]), k).toBe(true);
     expect(l.rowH).toBeGreaterThan(0);
     expect(l.keys.approve).toBeTruthy();
+    // The companion matches Always / Mode clicks to the real mouse on these rects before acting.
+    expect(l.keys.always).toBeTruthy();
+    expect(l.keys.mode).toBeTruthy();
   });
 
   it("sends a prompt from the composer (Enter) and keeps history", () => {
@@ -178,6 +181,8 @@ describe("Familiar addon (headless)", () => {
     const keys = messages.filter((m) => m.t === "key").map((m) => m.k);
     expect(keys).toContain("approve");
     expect(keys).toContain("deny");
+    expect(messages.filter((m) => m.t === "key" && m.k === "approve").at(-1)).toMatchObject({ src: "button" });
+    expect(messages.filter((m) => m.t === "key" && m.k === "deny").at(-1)).toMatchObject({ src: "slash" });
     expect(last("quick")).toMatchObject({ agent: "codex", text: "summarize the open PRs" });
     expect(last("prompt").text).toBe("what changed today?");
   });
@@ -271,6 +276,19 @@ describe("Familiar addon (headless)", () => {
     expect(Number(state.run(`return FamiliarFrame.__bg[4]`))).toBeCloseTo(0.4);
     state.run(`NS.UI.SetFocusMode(false)`);
     expect(Number(state.run(`return FamiliarFrame.__bg[4]`))).toBeCloseTo(0.4);
+  });
+
+  it("exports only the keybinding wrappers: no Send, Link or settings for other addons", () => {
+    expect(vm.run(`return type(Familiar.Send) .. ":" .. type(Familiar.SendTracked) .. ":" .. type(Familiar.Link) .. ":" .. type(Familiar.db) .. ":" .. type(Familiar.UI)`)).toBe("nil:nil:nil:nil:nil");
+    const xml = fs.readFileSync(path.join(ADDON_DIR, "Bindings.xml"), "utf8");
+    const called = [...xml.matchAll(/Familiar\.(\w+)\(/g)].map((m) => m[1]);
+    expect(called.length).toBeGreaterThan(5);
+    for (const name of new Set(called)) expect(vm.run(`return type(Familiar.${name})`), name).toBe("function");
+    const before = messages.length;
+    vm.run(`Familiar.Key("approve") Familiar.Key("mode") Familiar.Key("always")`);
+    advance(2);
+    const sent = messages.slice(before).filter((m) => m.t === "key");
+    expect(sent).toEqual([expect.objectContaining({ k: "approve", src: "bind" })]); // mode / always have no binding
   });
 
   it("only uses widget methods that exist in WoW: Forever", () => {
@@ -736,7 +754,7 @@ describe("responsiveness: priority, drag, resize grip", () => {
     vm.run(`NS.UI.SetFocusMode(true) FamiliarComposer:SetText("check target") NS.UI.Key("next") SlashCmdList.FAMILIAR("approve")`);
     expect(vm.run(`return NS.UI.draftNotice:GetText()`)).toContain("check the message target");
     advance(2);
-    expect(messages.filter(m => m.t === "key" && m.k === "approve").at(-1)).toMatchObject({ view: "focus" });
+    expect(messages.filter(m => m.t === "key" && m.k === "approve").at(-1)).toMatchObject({ view: "focus", src: "slash" });
     vm.run(`NS.UI.Key("back")`);
     expect(vm.run(`return tostring(NS.UI.focusMode)`)).toBe("false");
     expect(vm.run(`return FamiliarComposer:GetText()`)).toBe("check target");

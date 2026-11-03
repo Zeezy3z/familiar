@@ -120,15 +120,18 @@ local function pane(parent)
   return p
 end
 
-function UI.Key(k)
+-- src says how the player did it: "button" (a Familiar button), "bind" (keybinding), "slash".
+-- The companion checks approve / always / mode against real input on the PC: a button press must
+-- coincide with a physical click on that button, a binding with the Approve key registered in the
+-- control panel. Slash commands can't be checked and never approve (deny / stop still work).
+function UI.Key(k, src)
   if k == "send" then return UI.Submit() end
   if k == "newClaude" or k == "newCodex" or k == "newChat" or k == "back" then UI.SetFocusMode(false) end
   if (k == "next" or k == "prev") and editBox and editBox:GetText() ~= "" then UI.CheckDraftTarget() end
   -- Context travels with the decision itself; a queued layout may still describe the old view.
-  ns.Send({ t = "key", k = k, view = UI.focusMode and "focus" or "full" }, true)
+  ns.Send({ t = "key", k = k, src = src or "button", view = UI.focusMode and "focus" or "full" }, true)
   if k == "native" then UI.ToggleNative() end
 end
-ns.Key = UI.Key
 
 -- Rows (native fallback labels + hover highlight; clicks go through the list surface) -----------
 local function layoutRows()

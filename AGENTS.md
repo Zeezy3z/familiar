@@ -25,6 +25,10 @@ first.
   bypass-permissions / danger-full-access / yolo modes. Approvals reach the player: ACP sessions are
   kept in a mode that asks (or not opened), Codex approvals never go to its reviewer subagent outside
   Auto, and a pending approval card is never shortened.
+* **Decisions from the game need physical corroboration.** Approve / Always / option answers /
+  Continue / Retry / Mode from the game are accepted only with proof of real input on the PC
+  (`companion/src/main/physical.ts`, read-only `GetAsyncKeyState`/`GetCursorPos`). Never add an
+  uncorroborated path; Deny and Stop are the only decisions that need none.
 * **If you are running inside Familiar** (a quest started or continued from WoW), you are a child of
   the companion process: never kill `electron.exe`, run `scripts/dev-restart.sh`, or restart the
   companion yourself — that ends your own turn. Finish the change, run the tests, and ask the user

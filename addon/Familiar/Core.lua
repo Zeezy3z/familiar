@@ -4,7 +4,18 @@
 local ADDON, ns = ...
 
 ns.VERSION = (C_AddOns and C_AddOns.GetAddOnMetadata or GetAddOnMetadata)(ADDON, "Version") or "dev"
-_G.Familiar = ns -- exposed for /dump debugging and Bindings.xml
+-- Bindings.xml needs a global. Export only what it calls, as wrappers: nothing here reaches ns,
+-- Send, Link or the saved settings. Any addon can still call these, so each is exactly what a
+-- keypress does and nothing more (the companion verifies approvals against real input anyway).
+local BIND_KEYS = { approve = true, deny = true, stop = true, next = true, prev = true }
+_G.Familiar = {
+  Toggle = function() ns.UI.Toggle() end,
+  Focus = function() ns.UI.Focus() end,
+  Key = function(k) if BIND_KEYS[k] then ns.UI.Key(k, "bind") end end,
+  ToggleTracker = function() ns.Tracker.Toggle() end,
+  ToggleLog = function() ns.UI.ToggleLog() end,
+  ToggleView = function() ns.UI.ToggleFocusMode() end,
+}
 
 BINDING_HEADER_FAMILIAR = "Familiar"
 BINDING_NAME_FAMILIAR_TOGGLE = "Toggle Familiar window"
@@ -256,7 +267,7 @@ local HELP = {
   "/fam - toggle the Familiar window",
   "/fam <message> - send a message to the selected quest (thread)",
   "/fam claude <message> | /fam codex <message> - start a new quest with that familiar (also hermes, grok... when installed)",
-  "/fam approve | deny | always | stop - act on the selected quest",
+  "/fam deny | stop - act on the selected quest (approve / always: click the card, or your Approve keybind)",
   "Mode button - permission mode for the selected quest: Ask first <-> Plan only. Accept edits and Auto are chosen in the desktop control panel.",
   "/fam tracker - toggle the quest tracker",
   "/fam view focus | full - conversation-only view, or restore full controls (session only)",
@@ -335,7 +346,7 @@ SlashCmdList.FAMILIAR = function(input)
   elseif cmd == "help" then
     for _, line in ipairs(HELP) do ns.Print(line) end
   elseif KEYWORDS[cmd] and rest == "" then
-    ns.UI.Key(cmd)
+    ns.UI.Key(cmd, "slash")
   elseif cmd == "view" and (rest:lower() == "focus" or rest:lower() == "full") then
     ns.UI.SetFocusMode(rest:lower() == "focus")
     ns.UI.Show()
@@ -352,7 +363,7 @@ SlashCmdList.FAMILIAR = function(input)
       ns.Print(ns.db.chatContext and "chats will know your class, level, zone and quest log." or "chats no longer get your class, level, zone or quest log.")
       ns.Send({ t = "quests", text = ns.db.chatContext and ns.Quests.Snapshot() or nil }, false, "quests")
     elseif rest == "" then
-      ns.UI.Key("newChat")
+      ns.UI.Key("newChat", "slash")
       ns.UI.Show()
     else
       ns.UI.SetFocusMode(false)
@@ -401,7 +412,7 @@ SlashCmdList.FAMILIAR = function(input)
   elseif cmd == "log" and rest == "" then
     ns.UI.ToggleLog()
   elseif COMPANION_KEYS[cmd] then
-    ns.UI.Key(cmd)
+    ns.UI.Key(cmd, "slash")
   elseif cmd == "show" and IsAgentFilter(rest) then
     ns.Send({ t = "key", k = "show", a = rest:lower(), view = ns.UI.focusMode and "focus" or "full" }, true)
   elseif cmd == "native" then

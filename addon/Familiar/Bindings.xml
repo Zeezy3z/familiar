@@ -1,12 +1,12 @@
 <Bindings>
-  <Binding name="FAMILIAR_TOGGLE" header="FAMILIAR" category="ADDONS">Familiar.UI.Toggle()</Binding>
-  <Binding name="FAMILIAR_FOCUS" category="ADDONS">Familiar.UI.Focus()</Binding>
+  <Binding name="FAMILIAR_TOGGLE" header="FAMILIAR" category="ADDONS">Familiar.Toggle()</Binding>
+  <Binding name="FAMILIAR_FOCUS" category="ADDONS">Familiar.Focus()</Binding>
   <Binding name="FAMILIAR_APPROVE" category="ADDONS">Familiar.Key("approve")</Binding>
   <Binding name="FAMILIAR_DENY" category="ADDONS">Familiar.Key("deny")</Binding>
   <Binding name="FAMILIAR_STOP" category="ADDONS">Familiar.Key("stop")</Binding>
   <Binding name="FAMILIAR_NEXT" category="ADDONS">Familiar.Key("next")</Binding>
   <Binding name="FAMILIAR_PREV" category="ADDONS">Familiar.Key("prev")</Binding>
-  <Binding name="FAMILIAR_TRACKER" category="ADDONS">Familiar.Tracker.Toggle()</Binding>
-  <Binding name="FAMILIAR_LOG" category="ADDONS">Familiar.UI.ToggleLog()</Binding>
-  <Binding name="FAMILIAR_VIEW" category="ADDONS">Familiar.UI.ToggleFocusMode()</Binding>
+  <Binding name="FAMILIAR_TRACKER" category="ADDONS">Familiar.ToggleTracker()</Binding>
+  <Binding name="FAMILIAR_LOG" category="ADDONS">Familiar.ToggleLog()</Binding>
+  <Binding name="FAMILIAR_VIEW" category="ADDONS">Familiar.ToggleView()</Binding>
 </Bindings>

@@ -189,3 +189,13 @@ export function mouseButtonDown(): boolean {
 export function leftButtonDown(): boolean {
   return (GetAsyncKeyState(0x01) & 0x8000) !== 0;
 }
+
+/** Whether the right mouse button is held right now (read-only). */
+export function rightButtonDown(): boolean {
+  return (GetAsyncKeyState(0x02) & 0x8000) !== 0;
+}
+
+/** Whether a virtual key is held right now (read-only global key state: no hook, nothing is sent). */
+export function keyDown(vk: number): boolean {
+  return (GetAsyncKeyState(vk) & 0x8000) !== 0;
+}

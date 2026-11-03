@@ -70,8 +70,9 @@ function Layout.Build()
     msg.detail = prect(ui.detailPane.content)
     msg.status = prect(ui.status)
     local keys = {}
-    -- Only the buttons the overlay draws a glow on (a smaller layout crosses the strip faster).
-    for _, k in ipairs({ "approve", "stop" }) do keys[k] = ui.keys[k] and prect(ui.keys[k]) end
+    -- The buttons the overlay glows (approve, stop) and the ones whose clicks the companion matches
+    -- to the real mouse before acting (approve, always, mode); kept short to cross the strip fast.
+    for _, k in ipairs({ "approve", "stop", "always", "mode" }) do keys[k] = ui.keys[k] and prect(ui.keys[k]) end
     msg.keys = keys
   end
   msg.tracker = ns.Tracker.IsShown() and prect(ns.Tracker.content) or nil

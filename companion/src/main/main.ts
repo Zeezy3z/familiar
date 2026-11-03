@@ -36,7 +36,10 @@ import {
   cursorPos,
   leftButtonDown,
   mouseButtonDown,
+  keyDown,
+  rightButtonDown,
 } from "./win32";
+import { bindingToVk, corroborateClick, corroborateKey, NO_PROOF, PressLog, Proof, Rect as ClientRect, TRUSTED } from "./physical";
 import { Drag, dragLayout, dragZone, LogMemo, logLayout, rememberLog } from "./geometry";
 import { findWowInstall, installAddon, interfaceCheck, SnapshotWriter, tocInterfaces, uninstallAddon, WowInstall } from "./wow";
 import { RUNNING_BUILD } from "./build";
@@ -112,6 +115,8 @@ let captureStats: any = {};
 let lastMsgAt = 0;
 let overlayKey = "0";
 let overlayShown = false;
+/** When the Glass last turned visible: a decision key needs it showing for 400 ms (it was seen). */
+let overlayShownAt = 0;
 let paused = false;
 let captureStarted = false;
 let lastCaptureTry = 0;
@@ -135,6 +140,15 @@ function webPrefs() {
 }
 
 // ---- windows ------------------------------------------------------------------------------------
+/** Our pages never navigate, open windows or host webviews; refuse all three. */
+function harden(win: BrowserWindow) {
+  win.webContents.on("will-navigate", (e) => e.preventDefault());
+  win.webContents.on("will-attach-webview", (e) => e.preventDefault());
+  win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+}
+/** IPC sender allowlist: each channel answers only the window that legitimately uses it. */
+const from = (e: { sender: Electron.WebContents }, w: BrowserWindow | null) => !!w && !w.isDestroyed() && e.sender === w.webContents;
+
 function createOverlay() {
   overlay = new BrowserWindow({
     show: false,
@@ -150,6 +164,7 @@ function createOverlay() {
     title: "Familiar Glass",
     webPreferences: webPrefs(),
   });
+  harden(overlay);
   overlay.setAlwaysOnTop(true, "screen-saver");
   overlay.setIgnoreMouseEvents(true);
   overlay.loadFile(path.join(DIST, "overlay.html"));
@@ -165,6 +180,7 @@ function createOverlay() {
 
 function createCapture() {
   capture = new BrowserWindow({ show: false, width: 320, height: 200, title: "Familiar capture", webPreferences: webPrefs() });
+  harden(capture);
   capture.loadFile(path.join(DIST, "capture.html"));
   capture.webContents.on("did-finish-load", () => {
     captureStarted = false; // (re)start on the next tick
@@ -185,6 +201,7 @@ function createControl() {
     autoHideMenuBar: true,
     webPreferences: webPrefs(),
   });
+  harden(control);
   control.loadFile(path.join(DIST, "control.html"));
   control.on("closed", () => (control = null));
 }
@@ -366,6 +383,7 @@ function updateVisibility() {
   if (want !== overlayShown) {
     overlayShown = want;
     if (want) {
+      overlayShownAt = Date.now();
       placeOverlay();
       // The window stays up once shown; "hidden" is full transparency (click-through either way),
       // so coming back (Alt-Tab) is instant instead of a repaint from scratch.
@@ -424,10 +442,20 @@ function onAddonMessages(msgs: any[]) {
       case "dragstop":
         endDrag("dragstop");
         break;
-      case "click":
-        log(`[addon] click ${m.r} ${m.x},${m.y} ${m.b}`);
+      case "click": {
+        // Hit-test where the mouse really was, and only let the resulting overlay action approve
+        // anything if a physical release on that region backs this message (physical.ts).
+        const rect = (["list", "detail", "tracker", "status"].includes(m.r) ? layout?.[m.r] : undefined) as ClientRect | undefined;
+        const proof = corroborateClick(presses, rect, typeof m.x === "number" && typeof m.y === "number" ? { x: m.x, y: m.y } : undefined, Date.now(), toClient);
+        if (proof.ok) {
+          m.x = proof.x;
+          m.y = proof.y;
+        }
+        log(`[addon] click ${m.r} ${m.x},${m.y} ${m.b} ${proof.ok ? "corroborated" : "unverified: " + proof.why}`);
+        clickProof = { at: Date.now(), proof };
         overlay?.webContents.send("input", m);
         break;
+      }
       case "wheel":
         overlay?.webContents.send("input", m); // not logged: one line per tick, written on this thread
         break;
@@ -437,7 +465,7 @@ function onAddonMessages(msgs: any[]) {
       default:
         if (m.t === "error") log(`[addon] LUA ERROR in ${m.where}: ${m.err}`);
         else log(describeAddonMessage(m));
-        hub.handleAddon(m);
+        hub.handleAddon(m, m.t === "key" ? keyProof(m) : NO_PROOF);
     }
   }
 }
@@ -464,12 +492,15 @@ type DragState = Drag & {
 };
 let drag: DragState | null = null;
 
+/** Screen px -> the addon's client physical px (layout rects). */
+function toClient(x: number, y: number): { x: number; y: number } | null {
+  if (!client || !layout?.scr || !client.width || !client.height) return null;
+  return { x: (x - client.x) * (layout.scr[0] / client.width), y: (y - client.y) * (layout.scr[1] / client.height) };
+}
+
 function cursorInClient(): { x: number; y: number } | null {
   const c = cursorPos();
-  if (!c || !client || !layout?.scr) return null;
-  const kx = layout.scr[0] / client.width,
-    ky = layout.scr[1] / client.height;
-  return { x: (c.x - client.x) * kx, y: (c.y - client.y) * ky };
+  return c ? toClient(c.x, c.y) : null;
 }
 
 function beginFollow(d: Drag, base: any, predicted: boolean) {
@@ -544,22 +575,62 @@ function endDrag(why: string, revert = false) {
   );
 }
 
-// Watches for a press-and-move on the window's frame so following starts before "dragstart"
-// arrives (that takes a strip frame or two).
+// ---- physical input (read-only GetAsyncKeyState / GetCursorPos; nothing is ever sent) -----------
+// One 10 ms sampler feeds two things: the PressLog that corroborates approvals from the game
+// (physical.ts), and drag prediction below.
+const presses = new PressLog();
+const VK_SHIFT = 0x10,
+  VK_CONTROL = 0x11,
+  VK_MENU = 0x12;
+const approveBind = () => (cfg.approveKey ? bindingToVk(cfg.approveKey) : undefined);
+
+/** Decision keys must coincide with real input: the button under the mouse, or the registered key.
+ * The addon's `src` only picks which check runs; lying about it never helps. */
+const CORROBORATED_KEYS = new Set(["approve", "always", "mode"]);
+function keyProof(m: any): Proof {
+  if (!CORROBORATED_KEYS.has(m.k)) return TRUSTED;
+  if (!overlayShown || Date.now() - overlayShownAt < 400) return { ok: false, how: "none", why: "Glass not showing" };
+  if (m.src === "bind") return m.k === "mode" ? { ok: false, how: "bind", why: "Mode has no keybind" } : corroborateKey(presses, approveBind(), Date.now());
+  if (m.src === "slash") return { ok: false, how: "none", why: "slash commands cannot approve" };
+  return corroborateClick(presses, layout?.keys?.[m.k], undefined, Date.now(), toClient);
+}
+
+/** Proof for the overlay action that a forwarded click produces (within 250 ms; consumed once). */
+let clickProof: { at: number; proof: Proof } | undefined;
+
+// Drag prediction: watches for a press-and-move on the window's frame so following starts before
+// "dragstart" arrives (that takes a strip frame or two).
 let press: { x: number; y: number; zone: ReturnType<typeof dragZone> } | null = null;
 setInterval(() => {
-  if (drag || !overlayShown || !layout?.panel || !layout.win || !leftButtonDown()) {
+  if (!game) return;
+  const c = cursorPos();
+  const bind = approveBind();
+  const down = new Set<number>();
+  if (bind && keyDown(bind.vk)) down.add(bind.vk);
+  const left = leftButtonDown();
+  presses.sample({
+    at: Date.now(),
+    x: c?.x ?? -1e6,
+    y: c?.y ?? -1e6,
+    left,
+    right: rightButtonDown(),
+    down,
+    ctrl: keyDown(VK_CONTROL),
+    shift: keyDown(VK_SHIFT),
+    alt: keyDown(VK_MENU),
+  });
+  if (drag || !overlayShown || !layout?.panel || !layout.win || !left) {
     if (!drag) press = null;
     return;
   }
-  const c = cursorInClient();
-  if (!c) return;
+  const cc = c && toClient(c.x, c.y);
+  if (!cc) return;
   if (!press) {
-    press = { x: c.x, y: c.y, zone: dragZone(layout, c.x, c.y) };
+    press = { x: cc.x, y: cc.y, zone: dragZone(layout, cc.x, cc.y) };
     return;
   }
-  if (press.zone && Math.hypot(c.x - press.x, c.y - press.y) >= 4) {
-    beginFollow({ ...press.zone, c0: { x: c.x, y: c.y } }, { ...layout }, true);
+  if (press.zone && Math.hypot(cc.x - press.x, cc.y - press.y) >= 4) {
+    beginFollow({ ...press.zone, c0: { x: cc.x, y: cc.y } }, { ...layout }, true);
     press = null;
   }
 }, 10);
@@ -585,7 +656,7 @@ function pushAll() {
 }
 
 function uiSettings() {
-  return { fontScale: cfg.fontScale, sound: cfg.sound, raidWarnings: cfg.raidWarnings !== false, quiet: !!cfg.quiet, defaultMode: cfg.defaultMode };
+  return { fontScale: cfg.fontScale, sound: cfg.sound, raidWarnings: cfg.raidWarnings !== false, quiet: !!cfg.quiet, defaultMode: cfg.defaultMode, approveKey: cfg.approveKey ?? "" };
 }
 
 function statusSnapshot() {
@@ -779,8 +850,11 @@ app.whenReady().then(async () => {
   createTray();
   if (!process.argv.includes("--background")) createControl();
 
-  ipcMain.on("msgs", (_e, msgs) => onAddonMessages(msgs));
-  ipcMain.on("stats", (_e, s) => {
+  ipcMain.on("msgs", (e, msgs) => {
+    if (from(e, capture) && Array.isArray(msgs)) onAddonMessages(msgs);
+  });
+  ipcMain.on("stats", (e, s) => {
+    if (!from(e, capture)) return;
     const wasLinked = linked();
     captureStats = s;
     if (linked() !== wasLinked) {
@@ -789,16 +863,23 @@ app.whenReady().then(async () => {
     }
     sendStatus();
   });
-  ipcMain.on("log", (_e, s) => log(String(s)));
-  ipcMain.on("action", (_e, a) => {
+  ipcMain.on("log", (e, s) => {
+    if (from(e, capture) || from(e, overlay) || from(e, control)) log(String(s));
+  });
+  ipcMain.on("action", (e, a) => {
+    if (!from(e, overlay) || !a || typeof a !== "object") return;
     log(describeOverlayAction(a));
+    // Only the action a corroborated, just-forwarded click produced may approve; one click, one action.
+    const proof = clickProof && Date.now() - clickProof.at < 250 ? clickProof.proof : NO_PROOF;
+    clickProof = undefined;
     try {
-      hub.action(a);
+      hub.action(a, proof);
     } catch (e) {
       log("[action] " + e);
     }
   });
-  ipcMain.handle("cmd", async (_e, cmd: string, args: any) => {
+  ipcMain.handle("cmd", async (e, cmd: string, args: any) => {
+    if (!from(e, control)) return null; // only the control panel drives settings; the Glass and capture never call cmd
     switch (cmd) {
       case "status":
         return statusSnapshot();
@@ -857,12 +938,14 @@ app.whenReady().then(async () => {
         sendStatus();
         return true;
       case "uiSettings": {
-        const a = (args ?? {}) as { fontScale?: number; sound?: boolean; raidWarnings?: boolean; quiet?: boolean; defaultMode?: string };
+        const a = (args ?? {}) as { fontScale?: number; sound?: boolean; raidWarnings?: boolean; quiet?: boolean; defaultMode?: string; approveKey?: string };
         if (typeof a.fontScale === "number" && isFinite(a.fontScale)) cfg.fontScale = Math.min(FONT_MAX, Math.max(FONT_MIN, a.fontScale));
         if (typeof a.sound === "boolean") cfg.sound = a.sound;
         if (typeof a.raidWarnings === "boolean") cfg.raidWarnings = a.raidWarnings;
         if (typeof a.quiet === "boolean") hub.setQuiet(a.quiet);
         if (MODES.includes(a.defaultMode as Mode)) cfg.defaultMode = a.defaultMode as Mode; // never a bypass mode: MODES has none
+        // Only keys Familiar can check on the keyboard; anything else clears it (keybind approvals refused).
+        if (typeof a.approveKey === "string") cfg.approveKey = bindingToVk(a.approveKey) ? a.approveKey.trim().toUpperCase() : "";
         saveConfig(cfg);
         hub.changed("config");
         return uiSettings();
@@ -944,7 +1027,7 @@ function startDevServer() {
       if (url === "/status") return { ...statusSnapshot(), view: { ...hub.view, collapsed: [...hub.view.collapsed], expanded: [...hub.view.expanded] } };
       if (url === "/model") return lastModel;
       if (url === "/simulate") return onAddonMessages([JSON.parse(body)]) ?? true;
-      if (url === "/action") return hub.action(JSON.parse(body)) ?? true;
+      if (url === "/action") return hub.action(JSON.parse(body), TRUSTED) ?? true; // token-gated dev hook stands in for a real click
       if (url === "/snap") return await snap(body || path.join(appDataDir(), "snap.png"));
       if (url === "/inject") {
         const ev = JSON.parse(body);

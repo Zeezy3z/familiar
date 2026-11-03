@@ -23,6 +23,9 @@ const { Hub } = await import("../src/hub/hub");
 const { DEFAULT_CONFIG, loadConfig, saveConfig } = await import("../src/hub/config");
 const { buildModel } = await import("../src/hub/viewmodel");
 const { projectRootOf } = await import("../src/hub/projects");
+const { NO_PROOF } = await import("../src/main/physical");
+/** What main hands the Hub when a decision coincided with a real click (physical.ts). */
+const OK = { ok: true, how: "click" as const };
 
 class FakeBackend implements AgentBackend {
   failOpen = false;
@@ -114,6 +117,7 @@ beforeEach(async () => {
   claude = new FakeBackend("claude");
   codex = new FakeBackend("codex");
   hub = new Hub(() => cfg, { claude, codex }, () => {});
+  hub.minCardAgeMs = 0; // the 400 ms "read it first" rule has its own test
   hub.projects.scanRoots();
   await hub.refreshExternal();
 });
@@ -133,8 +137,8 @@ describe("Hub", () => {
     }
     expect(hub.toasts.some(t => /Full view|focus/i.test(t.text))).toBe(true);
     claude.emit({ type: "approval", threadId: selected, requestId: "visible", kind: "tool", title: "Visible request", detail: "Full visible details", canAlways: true });
-    hub.handleAddon({ t: "key", k: "approve", view: "focus" });
-    hub.handleAddon({ t: "key", k: "always", view: "focus" });
+    hub.handleAddon({ t: "key", k: "approve", view: "focus" }, OK);
+    hub.handleAddon({ t: "key", k: "always", view: "focus" }, OK);
     await tick();
     expect(claude.decisions).toEqual([{ requestId: "visible", d: "allow" }]);
     expect(codex.decisions).toEqual([]);
@@ -401,7 +405,7 @@ describe("Hub", () => {
     codex.emit({ type: "approval", threadId: id, requestId: "codex:7", kind: "command", title: "Run command?", detail: "npm test", canAlways: true });
     expect(hub.threads.get(id)!.status).toBe("approval");
     expect(buildModel(hub, { linked: true, fps: 30 }).keys.approve).toBe(true);
-    await hub.key("approve");
+    await hub.key("approve", undefined, "legacy", OK);
     expect(codex.decisions).toEqual([{ requestId: "codex:7", d: "allow" }]);
     const e = hub.threads.get(id)!.entries.find((x) => x.requestId === "codex:7")!;
     expect(e.approval).toBe("approved");
@@ -412,7 +416,7 @@ describe("Hub", () => {
     await hub.quick("claude", "@familiar edit");
     const id = hub.view.selected!;
     claude.emit({ type: "approval", threadId: id, requestId: "claude:a", kind: "tool", title: "Edit?", detail: "-a\n+b", canAlways: true });
-    hub.action({ type: "decide", thread: id, requestId: "claude:a", decision: "allowAlways" });
+    hub.action({ type: "decide", thread: id, requestId: "claude:a", decision: "allowAlways" }, OK);
     expect(claude.decisions).toEqual([{ requestId: "claude:a", d: "allowAlways" }]);
   });
 
@@ -445,7 +449,7 @@ describe("Hub", () => {
     hub.action({ type: "select", id, entry: item.entry });
     const detail = buildModel(hub, { linked: true, fps: 30 }).detail;
     expect(detail.kind === "thread" && detail.entries.some(e => e.id === item.entry)).toBe(true);
-    await hub.key("approve");
+    await hub.key("approve", undefined, "legacy", OK);
     expect(claude.decisions).toEqual([{ requestId: "first", d: "allow" }]);
     expect(buildModel(hub, { linked: true, fps: 30 }).attention![0].excerpt).toBe("Second request");
   });
@@ -453,14 +457,14 @@ describe("Hub", () => {
   it("mode cycles Ask first / Plan only from the game, never Accept edits or Auto, and is pushed to the backend; stop interrupts", async () => {
     await hub.quick("claude", "@familiar x");
     const id = hub.view.selected!;
-    await hub.key("mode");
+    await hub.key("mode", undefined, "legacy", OK);
     expect(hub.threads.get(id)!.mode).toBe("plan");
-    await hub.key("mode");
+    await hub.key("mode", undefined, "legacy", OK);
     expect(hub.threads.get(id)!.mode).toBe("ask");
     // A thread set to edits/auto elsewhere (control panel, desktop app) drops back to ask.
     for (const m of ["auto", "edits"] as const) {
       hub.threads.get(id)!.mode = m;
-      await hub.key("mode");
+      await hub.key("mode", undefined, "legacy", OK);
       expect(hub.threads.get(id)!.mode).toBe("ask");
     }
     expect(claude.modes).toEqual(["plan", "ask", "ask", "ask"]);
@@ -478,7 +482,7 @@ describe("Hub", () => {
     // Never continues a real desktop session silently: a confirmation is pending, nothing sent.
     expect(hub.view.confirm).toMatchObject({ extId, text: "continue please" });
     expect(claude.sent).toEqual([]);
-    hub.action({ type: "adoptConfirm" });
+    hub.action({ type: "adoptConfirm" }, OK);
     await tick();
     await tick();
     const t = hub.selectedThread()!;
@@ -501,7 +505,7 @@ describe("Hub", () => {
       hub.action({ type: "select", id: `ext:claude:${id}` });
       await tick();
       await hub.prompt("go on");
-      hub.action({ type: "adoptConfirm" });
+      hub.action({ type: "adoptConfirm" }, OK);
       await tick();
       await tick();
       const t = hub.selectedThread()!;
@@ -521,7 +525,7 @@ describe("Hub", () => {
       const d = buildModel(hub, { linked: true, fps: 30 }).detail;
       expect(d.kind === "thread" && d.mode).toBe(mode === "plan" ? "Plan only" : "Ask first"); // shown before sending
       await hub.prompt("go on");
-      hub.action({ type: "adoptConfirm" });
+      hub.action({ type: "adoptConfirm" }, OK);
       await tick();
       await tick();
       const t = hub.selectedThread()!;
@@ -542,12 +546,12 @@ describe("Hub", () => {
       return d.kind === "thread" ? d.confirm : undefined;
     };
     expect(card()).toMatchObject({ text: "go on", fork: true, retry: true });
-    hub.action({ type: "adoptRetry" }); // still open in the app: nothing happens but a hint
+    hub.action({ type: "adoptRetry" }, OK); // still open in the app: nothing happens but a hint
     await tick();
     expect(card()).toMatchObject({ fork: true });
     expect(claude.open_.size).toBe(0);
     claude.held.clear(); // the player quit the app
-    hub.action({ type: "adoptRetry" });
+    hub.action({ type: "adoptRetry" }, OK);
     await tick();
     await tick();
     const t = hub.selectedThread()!;
@@ -586,7 +590,7 @@ describe("Hub", () => {
     await hub.prompt("one more thing");
     expect(detail()?.held).toMatchObject({ text: "one more thing" });
     codex.held.clear(); // closed in the app
-    hub.action({ type: "heldRetry" });
+    hub.action({ type: "heldRetry" }, OK);
     await tick();
     await tick();
     expect(codex.open_.get(t.id)).toMatchObject({ resumeNativeId: native, fork: false });
@@ -613,7 +617,7 @@ describe("Hub", () => {
     hub.action({ type: "select", id: extId });
     await tick();
     await hub.prompt("first");
-    hub.action({ type: "adoptConfirm" });
+    hub.action({ type: "adoptConfirm" }, OK);
     await tick();
     await tick();
     const t = hub.selectedThread()!;
@@ -626,11 +630,11 @@ describe("Hub", () => {
     expect(held()).toMatchObject({ text: "second" });
     expect(claude.sent.map((s) => s.text)).toEqual(["first"]);
     expect(t.entries.filter((e) => e.kind === "user").map((e) => e.text)).toEqual(["hi", "first"]); // not added while waiting
-    hub.action({ type: "heldRetry" });
+    hub.action({ type: "heldRetry" }, OK);
     await tick();
     expect(claude.sent.map((s) => s.text)).toEqual(["first"]);
     claude.held.clear();
-    hub.action({ type: "heldRetry" });
+    hub.action({ type: "heldRetry" }, OK);
     await tick();
     await tick();
     expect(held()).toBeUndefined();
@@ -639,7 +643,7 @@ describe("Hub", () => {
     // Held again: this time the player continues as a copy.
     claude.held.add("ext-1");
     await hub.prompt("third");
-    hub.action({ type: "heldCopy" });
+    hub.action({ type: "heldCopy" }, OK);
     await tick();
     await tick();
     await tick();
@@ -829,12 +833,12 @@ describe("Hub", () => {
     claude.emit({ type: "approval", threadId: a, requestId: "claude:1", kind: "tool", title: "?", detail: "", canAlways: false });
     codex.emit({ type: "approval", threadId: b, requestId: "codex:s:1", kind: "command", title: "?", detail: "", canAlways: true });
     hub.view.selected = undefined;
-    await hub.key("approve");
+    await hub.key("approve", undefined, "legacy", OK);
     expect(claude.decisions.length + codex.decisions.length).toBe(0); // ambiguous
     hub.select(b);
-    await hub.key("approve");
+    await hub.key("approve", undefined, "legacy", OK);
     expect(codex.decisions).toEqual([{ requestId: "codex:s:1", d: "allow" }]);
-    await hub.key("approve"); // double press: debounced, does not approve Claude's request
+    await hub.key("approve", undefined, "legacy", OK); // double press: debounced, does not approve Claude's request
     expect(claude.decisions).toEqual([]);
   });
 
@@ -871,7 +875,7 @@ describe("Hub", () => {
     const extId = [...hub.external.keys()].find((k) => k.startsWith("ext:claude:"))!;
     hub.action({ type: "select", id: extId });
     await hub.prompt("start fresh");
-    hub.action({ type: "adoptNew" });
+    hub.action({ type: "adoptNew" }, OK);
     await tick();
     await tick();
     const t = hub.selectedThread()!;
@@ -1548,7 +1552,7 @@ describe("always-on companion and offline honesty", () => {
     await hub.quick("claude", "@familiar synthetic question");
     const id = hub.view.selected!;
     claude.emit({ type: "approval", threadId: id, requestId: "q1", kind: "question", title: "Which?", detail: "", canAlways: false, options: ["A", "B"] } as any);
-    hub.action({ type: "answer", thread: id, requestId: "q1", label: "A" });
+    hub.action({ type: "answer", thread: id, requestId: "q1", label: "A" }, OK);
     claude.emit({ type: "approvalResolved", threadId: id, requestId: "q1" });
     const t = hub.threads.get(id)!;
     expect(t.entries.find(e => e.requestId === "q1")?.approval).toBe("approved");
@@ -1667,7 +1671,7 @@ describe("more providers (ACP agents)", () => {
     expect(d.providers.hermes).toMatchObject({ label: "Hermes", glyph: "☿" });
     // Continuing it adopts into a quest in the chat folder (Hermes then starts from a digest).
     await h.prompt("and for horde?");
-    h.action({ type: "adoptConfirm" });
+    h.action({ type: "adoptConfirm" }, OK);
     await tick();
     await tick();
     const t = h.selectedThread()!;
@@ -1890,5 +1894,136 @@ describe("Codex-only players", () => {
     expect(h.agentOr("claude")).toBe("codex");
     vi.spyOn(codex, "status").mockReturnValue({ ready: true, account: "signed out", models: [] }); // Codex's own report
     expect(h.agentOr("claude")).toBe("claude");
+  });
+});
+
+describe("physical corroboration (any addon can forge strip messages)", () => {
+  const ask = async (agent: FakeBackend, requestId: string) => {
+    await hub.quick(agent === claude ? "claude" : "codex", "@familiar corroborate");
+    const id = hub.view.selected!;
+    agent.emit({ type: "approval", threadId: id, requestId, kind: "command", title: "Run command?", detail: "npm test", canAlways: true });
+    return id;
+  };
+
+  it("approve and always need proof; deny never does", async () => {
+    await ask(codex, "r1");
+    for (const k of ["approve", "always"]) {
+      hub.handleAddon({ t: "key", k, src: "button", view: "full" });
+      await tick();
+      expect(codex.decisions).toEqual([]);
+      expect(hub.toasts.at(-1)!.text).toMatch(/Click the request on the Glass/);
+    }
+    hub.handleAddon({ t: "key", k: "always", src: "bind", view: "full" }, OK);
+    await tick();
+    expect(codex.decisions).toEqual([{ requestId: "r1", d: "allowAlways" }]);
+    (hub as any).lastDecisionAt = 0;
+    codex.emit({ type: "approval", threadId: hub.view.selected!, requestId: "r2", kind: "command", title: "Again?", detail: "rm x", canAlways: true });
+    hub.handleAddon({ t: "key", k: "deny", src: "slash", view: "full" });
+    await tick();
+    expect(codex.decisions.at(-1)).toEqual({ requestId: "r2", d: "deny" });
+  });
+
+  it("card actions that grant something need proof; Deny on the card does not", async () => {
+    const id = await ask(claude, "c1");
+    hub.action({ type: "decide", thread: id, requestId: "c1", decision: "allow" });
+    hub.action({ type: "decide", thread: id, requestId: "c1", decision: "allow" }, NO_PROOF);
+    expect(claude.decisions).toEqual([]);
+    expect(hub.toasts.at(-1)!.text).toMatch(/could not be matched to your mouse/);
+    hub.action({ type: "decide", thread: id, requestId: "c1", decision: "deny" });
+    expect(claude.decisions).toEqual([{ requestId: "c1", d: "deny" }]);
+    claude.emit({ type: "approval", threadId: id, requestId: "q1", kind: "question", title: "Which?", detail: "", canAlways: false, options: ["A", "B"] } as any);
+    hub.action({ type: "answer", thread: id, requestId: "q1", label: "A" });
+    expect(hub.threads.get(id)!.entries.find((e) => e.requestId === "q1")!.approval).toBe("pending");
+    // Desktop-thread confirmation and held prompts: Continue / Retry / copy are refused without proof.
+    hub.action({ type: "select", id: "ext:claude:ext-1" });
+    await hub.prompt("Review before continuing");
+    expect(hub.view.confirm).toBeTruthy();
+    for (const type of ["adoptConfirm", "adoptNew", "adoptRetry"]) hub.action({ type });
+    expect(hub.view.confirm).toBeTruthy();
+    expect(claude.sent.map((s) => s.text)).not.toContain("Review before continuing");
+  });
+
+  it("one decision per request id, even with two proofs", async () => {
+    const id = await ask(codex, "once");
+    hub.action({ type: "decide", thread: id, requestId: "once", decision: "allow" }, OK);
+    hub.action({ type: "decide", thread: id, requestId: "once", decision: "allowAlways" }, OK);
+    expect(codex.decisions).toEqual([{ requestId: "once", d: "allow" }]);
+    (hub as any).lastDecisionAt = 0;
+    await hub.key("approve", undefined, "full", OK);
+    expect(codex.decisions).toHaveLength(1);
+    expect(hub.toasts.at(-1)!.text).toMatch(/Nothing is waiting/);
+  });
+
+  it("a fresh card can't be approved for minCardAgeMs; denying it can", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      hub.minCardAgeMs = 400;
+      const id = await ask(claude, "fresh");
+      hub.action({ type: "decide", thread: id, requestId: "fresh", decision: "allow" }, OK);
+      expect(claude.decisions).toEqual([]);
+      expect(hub.toasts.at(-1)!.text).toMatch(/just appeared/);
+      vi.advanceTimersByTime(450);
+      hub.action({ type: "decide", thread: id, requestId: "fresh", decision: "allow" }, OK);
+      expect(claude.decisions).toEqual([{ requestId: "fresh", d: "allow" }]);
+      claude.emit({ type: "approval", threadId: id, requestId: "fresh2", kind: "command", title: "Run?", detail: "x", canAlways: false });
+      hub.action({ type: "decide", thread: id, requestId: "fresh2", decision: "deny" });
+      expect(claude.decisions.at(-1)).toEqual({ requestId: "fresh2", d: "deny" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("Mode needs a click on the Mode button", async () => {
+    await hub.quick("claude", "@familiar mode");
+    const t = hub.selectedThread()!;
+    hub.handleAddon({ t: "key", k: "mode", src: "button", view: "full" });
+    await tick();
+    expect(t.mode).toBe("ask");
+    expect(claude.modes).toEqual([]);
+    expect(hub.toasts.at(-1)!.text).toMatch(/Mode changes need a click/);
+    hub.handleAddon({ t: "key", k: "mode", src: "button", view: "full" }, OK);
+    await tick();
+    expect(t.mode).toBe("plan");
+  });
+});
+
+describe("game-side budgets and the start toast", () => {
+  it("every quest start shows a Started toast with its zone", async () => {
+    await hub.quick("claude", "@familiar fix the login bug");
+    const t = hub.selectedThread()!;
+    expect(hub.toasts.some((x) => x.text === `Started: ${t.title} (familiar)` && x.threadId === t.id)).toBe(true);
+  });
+
+  it("6 quest starts per 5 minutes; the 7th is refused with a toast, and allowed again later", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const before = hub.threads.size;
+      for (let i = 0; i < 7; i++) hub.handleAddon({ t: "quick", agent: "codex", text: `@familiar task ${i}` });
+      for (let i = 0; i < 5; i++) await tick();
+      expect(hub.threads.size - before).toBe(6);
+      expect(hub.toasts.some((x) => /Too many new quests in 5 minutes/.test(x.text))).toBe(true);
+      vi.advanceTimersByTime(300_001);
+      await hub.quick("codex", "@familiar later");
+      expect(hub.threads.size - before).toBe(7);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("20 prompts from the game per 5 minutes; resends of one prompt count once", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      for (let i = 0; i < 3; i++) hub.handleAddon({ t: "prompt", id: "same", text: " " });
+      for (let i = 0; i < 19; i++) hub.handleAddon({ t: "prompt", id: `p${i}`, text: " " });
+      expect(hub.toasts.some((x) => /Too many messages from the game/.test(x.text))).toBe(false);
+      hub.handleAddon({ t: "ask", id: "p20", text: " " });
+      expect(hub.toasts.at(-1)!.text).toMatch(/Too many messages from the game in 5 minutes/);
+      vi.advanceTimersByTime(300_001);
+      const n = hub.toasts.length;
+      hub.handleAddon({ t: "prompt", id: "p21", text: " " });
+      expect(hub.toasts.length).toBe(n);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

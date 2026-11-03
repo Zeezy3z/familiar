@@ -20,6 +20,7 @@ import {
 } from "../agents/types";
 import { appDataDir, Config, isExcluded, normPath } from "./config";
 import { redact } from "../main/log-file";
+import { NO_PROOF, Proof } from "../main/physical";
 import { storageCode, ThreadStore } from "./storage";
 import { providerLabel } from "../agents/providers";
 import { ClaudeBackend } from "../agents/claude";
@@ -132,6 +133,9 @@ export interface AddonInfo {
 }
 
 const MAX_ENTRIES = 400;
+/** Game-side budgets (any addon can draw strip frames): quests started, and prompts sent, per 5 minutes. */
+const START_BUDGET = { max: 6, perMs: 300_000 };
+const PROMPT_BUDGET = { max: 20, perMs: 300_000 };
 // Temporary local diagnosis of repeated catch-up cards. Content digests stay in memory only;
 // log records contain opaque identities and equality flags, never transcript text.
 const CATCH_UP_TRACE_LIMIT = 32;
@@ -506,11 +510,22 @@ export class Hub {
   }
 
   // ---- addon events ---------------------------------------------------------------------------
-  handleAddon(msg: any) {
-    if ((msg.t === "prompt" || msg.t === "quick" || msg.t === "ask") && typeof msg.id === "string" && msg.id) {
+  /** How long a request must have been on the Glass before an approving decision counts (tests set 0):
+   * no bait-and-switch of a fresh card under a click meant for something else. */
+  minCardAgeMs = 400;
+
+  /** Messages from the game are untrusted input (any addon can draw strip frames). `proof` is main's
+   * evidence that the player physically did this (see main/physical.ts); only main creates it. */
+  handleAddon(msg: any, proof: Proof = NO_PROOF) {
+    const prompting = msg.t === "prompt" || msg.t === "quick" || msg.t === "ask";
+    if (prompting && typeof msg.id === "string" && msg.id) {
       if (this.acked.includes(msg.id)) return; // a resend of something that already arrived
       this.acked.push(msg.id);
       if (this.acked.length > 100) this.acked.splice(0, this.acked.length - 100);
+    }
+    if (prompting && !this.within("prompt", PROMPT_BUDGET.max, PROMPT_BUDGET.perMs)) {
+      this.log("[hub] prompt budget exceeded (20 / 5 min)");
+      return this.toast("Too many messages from the game in 5 minutes; waiting a bit.", "error");
     }
     switch (msg.t) {
       case "quests":
@@ -534,7 +549,7 @@ export class Hub {
         const supplied = Object.hasOwn(msg, "view");
         if (supplied) this.viewKeys = true;
         const view = supplied ? (msg.view === "full" || msg.view === "focus" ? msg.view : null) : this.viewKeys ? null : "legacy";
-        this.key(String(msg.k), msg.a === undefined ? undefined : String(msg.a), view).catch((e) => this.fail(e));
+        this.key(String(msg.k), msg.a === undefined ? undefined : String(msg.a), view, proof).catch((e) => this.fail(e));
         break;
       }
     }
@@ -547,7 +562,7 @@ export class Hub {
     this.toast(text, "error");
   }
 
-  async key(k: string, arg?: string, view: unknown = "legacy") {
+  async key(k: string, arg?: string, view: unknown = "legacy", proof: Proof = NO_PROOF) {
     const t = this.selectedThread();
     switch (k) {
       case "open":
@@ -637,16 +652,21 @@ export class Hub {
       case "always": {
         if (view !== "legacy" && view !== "full" && view !== "focus")
           return this.toast("Unknown view context. Use Full view and review the request before deciding.", "info");
+        // Approving needs a real click on the button or the registered Approve key; denying never does.
+        if (k !== "deny" && !proof.ok) {
+          this.log(`[hub] ${k} refused: ${proof.why ?? "no proof"}`);
+          return this.toast("Not approved. Click the request on the Glass, or press the Approve key set in Familiar's control panel.", "info");
+        }
         // Debounce: a double-press must not approve the next queued request unseen.
         if (Date.now() - this.lastDecisionAt < 900) return;
         if (this.view.confirm && this.view.selected === this.view.confirm.extId) {
           this.lastDecisionAt = Date.now();
-          this.action({ type: k === "deny" ? "adoptCancel" : "adoptConfirm" });
+          this.action({ type: k === "deny" ? "adoptCancel" : "adoptConfirm" }, proof);
           return;
         }
         if (this.view.held && this.view.selected === this.view.held.threadId) {
           this.lastDecisionAt = Date.now();
-          this.action({ type: k === "deny" ? "heldCancel" : "heldRetry" });
+          this.action({ type: k === "deny" ? "heldCancel" : "heldRetry" }, proof);
           return;
         }
         const target = this.pendingApproval(view === "focus");
@@ -670,6 +690,10 @@ export class Hub {
         // The game only cycles Ask first <-> Plan only; from Accept edits or Auto the key goes to Ask.
         const target = this.view.draft ?? t;
         if (!target) return this.toast("Select a quest first.", "info");
+        if (!proof.ok) {
+          this.log(`[hub] mode refused: ${proof.why ?? "no proof"}`);
+          return this.toast("Mode changes need a click on the Mode button.", "info");
+        }
         const fromPanelOnly = !GAME_MODES.includes(target.mode);
         const mode: Mode = fromPanelOnly ? "ask" : nextOf(GAME_MODES, target.mode);
         target.mode = mode;
@@ -702,7 +726,16 @@ export class Hub {
   }
 
   // ---- overlay actions (hit-tested by the renderer) -------------------------------------------
-  action(a: { type: string; [k: string]: any }) {
+  /** Overlay actions that grant an agent something: only with proof of a real click on the Glass.
+   * Denying a card ("decide" with deny / denyAndStop) is the fail-safe direction and never needs it. */
+  private static CORROBORATED_ACTIONS = new Set(["decide", "answer", "adoptConfirm", "adoptNew", "adoptRetry", "heldRetry", "heldCopy"]);
+
+  action(a: { type: string; [k: string]: any }, proof: Proof = NO_PROOF) {
+    const denying = a.type === "decide" && (a.decision === "deny" || a.decision === "denyAndStop");
+    if (Hub.CORROBORATED_ACTIONS.has(a.type) && !denying && !proof.ok) {
+      this.log(`[hub] action ${a.type} refused: ${proof.why ?? "no proof"}`);
+      return this.toast("That click could not be matched to your mouse. Click it again.", "info");
+    }
     switch (a.type) {
       case "select": {
         this.select(a.id);
@@ -811,10 +844,16 @@ export class Hub {
         const x = c && this.external.get(c.extId);
         if (!c || !x) break;
         this.view.confirm = undefined;
-        const t =
-          x.projectKey === CHATS_KEY
-            ? this.createChat(c.text)
-            : this.createThread(x.agent, this.projects.get(x.projectKey)?.path ?? this.zonePath(x.cwd), this.cfg().defaultMode, undefined, c.text);
+        let t: Thread;
+        try {
+          t =
+            x.projectKey === CHATS_KEY
+              ? this.createChat(c.text)
+              : this.createThread(x.agent, this.projects.get(x.projectKey)?.path ?? this.zonePath(x.cwd), this.cfg().defaultMode, undefined, c.text);
+        } catch (e) {
+          this.fail(e);
+          break;
+        }
         this.sendTo(t, c.text).catch((e) => this.fail(e));
         break;
       }
@@ -829,7 +868,7 @@ export class Hub {
         if (this.backends[x.agent].heldElsewhere?.(x.nativeId) !== false) return this.toast(stillHeld(x.agent), "info");
         x.open = false;
         x.running = false;
-        this.action({ type: "adoptConfirm" });
+        this.action({ type: "adoptConfirm" }, proof);
         return;
       }
       case "heldRetry":
@@ -1093,7 +1132,9 @@ export class Hub {
     const t = this.threads.get(threadId);
     if (!t) return;
     const e = t.entries.find((x) => x.requestId === requestId && x.approval === "pending");
-    if (!e) return;
+    if (!e) return; // one decision per request id
+    if (d !== "deny" && d !== "denyAndStop" && Date.now() - e.at < this.minCardAgeMs)
+      return this.toast("That request just appeared. Read it, then decide.", "info");
     e.approval = d === "allow" ? "approved" : d === "allowAlways" ? "always" : "denied";
     this.lastDecisionAt = Date.now();
     this.backends[t.agent].respondApproval(t.id, requestId, d);
@@ -1226,7 +1267,18 @@ export class Hub {
     await this.sendTo(t, text);
   }
 
+  /** Messages from the game are untrusted input: cap what a runaway or hostile addon can start. */
+  private budgets = { prompt: [] as number[], start: [] as number[] };
+  private within(kind: "prompt" | "start", max: number, perMs: number, now = Date.now()): boolean {
+    const b = (this.budgets[kind] = this.budgets[kind].filter((t) => now - t < perMs));
+    if (b.length >= max) return false;
+    b.push(now);
+    return true;
+  }
+
   private createThread(agent: AgentKind, cwd: string, mode: Mode, model: string | undefined, firstText: string): Thread {
+    // Thrown, so the caller's fail() shows it once; nothing is created or sent.
+    if (!this.within("start", START_BUDGET.max, START_BUDGET.perMs)) throw new Error("Too many new quests in 5 minutes (6). Wait a bit.");
     const proj = this.projects.add(cwd, Date.now());
     const now = Date.now();
     const t: Thread = {
@@ -1249,6 +1301,8 @@ export class Hub {
     this.threads.set(t.id, t);
     this.view.selected = t.id;
     this.view.collapsed.delete(t.projectKey);
+    // Every start is visible on the Glass, so one another addon makes can't pass unnoticed.
+    this.toast(`Started: ${t.title} (${this.projectName(t)})`, "info", t.id);
     return t;
   }
 

@@ -75,7 +75,7 @@ Capacity = ⌊(cols·rows − 8)·6/8⌋ bytes; a 64×4 strip carries 171 payloa
 | `quick` | agent, text, id | `/fam claude|codex <text>` |
 | `quests` | text? | empty text means no quests; omitted text means context sharing is off/unavailable. The quest log, one line per quest with objective progress (`[x]`/`[ ]`); sent when it changes (debounced 4 s) and every 5 min; read-only; used by chats |
 | `ask` | text, id, new?, ctx? | `/fam ask [new] <text>`: continue the latest chat (or start one). `ctx` (also on `prompt`): one line of character context, "level 20 Night Elf Rogue (Alliance) in Darkshore - Auberdine"; used for chats only |
-| `key` | k ∈ newClaude, newCodex, back, mode, model, native, approve, deny, always, stop, next, prev, tools, pin, hide, hidden, unhide, show, autostart, newChat; optional `view` (`full`/`focus`, see below), optional `a` (argument, e.g. `show` → "claude,codex" / "all") | buttons, keybinds, slash |
+| `key` | k ∈ newClaude, newCodex, back, mode, model, native, approve, deny, always, stop, next, prev, tools, pin, hide, hidden, unhide, show, autostart, newChat; optional `view` (`full`/`focus`, see below), optional `a` (argument, e.g. `show` → "claude,codex" / "all"), `src` (`button` / `bind` / `slash`). approve / always / mode are acted on only when the companion matches them to physical input on the PC; `src` only tells it which check to run | buttons, keybinds, slash |
 | `click` | r (list/detail/tracker/status), x, y (0..1 within the region), b (L/R) | hit-tested by the Glass |
 | `wheel` | r, d (accumulated notches) | scroll the Glass region |
 | `hover` | r, x, y (−1 = left) | hover highlight, low priority |
