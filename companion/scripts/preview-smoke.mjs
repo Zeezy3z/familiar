@@ -102,6 +102,16 @@ async function controlChatJourney(width) {
   const initial = await values();
   check(`${size}: configured provider/model and live readiness agree`, initial.agent === 'claude' && initial.model === 'haiku'
     && initial.effort === 'medium' && initial.status?.includes('Claude is ready for Chat'));
+  const copy = await page.evaluate(() => ({
+    mode: document.querySelector('#ui-mode + .hint')?.textContent,
+    privateLabel: document.getElementById('ui-private').closest('label')?.textContent,
+    approveKey: document.querySelector('#ui-approve-key + .hint')?.textContent.trim(),
+    suggest: getComputedStyle(document.getElementById('suggest-text')).backgroundColor,
+  }));
+  check(`${size}: mode hint recommends Ask first`, copy.mode?.includes('Ask first is recommended'));
+  check(`${size}: private setting is named Hide names`, copy.privateLabel?.includes('Hide names'));
+  check(`${size}: Approve key hint starts with the WoW binding step`, copy.approveKey?.startsWith('1. In WoW'));
+  check(`${size}: suggestion box is not a white field`, !['rgb(255, 255, 255)', 'rgba(255, 255, 255, 1)'].includes(copy.suggest));
   const claude = page.locator('[data-enable="claude"]');
   const codex = page.locator('[data-enable="codex"]');
   await claude.uncheck();
@@ -513,6 +523,18 @@ async function compactHeaderJourney(narrow) {
   check(`${size}/header: ordinary handoff has only title and action rows`, compact.children.length === 2
     && compact.children[0] === 'qtitle' && compact.children[1] === 'qbar' && compact.height < compact.contentHeight / 3
     && await page.locator('.qhead .qmeta, .qhead .qstate').count() === 0);
+  const chip = () => page.evaluate(() => {
+    const el = document.querySelector('.qhead .qbar .qmode');
+    return { count: document.querySelectorAll('.qhead .qbar .qmode').length, text: el?.textContent, hot: el?.classList.contains('hot'),
+      color: el && getComputedStyle(el).color, firstInBar: document.querySelector('.qhead .qbar')?.firstElementChild === el };
+  });
+  const askFirst = await chip();
+  check(`${size}/header: mode chip leads the action row`, askFirst.count === 1 && askFirst.text === 'Ask first' && !askFirst.hot && askFirst.firstInBar);
+  await page.evaluate(() => { const p = window.preview; p.model.detail.mode = 'Accept edits'; p.emit('model', { ...p.model }); });
+  const hot = await chip();
+  check(`${size}/header: any mode other than Ask first is highlighted`, hot.count === 1 && hot.text === 'Accept edits' && hot.hot && hot.color !== askFirst.color
+    && (await geometry()).children.join() === 'qtitle,qbar');
+  await page.evaluate(() => { const p = window.preview; p.model.detail.mode = 'Ask first'; p.emit('model', { ...p.model }); });
   check(`${size}/header: provider and handoff action remain visible`, (await page.locator('.qtitle').textContent()).includes('Claude')
     && (await page.locator(action('openInApp')).textContent()).includes('Continue in Claude app'));
   check(`${size}/header: long title stays on one readable line`, await page.locator('.qtitle').evaluate(el =>
@@ -547,6 +569,16 @@ async function compactHeaderJourney(narrow) {
   await page.evaluate(() => { const p = window.preview; p.model.detail.status = 'error'; p.emit('model', p.model); });
   check(`${size}/header: error and handoff action remain reachable together`, (await page.locator('.qstate').textContent()).includes('Needs attention')
     && !!await point(action('openInApp')));
+  for (const scenario of ['finished', 'running', 'interrupted', 'desktop', 'quiet', 'approval', 'approval-always', 'approval-long', 'approval-permissions',
+    'approval-expired', 'approval-resolved', 'history-error', 'history-earlier', 'history-empty', 'history-loading']) {
+    await open(scenario, narrow);
+    const mode = await chip();
+    const children = (await geometry()).children;
+    check(`${size}/header-${scenario}: one mode chip in the action row shows the quest mode`, mode.count === 1 && mode.firstInBar
+      && mode.text === await page.evaluate(() => window.preview.model.detail.mode));
+    check(`${size}/header-${scenario}: chip adds no header row`, children[0] === 'qtitle' && children[1] === 'qbar'
+      && !children.some(c => /\b(qmode|qmeta|qstate)\b/.test(c)));
+  }
   for (const [scenario, label] of [['approval', 'Needs your approval'], ['interrupted', 'Interrupted'], ['history-error', 'History unavailable']]) {
     await open(scenario, narrow);
     check(`${size}/header-${scenario}: exceptional state stays visible without Details`, (await page.locator('.qstate').textContent()).includes(label)
@@ -607,6 +639,22 @@ try {
       check(`${size}/${scenario}: draft fits pane width`, await page.locator('#detail-scroll').evaluate(el => el.scrollWidth <= el.clientWidth + 1));
       await snapshot(`${size}-${scenario}-chat-draft`);
     }
+    await open('approval', narrow);
+    check(`${size}/approval: uncut request has no cut warning`, await page.locator('.preview-cut').count() === 0
+      && await page.locator('.approval-preview').textContent() === await page.evaluate(() => window.preview.model.detail.entries.find(e => e.kind === 'approval').text));
+    for (const [decision, selector] of [['allow', '.btn.ok'], ['deny', '.btn.no'], ['allowAlways', '.btn.always']]) {
+      await open('approval-always', narrow);
+      const buttons = await page.locator(action('decide')).evaluateAll(els => els.map(el => ({ text: el.textContent, decision: JSON.parse(el.dataset.act).decision })));
+      check(`${size}/approval-always: Approve, Deny, then Always (this quest)`, JSON.stringify(buttons.map(b => b.text)) === JSON.stringify(['Approve', 'Deny', 'Always (this quest)'])
+        && JSON.stringify(buttons.map(b => b.decision)) === JSON.stringify(['allow', 'deny', 'allowAlways']));
+      check(`${size}/approval-always: three decision controls`, await page.locator(action('decide')).count() === 3);
+      await point('.btn.always');
+      if (decision === 'allow') await snapshot(`${size}-approval-always`);
+      await click(selector);
+      const calls = await page.evaluate(() => window.preview.calls);
+      check(`${size}/approval-always: ${selector} sends exactly one ${decision}`, calls.length === 1 && calls[0].type === 'decide' && calls[0].decision === decision
+        && calls[0].requestId === 'preview');
+    }
     // Pending approvals are never shortened: the whole provider preview sits above Approve/Deny.
     for (const scenario of ['approval-long', 'approval-permissions']) {
       await open(scenario, narrow);
@@ -615,6 +663,12 @@ try {
       await snapshot(`${size}-${scenario}-pending-top`);
       check(`${size}/${scenario}: pending preview shows all available text`, await page.locator('.approval-preview').textContent() === full && full.includes('characters omitted from this preview'));
       check(`${size}/${scenario}: pending preview has no shorten toggle`, await page.locator('.preview-toggle').count() === 0);
+      const cut = await page.evaluate(() => {
+        const cuts = document.querySelectorAll('.preview-cut'), pre = document.querySelector('.approval-preview');
+        return { count: cuts.length, text: cuts[0]?.textContent, above: !!cuts[0] && cuts[0].getBoundingClientRect().bottom <= pre.getBoundingClientRect().top,
+          outside: !!cuts[0] && !pre.contains(cuts[0]), red: !!cuts[0] && getComputedStyle(cuts[0]).color !== getComputedStyle(document.querySelector('.preview-note')).color };
+      });
+      check(`${size}/${scenario}: cut request carries one red warning above the preview`, cut.count === 1 && cut.text.includes('not shown') && cut.above && cut.outside && cut.red);
       await wheel(-10000);
       await snapshot(`${size}-${scenario}-pending-bottom`);
       check(`${size}/${scenario}: preview fits pane width`, await page.locator('#detail-scroll').evaluate(el => el.scrollWidth <= el.clientWidth + 1));
@@ -681,6 +735,21 @@ try {
       await snapshot(`${size}-${scenario}`);
     }
   }
+  await open('quiet');
+  const quiet = await page.evaluate(() => {
+    const warn = document.querySelector('.catch-title .warn');
+    const row = [...document.querySelectorAll('.row')].find(r => r.querySelector('.t')?.textContent === 'Review a file edit');
+    return { warn: warn && getComputedStyle(warn).color, body: getComputedStyle(document.body).color, label: warn?.textContent,
+      meta: [...document.querySelectorAll('.catch-meta')].map(e => e.textContent).join('|'),
+      rowText: row && getComputedStyle(row.querySelector('.t')).color, rowGlyph: row && getComputedStyle(row.querySelector('.st')).color };
+  });
+  check('quiet: Needs approval stands out from body text', quiet.label === 'Needs approval' && !!quiet.warn && quiet.warn !== quiet.body);
+  check('quiet: only the approval glyph is coloured in the list row', !!quiet.rowGlyph && quiet.rowGlyph === quiet.warn && quiet.rowText !== quiet.warn);
+  check('quiet: catch-up notes do not show the folder path', quiet.meta.length > 0 && !quiet.meta.includes('C:\\preview'));
+  const status = await page.evaluate(() => { const p = window.preview; p.model.private = true; p.emit('model', { ...p.model });
+    const el = document.getElementById('status'); return { text: el.textContent, dot: getComputedStyle(el, '::before').content }; });
+  check('status: level dot then text, and Hide names is announced', status.dot.includes('●') && status.text.endsWith(' · Hide names on'));
+  await snapshot('quiet-catch-up');
   await open('finished');
   for (const [name, passed] of Object.entries(await rendererUpdateJourney(page))) check(`entry updates: ${name}`, passed);
   await focusJourney();
