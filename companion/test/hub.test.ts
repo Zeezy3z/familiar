@@ -1857,3 +1857,37 @@ describe("config.json", () => {
     expect(fs.readdirSync(dir).filter((f) => f.startsWith("config.json")).sort()).toEqual(["config.json", aside[0]]);
   });
 });
+
+describe("Codex-only players", () => {
+  it("configured claude that isn't installed falls back to the installed, signed-in codex for + Chat, /fam ask and quick; logged once", async () => {
+    const lines: string[] = [];
+    const cl = new FakeBackend("claude");
+    const cx = new FakeBackend("codex");
+    const h = new Hub(() => cfg, { claude: cl, codex: cx }, (s) => lines.push(s));
+    h.available = (id) => id === "codex"; // the Familiars card's checks: Claude missing, Codex found + signed in
+    h.projects.scanRoots();
+    expect([cfg.defaultAgent, cfg.chatAgent]).toEqual(["claude", "claude"]); // config defaults unchanged
+    h.action({ type: "newIn", key: "chats" }); // + Chat
+    expect(h.view.draft).toMatchObject({ agent: "codex", chat: true, model: undefined }); // chatModel is Claude's
+    h.view.draft = undefined;
+    await h.ask("where is the poison quest?"); // /fam ask
+    h.handleAddon({ t: "quick", id: "m-quick", agent: "nope", text: "@alpha fix the build" }); // unknown agent → default
+    await tick();
+    await tick();
+    expect([...h.threads.values()].map((t) => t.agent)).toEqual(["codex", "codex"]);
+    expect(cx.sent.map((x) => x.text)).toEqual([expect.stringContaining("where is the poison quest?"), "fix the build"]);
+    expect(cl.sent).toEqual([]);
+    expect(lines.filter((l) => l.includes("default agent"))).toEqual(["[hub] default agent claude unavailable, using codex"]);
+  });
+
+  it("an available configured agent wins, even while it is still starting; nothing usable keeps the configured one", () => {
+    const h = new Hub(() => cfg, { claude, codex }, () => {});
+    vi.spyOn(claude, "status").mockReturnValue({ ready: false, models: [] }); // starting: retried on send
+    expect(h.agentOr("claude")).toBe("claude");
+    expect(h.agentOr("codex")).toBe("codex");
+    h.available = (id) => (id === "claude" ? false : undefined); // Claude Agent SDK present, no sign-in
+    expect(h.agentOr("claude")).toBe("codex");
+    vi.spyOn(codex, "status").mockReturnValue({ ready: true, account: "signed out", models: [] }); // Codex's own report
+    expect(h.agentOr("claude")).toBe("claude");
+  });
+});

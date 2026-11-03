@@ -117,10 +117,10 @@ Familiar never selects a mode that skips approvals (yolo / bypass / "don't ask")
 started; one that switches itself into one is switched back, or stopped. Agents' own bypass
 commands (`/always-approve`, `/yolo`, …) are refused when typed in game.
 
-**Hermes:** all your Hermes conversations are listed — CLI, desktop app and messaging-bot
-(Telegram, Discord, …) sessions — read from Hermes's `state.db` (read-only). That includes the
-message text of bot sessions, which in group chats can be other people's messages; sender names
-and chat ids are never read. Hermes can only resume sessions created over ACP, so continuing a
+**Hermes:** your Hermes CLI and desktop app conversations are listed, read from Hermes's
+`state.db` (read-only). Bot conversations (Telegram, Discord, Slack) are hidden unless
+`hermesBotSessions` is true in `config.json`; when shown, their message text (in group chats, other
+people's messages too) is read from Hermes's local database like any other session. Hermes can only resume sessions created over ACP, so continuing a
 desktop/bot conversation starts a new Hermes session that begins with a summary of it, and replies
 come to the game, not back to the chat app. Hermes denies an unanswered approval after 60 s.
 
@@ -163,6 +163,7 @@ defaults.
 | `launchAtLogin` | `false` | start in the tray when you sign in to Windows |
 | `claudeExecutable` / `codexExe` | auto | full path to a specific Claude Code / `codex.exe` |
 | `providers` | Hermes, Grok | ACP agents (see [More agents](#more-agents)) |
+| `hermesBotSessions` | `false` | list Hermes's Telegram/Discord/Slack conversations too (their message text is then read from Hermes's local database) |
 | `chatAgent` / `chatModel` / `chatEffort` | `claude` / `haiku` / `medium` | defaults for Chats |
 | `externalDays`, `externalPerZone`, `followDesktopArchive` | `21`, `6`, `true` | which desktop threads are listed |
 | `sound`, `speak`, `quiet`, `raidWarnings`, `fontScale`, `toolDetail` | | notices and display |
@@ -182,8 +183,9 @@ sign-in and their own privacy terms. Familiar identifies itself to them as a cli
   you started it in. Chats also receive your character's level, race, class, faction, zone and
   quest log (never name or realm); `/fam ask context off` stops that.
 * **What Familiar reads on your PC** (read-only, never uploaded): your Claude, Codex and Hermes
-  conversation lists and histories, to show and continue them in game (Hermes bot sessions include
-  their message text); whether each agent's sign-in file exists, never its contents; the game
+  conversation lists and histories, to show and continue them in game (Hermes bot conversations —
+  Telegram, Discord, Slack — are hidden unless `hermesBotSessions` is true in `config.json`; when
+  shown, their message text is read from Hermes's local database like any other session); whether each agent's sign-in file exists, never its contents; the game
   window's pixels. It never sends input to WoW and never reads game memory.
 * **What Familiar stores, all on your PC:**
   * `%APPDATA%\Familiar\` — `config.json`, `threads.json` (copies of Familiar conversations),

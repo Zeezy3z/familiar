@@ -1,18 +1,29 @@
-// Hermes Agent's own session store (state.db), read-only: lists every Hermes conversation — CLI,
-// desktop app, ACP, and messaging-gateway ("Hermes bot") sessions from Telegram, Discord, Slack... —
-// and reads their transcripts. Hermes's ACP server only lists and resumes sessions created over ACP,
-// so the others continue as a new session seeded with a digest (see AcpCatalog.canResume).
-// Never reads who people are (display_name, chat ids, origin_json).
+// Hermes Agent's own session store (state.db), read-only: lists Hermes conversations — CLI, desktop
+// app, ACP and, only with `hermesBotSessions` on, messaging-gateway ("Hermes bot") sessions from
+// Telegram, Discord, Slack... — and reads their transcripts. Bot transcripts can hold other people's
+// messages, so they are neither listed nor read by default. Hermes's ACP server only lists and resumes
+// sessions created over ACP, so the others continue as a new session seeded with a digest (see
+// AcpCatalog.canResume). Never reads who people are (display_name, chat ids, origin_json).
 import { execFile } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { peekConfig } from "../hub/config";
 import type { AcpCatalog } from "./acp";
 import type { HistoryEntry, ThreadInfo } from "./types";
 
 /** Sources Hermes itself keeps out of session lists, plus scheduled runs. */
 const HIDDEN_SOURCES = ["cron", "kanban", "tool", "oneshot"];
+/** Sessions started on this PC by the user (Hermes CLI/TUI, desktop app, web dashboard, ACP, and
+ * Claude/Codex sessions imported into Hermes). Every other source is a messaging gateway (Telegram,
+ * Discord, Slack, WhatsApp, email, API server, plugin platforms...), shown only when opted in. */
+const LOCAL_SOURCES = ["cli", "tui", "desktop", "webui", "local", "acp", "claude", "codex"];
+
+/** Whether a Hermes session from `source` may be listed and read. */
+export function hermesSessionShown(source: string | null | undefined, botSessions: boolean): boolean {
+  return botSessions || LOCAL_SOURCES.includes(String(source ?? "").toLowerCase());
+}
 
 interface Row {
   id: string;
@@ -42,7 +53,11 @@ export function hermesHome(): string {
   return fs.existsSync(path.join(win, "state.db")) ? win : path.join(os.homedir(), ".hermes");
 }
 
-export function hermesCatalog(log: (s: string) => void, dbPath = path.join(hermesHome(), "state.db")): AcpCatalog {
+export function hermesCatalog(
+  log: (s: string) => void,
+  dbPath = path.join(hermesHome(), "state.db"),
+  botSessions: () => boolean = () => peekConfig().hermesBotSessions === true,
+): AcpCatalog {
   const sources = new Map<string, string>(); // session id -> source (from the last listing)
   let warned = false;
 
@@ -61,7 +76,9 @@ export function hermesCatalog(log: (s: string) => void, dbPath = path.join(herme
     async listThreads(q) {
       const db = open();
       if (!db) return [];
+      const bots = botSessions();
       try {
+        // Bot sessions are filtered in SQL so their first message is never even read.
         const rows = db
           .prepare(
             `SELECT s.id, s.source, s.title, s.cwd, s.model_config, s.started_at, s.last_activity_at, s.archived, s.pinned,
@@ -70,15 +87,16 @@ export function hermesCatalog(log: (s: string) => void, dbPath = path.join(herme
                FROM sessions s
               WHERE COALESCE(s.hidden, 0) = 0 AND s.message_count > 0
                 AND s.source NOT IN (${HIDDEN_SOURCES.map(() => "?").join(",")})
+                ${bots ? "" : `AND LOWER(s.source) IN (${LOCAL_SOURCES.map(() => "?").join(",")})`}
               ORDER BY COALESCE(s.last_activity_at, s.started_at) DESC
               LIMIT 400`,
           )
-          .all(...HIDDEN_SOURCES) as unknown as Row[];
+          .all(...HIDDEN_SOURCES, ...(bots ? [] : LOCAL_SOURCES)) as unknown as Row[];
         const byId = new Map(rows.map((r) => [r.id, r]));
         const out: ThreadInfo[] = [];
         for (const r of rows) {
           const mc = parseJson(r.model_config);
-          if (mc?._delegate_from) continue; // a sub-agent run
+          if (mc?._delegate_from || !hermesSessionShown(r.source, bots)) continue; // a sub-agent run; a bot session
           const parent = r.parent_session_id ? byId.get(r.parent_session_id) : undefined;
           if (parent?.end_reason === "compression") continue; // shown as part of its root conversation
           sources.set(r.id, r.source);
@@ -113,6 +131,8 @@ export function hermesCatalog(log: (s: string) => void, dbPath = path.join(herme
       const db = open();
       if (!db) return [];
       try {
+        const src = db.prepare("SELECT source FROM sessions WHERE id = ?").get(nativeId) as any;
+        if (!hermesSessionShown(src?.source, botSessions())) return []; // a bot session, not opted in
         // Follow compression continuations so the whole conversation reads as one.
         const chain = [nativeId];
         for (let i = 0; i < 50; i++) {

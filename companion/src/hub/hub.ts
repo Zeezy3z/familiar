@@ -19,8 +19,12 @@ import {
   TodoItem,
 } from "../agents/types";
 import { appDataDir, Config, isExcluded, normPath } from "./config";
+import { redact } from "../main/log-file";
 import { storageCode, ThreadStore } from "./storage";
 import { providerLabel } from "../agents/providers";
+import { ClaudeBackend } from "../agents/claude";
+import { CodexBackend } from "../agents/codex";
+import { providerAvailable } from "../agents/setup";
 import { CHAT_INSTRUCTIONS, withGameContext } from "./chat";
 import { CHATS_KEY, Project, ProjectRegistry, projectRootOf } from "./projects";
 
@@ -225,6 +229,38 @@ export class Hub {
   /** "Use in Familiar" for a provider (control panel); off = not started, listed or offered. */
   enabled(id: AgentKind): boolean {
     return this.cfg().providers?.[id]?.enabled !== false;
+  }
+
+  /** Installed and signed in, by the Familiars card's file checks, for the Claude and Codex
+   * backends (the Agent SDK starts without a login, so readiness can't tell). undefined: can't
+   * tell, assume yes — ACP agents exist only when installed. Not readiness: a backend that is
+   * still starting or failed to start is retried when a message is sent. */
+  available: (id: AgentKind) => boolean | undefined = (id) => {
+    const b = this.backends[id];
+    return b instanceof ClaudeBackend || b instanceof CodexBackend ? providerAvailable(id) : undefined;
+  };
+  private fallbackLogged = new Set<string>();
+
+  /** Whether a provider can take a new quest or chat: switched on, installed and signed in. */
+  private usable(id: AgentKind): boolean {
+    const b = this.backends[id];
+    if (!b || !this.enabled(id)) return false;
+    return b.status().account !== "signed out" && this.available(id) !== false;
+  }
+
+  /** The configured agent (defaultAgent, chatAgent) when it can run; otherwise the first provider
+   * that is installed and signed in (claude, codex, then ACP agents), so a Codex-only player's
+   * + Chat and /fam ask work. Switched off in the control panel, or nothing else usable: the
+   * configured one, so the draft says why. */
+  agentOr(want: AgentKind): AgentKind {
+    if (!this.enabled(want) || this.usable(want)) return want;
+    const alt = [...new Set(["claude", "codex", ...Object.keys(this.backends)])].find((id) => id !== want && this.usable(id));
+    if (!alt) return want;
+    if (!this.fallbackLogged.has(`${want}>${alt}`)) {
+      this.fallbackLogged.add(`${want}>${alt}`);
+      this.log(`[hub] default agent ${want} unavailable, using ${alt}`);
+    }
+    return alt;
   }
 
   /** A provider installed or switched on while Familiar runs. */
@@ -492,7 +528,7 @@ export class Hub {
         this.ask(String(msg.text ?? ""), ctxOf(msg), !!msg.new).catch((e) => this.fail(e));
         break;
       case "quick":
-        this.quick(this.backends[msg.agent] ? String(msg.agent) : "claude", String(msg.text ?? "")).catch((e) => this.fail(e));
+        this.quick(this.backends[msg.agent] ? String(msg.agent) : this.agentOr(this.cfg().defaultAgent), String(msg.text ?? "")).catch((e) => this.fail(e));
         break;
       case "key": {
         const supplied = Object.hasOwn(msg, "view");
@@ -505,7 +541,8 @@ export class Hub {
   }
 
   private fail(e: any) {
-    const text = String(e?.message ?? e);
+    // The toast is painted over the game (visible on stream); scrub paths and secrets like the log does.
+    const text = redact(String(e?.message ?? e));
     this.log("[hub] " + text);
     this.toast(text, "error");
   }
@@ -683,7 +720,7 @@ export class Hub {
         break;
       case "pick": {
         const proj = this.projects.get(a.key);
-        if (proj) this.beginDraft(this.view.pickAgent, proj);
+        if (proj) this.beginDraft(this.agentOr(this.view.pickAgent), proj);
         break;
       }
       case "newIn": {
@@ -694,7 +731,7 @@ export class Hub {
         const proj = this.projects.get(a.key);
         if (proj) {
           this.view.list = "pick";
-          this.beginDraft(a.agent ?? this.cfg().defaultAgent, proj);
+          this.beginDraft(a.agent ?? this.agentOr(this.cfg().defaultAgent), proj);
         }
         break;
       }
@@ -1083,13 +1120,13 @@ export class Hub {
         abs = realPath(abs); // junctions / 8.3 names must not slip past the boundary list
         if (isExcluded(abs, this.cfg())) return this.toast("That folder is on the exclusion list.", "error");
         const proj = this.projects.add(abs, Date.now());
-        if (proj) this.beginDraft(this.view.pickAgent, proj);
+        if (proj) this.beginDraft(this.agentOr(this.view.pickAgent), proj);
         this.changed("draft");
         return;
       }
       const proj = this.matchProject(text);
       if (proj) {
-        this.beginDraft(this.view.pickAgent, proj);
+        this.beginDraft(this.agentOr(this.view.pickAgent), proj);
         this.toast(`Zone: ${proj.name} — now describe the quest`, "info");
         this.changed("draft");
         return;
@@ -1137,11 +1174,13 @@ export class Hub {
     const c = this.cfg();
     const zone = this.projects.chats();
     this.view.list = "quests";
-    this.view.draft = { agent: c.chatAgent, cwd: zone.path, projectKey: zone.key, mode: "ask", model: c.chatModel || undefined, chat: true };
+    const agent = this.agentOr(c.chatAgent);
+    // The chat model belongs to the configured chat agent; a fallback agent uses its own default.
+    this.view.draft = { agent, cwd: zone.path, projectKey: zone.key, mode: "ask", model: agent === c.chatAgent ? c.chatModel || undefined : undefined, chat: true };
     this.view.collapsed.delete(zone.key);
   }
 
-  private createChat(firstText: string, agent = this.cfg().chatAgent, model = this.cfg().chatModel || undefined): Thread {
+  private createChat(firstText: string, agent = this.agentOr(this.cfg().chatAgent), model = agent === this.cfg().chatAgent ? this.cfg().chatModel || undefined : undefined): Thread {
     const t = this.createThread(agent, this.projects.chats(Date.now()).path, "ask", model, firstText);
     t.kind = "chat";
     t.projectKey = CHATS_KEY;

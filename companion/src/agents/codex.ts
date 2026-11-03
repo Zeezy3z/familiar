@@ -1,5 +1,5 @@
-// Codex backend: drives the `codex.exe app-server` bundled with the ChatGPT/Codex desktop app over
-// JSON-RPC (one JSON object per line on stdio). Uses the user's existing ChatGPT login.
+// Codex backend: drives `codex.exe app-server` (the Codex desktop app's bundled binary or the Codex
+// CLI) over JSON-RPC (one JSON object per line on stdio). Uses the user's existing ChatGPT login.
 import { ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -19,24 +19,65 @@ import {
   TodoItem,
   truncatePreview,
 } from "./types";
+import { resolveCommand } from "./which";
+import { StderrFilter } from "./acp";
+
+/** The codex.exe to run, first found of: the `codexExe` override; `codex` on PATH — a winget/scoop
+ * .exe as is, npm's codex.cmd shim resolved to the real binary in its package (spawn can't run a
+ * .cmd without a shell); the newest one bundled with the desktop app. */
+export function findCodexExe(override?: string): string | undefined {
+  if (override && isFile(override)) return override;
+  const cli = resolveCommand("codex");
+  if (cli && /\.exe$/i.test(cli)) return cli;
+  if (cli && /\.(cmd|bat)$/i.test(cli)) {
+    const real = npmCodexExe(path.dirname(cli));
+    if (real) return real;
+  }
+  return desktopCodexExe();
+}
+
+/** `npm i -g @openai/codex`: <shim dir>/node_modules/@openai/codex/node_modules/@openai/
+ * codex-win32-<arch>/vendor/<target triple>/bin/codex.exe. */
+function npmCodexExe(shimDir: string): string | undefined {
+  const scope = path.join(shimDir, "node_modules", "@openai", "codex", "node_modules", "@openai");
+  for (const arch of process.arch === "arm64" ? ["arm64", "x64"] : ["x64", "arm64"]) {
+    const vendor = path.join(scope, `codex-win32-${arch}`, "vendor");
+    for (const triple of readdir(vendor)) {
+      const p = path.join(vendor, triple, "bin", "codex.exe");
+      if (isFile(p)) return p;
+    }
+  }
+  return undefined;
+}
 
 /** Newest codex.exe shipped with the desktop app (its hash folder changes on update). */
-export function findCodexExe(override?: string): string | null {
-  if (override && fs.existsSync(override)) return override;
+function desktopCodexExe(): string | undefined {
   const base = path.join(process.env.LOCALAPPDATA ?? "", "OpenAI", "Codex", "bin");
-  let best: { p: string; t: number } | null = null;
-  try {
-    for (const d of fs.readdirSync(base)) {
-      const p = path.join(base, d, "codex.exe");
-      if (fs.existsSync(p)) {
-        const t = fs.statSync(p).mtimeMs;
-        if (!best || t > best.t) best = { p, t };
-      }
+  let best: { p: string; t: number } | undefined;
+  for (const d of readdir(base)) {
+    const p = path.join(base, d, "codex.exe");
+    if (isFile(p)) {
+      const t = fs.statSync(p).mtimeMs;
+      if (!best || t > best.t) best = { p, t };
     }
-  } catch {
-    /* not installed */
   }
-  return best?.p ?? null;
+  return best?.p;
+}
+
+function readdir(dir: string): string[] {
+  try {
+    return fs.readdirSync(dir);
+  } catch {
+    return []; // not installed
+  }
+}
+
+function isFile(p: string): boolean {
+  try {
+    return fs.statSync(p).isFile();
+  } catch {
+    return false;
+  }
 }
 
 type Pending = { resolve: (v: any) => void; reject: (e: Error) => void; method: string };
@@ -70,7 +111,10 @@ class Rpc {
         else p.resolve(msg.result);
       } else if (msg.method) this.onNotify(msg.method, msg.params);
     });
-    this.proc.stderr.on("data", (d) => log("[codex:stderr] " + String(d).trim().slice(0, 500)));
+    const stderrFilter = new StderrFilter();
+    this.proc.stderr.on("data", (d) => {
+      for (const line of stderrFilter.lines(String(d))) log("[codex:stderr] " + line);
+    });
     this.proc.on("exit", (code) => {
       for (const p of this.pending.values()) p.reject(new Error("codex app-server exited"));
       this.pending.clear();
@@ -223,7 +267,7 @@ export class CodexBackend implements AgentBackend {
 
   private async doInit(): Promise<BackendStatus> {
     const exe = findCodexExe(this.opts.exe);
-    if (!exe) throw new Error("codex.exe not found (install the ChatGPT/Codex desktop app)");
+    if (!exe) throw new Error("codex.exe not found (install the Codex app or run: npm i -g @openai/codex)");
     const rpc = new Rpc(exe, this.opts.log);
     this.rpc = rpc;
     this.spawn = Date.now().toString(36);

@@ -126,7 +126,7 @@ describe("Hermes session store (state.db, read-only)", async () => {
   m.run("tg1b", "assistant", "superseded draft", null, 0);
   w.close();
 
-  const cat = hermesCatalog(() => {}, db);
+  const cat = hermesCatalog(() => {}, db, () => true); // bot sessions opted in (hermesBotSessions)
 
   it("lists people's conversations (bots included), hides internal/cron/sub-agent/hidden/empty ones", async () => {
     const list = await cat.listThreads({});

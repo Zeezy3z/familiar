@@ -7,6 +7,7 @@ import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { peekConfig } from "../hub/config";
 import { findCodexExe } from "./codex";
 import { hermesHome } from "./hermes";
 import { AcpProviderConfig, DEFAULT_ACP_PROVIDERS, providerInfo } from "./providers";
@@ -35,6 +36,8 @@ interface Known {
   installed(): string | null;
   signedIn(): boolean;
   how: string;
+  /** Product name for "<name> found (<exe>)"; set when the path tells the user which install is used. */
+  found?: string;
   /** Command line for the vendor's own sign-in (run in a visible terminal). */
   login(exe: string): string[] | null;
 }
@@ -53,9 +56,12 @@ const KNOWN: Record<string, Known> = {
   },
   codex: {
     installUrl: "https://openai.com/codex/",
-    installed: () => findCodexExe(),
-    signedIn: () => exists(home, ".codex", "auth.json") || !!process.env.OPENAI_API_KEY,
-    how: "ChatGPT account (browser sign-in) or OPENAI_API_KEY",
+    installCommand: "npm i -g @openai/codex",
+    // Same resolver the backend runs: override, CLI on PATH (winget/scoop/npm), then the Codex app.
+    installed: () => findCodexExe(peekConfig().codexExe) ?? null,
+    signedIn: () => exists(process.env.CODEX_HOME || path.join(home, ".codex"), "auth.json") || !!process.env.OPENAI_API_KEY,
+    how: "Codex app or `npm i -g @openai/codex`; signs in with a ChatGPT account or OPENAI_API_KEY",
+    found: "Codex",
     login: (exe) => [exe, "login"],
   },
   hermes: {
@@ -74,6 +80,13 @@ const KNOWN: Record<string, Known> = {
     login: (exe) => [exe, "login"],
   },
 };
+
+/** Whether a known agent is installed and its own sign-in exists (file presence / env var only, as
+ * on the Familiars card); undefined for agents Familiar can't check (custom ACP agents). */
+export function providerAvailable(id: string): boolean | undefined {
+  const k = KNOWN[id];
+  return k ? !!k.installed() && k.signedIn() : undefined;
+}
 
 export function providerSetup(enabled: (id: string) => boolean, custom: Record<string, Partial<AcpProviderConfig>> = {}): ProviderSetup[] {
   const ids = [...new Set(["claude", "codex", ...Object.keys(DEFAULT_ACP_PROVIDERS), ...Object.keys(custom)])];
@@ -102,7 +115,9 @@ export function providerSetup(enabled: (id: string) => boolean, custom: Record<s
       installed: !!exe,
       signedIn,
       enabled: !!exe && enabled(id),
-      detail: !exe ? "Not installed" : signedIn ? `Signed in · ${k.how}` : `Not signed in · ${k.how}`,
+      detail: k.found
+        ? exe ? `${k.found} found (${exe}) · ${signedIn ? "signed in" : "not signed in"}` : `Not installed · ${k.how}`
+        : !exe ? "Not installed" : signedIn ? `Signed in · ${k.how}` : `Not signed in · ${k.how}`,
       installUrl: k.installUrl,
       installCommand: k.installCommand,
       canLogin: !!exe && !!k.login(exe),

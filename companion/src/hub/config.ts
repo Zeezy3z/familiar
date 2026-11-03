@@ -51,6 +51,10 @@ export interface Config {
   chatEffort: string;
   /** Tool calls in transcripts: "compact" groups runs into one line, "full" lists each, "hidden". */
   toolDetail: "compact" | "full" | "hidden";
+  /** List Hermes's messaging-gateway sessions (Telegram, Discord, Slack, ...) too. Off by default:
+   * their transcripts can hold other people's messages. When on, their message text is read from
+   * Hermes's local state.db like any other session. CLI, desktop and ACP sessions are always listed. */
+  hermesBotSessions: boolean;
 }
 
 export const DEFAULT_CONFIG: Config = {
@@ -84,10 +88,13 @@ export const DEFAULT_CONFIG: Config = {
   chatAgent: "claude",
   chatModel: "haiku",
   chatEffort: "medium",
+  hermesBotSessions: false,
 };
 
+const appDataPath = () => path.join(process.env.APPDATA ?? path.join(process.env.USERPROFILE ?? ".", "AppData", "Roaming"), "Familiar");
+
 export function appDataDir(): string {
-  const dir = path.join(process.env.APPDATA ?? path.join(process.env.USERPROFILE ?? ".", "AppData", "Roaming"), "Familiar");
+  const dir = appDataPath();
   fs.mkdirSync(dir, { recursive: true });
   return dir;
 }
@@ -103,6 +110,18 @@ export function writeFileAtomic(file: string, text: string, expected?: Buffer) {
     if (!same) throw Object.assign(new Error("source changed before replacement"), { code: "ESTALE" });
   }
   fs.renameSync(file + ".tmp", file);
+}
+
+/** The saved config over the defaults, read-only: never creates, moves or rewrites config.json (for
+ * readers outside main, such as agent catalogs). */
+export function peekConfig(): Config {
+  try {
+    const user = JSON.parse(fs.readFileSync(path.join(appDataPath(), "config.json"), "utf8"));
+    if (user && typeof user === "object" && !Array.isArray(user)) return { ...DEFAULT_CONFIG, ...user };
+  } catch {
+    /* missing or unreadable: defaults */
+  }
+  return { ...DEFAULT_CONFIG };
 }
 
 export function loadConfig(log: (line: string) => void = () => {}): Config {

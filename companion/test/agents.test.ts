@@ -202,3 +202,54 @@ describe("Claude automatic retry", () => {
     }
   });
 });
+
+describe("Hermes bot sessions are opt-in (hermesBotSessions)", async () => {
+  const { DatabaseSync } = await import("node:sqlite");
+  const { hermesCatalog, hermesSessionShown } = await import("../src/agents/hermes");
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "familiar-hermes-"));
+  const db = path.join(tmp, "state.db");
+  const w = new DatabaseSync(db);
+  w.exec(`CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT, title TEXT, cwd TEXT, model_config TEXT, started_at REAL,
+            last_activity_at REAL, archived INTEGER, pinned INTEGER, hidden INTEGER, end_reason TEXT, parent_session_id TEXT, message_count INTEGER);
+          CREATE TABLE messages (id INTEGER PRIMARY KEY, session_id TEXT, role TEXT, content TEXT, tool_name TEXT, active INTEGER);`);
+  const s = w.prepare("INSERT INTO sessions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)");
+  const t0 = 1791300000;
+  for (const [id, src, i] of [["cli1", "cli", 1], ["desk1", "desktop", 2], ["acp1", "acp", 3], ["tg1", "telegram", 4], ["dc1", "discord", 5], ["sl1", "Slack", 6]] as const) {
+    s.run(id, src, `${src} chat`, null, null, t0 + i, t0 + i, 0, 0, 0, null, null, 1);
+    w.prepare("INSERT INTO messages (session_id, role, content, tool_name, active) VALUES (?,?,?,?,?)").run(id, "user", `message in ${id}`, null, 1);
+  }
+  w.close();
+
+  it("the filter keeps sessions started on this PC and drops messaging gateways unless opted in", () => {
+    for (const src of ["cli", "tui", "desktop", "webui", "acp", "CLI"]) expect(hermesSessionShown(src, false), src).toBe(true);
+    for (const src of ["telegram", "discord", "slack", "whatsapp", "email", "api_server", "someplugin", "", null]) expect(hermesSessionShown(src, false), String(src)).toBe(false);
+    expect(hermesSessionShown("telegram", true)).toBe(true);
+  });
+
+  it("off: bot sessions are neither listed nor read; on: listed and read like any session", async () => {
+    const off = hermesCatalog(() => {}, db, () => false);
+    expect((await off.listThreads({})).map((t) => t.nativeId)).toEqual(["acp1", "desk1", "cli1"]);
+    expect(await off.readHistory!("tg1")).toEqual([]);
+    expect(await off.readHistory!("cli1")).toEqual([{ kind: "user", text: "message in cli1" }]);
+    const on = hermesCatalog(() => {}, db, () => true);
+    expect((await on.listThreads({})).map((t) => t.nativeId)).toEqual(["sl1", "dc1", "tg1", "acp1", "desk1", "cli1"]);
+    expect(await on.readHistory!("tg1")).toEqual([{ kind: "user", text: "message in tg1" }]);
+  });
+
+  it("follows config.json: off by default, on with \"hermesBotSessions\": true", async () => {
+    expect(DEFAULT_CONFIG.hermesBotSessions).toBe(false);
+    const before = process.env.APPDATA;
+    process.env.APPDATA = path.join(tmp, "appdata");
+    try {
+      const cat = hermesCatalog(() => {}, db);
+      expect((await cat.listThreads({})).some((t) => t.nativeId === "tg1")).toBe(false); // no config.json yet
+      fs.mkdirSync(path.join(tmp, "appdata", "Familiar"), { recursive: true });
+      fs.writeFileSync(path.join(tmp, "appdata", "Familiar", "config.json"), JSON.stringify({ hermesBotSessions: true }));
+      expect((await cat.listThreads({})).some((t) => t.nativeId === "tg1")).toBe(true);
+      expect(fs.readdirSync(path.join(tmp, "appdata", "Familiar"))).toEqual(["config.json"]); // read-only
+    } finally {
+      if (before === undefined) delete process.env.APPDATA;
+      else process.env.APPDATA = before;
+    }
+  });
+});
