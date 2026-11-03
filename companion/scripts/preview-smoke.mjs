@@ -184,6 +184,20 @@ async function controlChatJourney(width) {
     && current.effort === 'medium' && current.chat.agent === 'codex' && current.chat.model === 'm2'
     && current.updates.length === 1 && JSON.stringify(current.updates[0].args) === JSON.stringify({ agent: 'codex' }));
   await snapshot(`${size}-explicit-provider-choice`);
+  // The default-mode warning and header badge appear only for the modes that act without asking.
+  const modeWarn = () => page.evaluate(() => ({ warn: !document.getElementById('ui-mode-warn').hidden
+    && getComputedStyle(document.getElementById('ui-mode-warn')).display !== 'none',
+    badge: document.getElementById('modebadge').hidden ? null : document.getElementById('modebadge').textContent }));
+  await page.locator('#ui-mode').selectOption('auto');
+  const auto = await modeWarn();
+  check(`${size}: Auto default shows the warning and header badge`, auto.warn && auto.badge === 'Default: Auto');
+  await snapshot(`${size}-mode-auto-warning`);
+  await page.locator('#ui-mode').selectOption('ask');
+  const ask = await modeWarn();
+  check(`${size}: Ask first default hides the warning and badge`, !ask.warn && ask.badge === null);
+  await page.locator('#ui-mode').selectOption('plan');
+  const plan = await modeWarn();
+  check(`${size}: Plan only default hides the warning and badge`, !plan.warn && plan.badge === null);
 }
 async function controlFailureJourney(width) {
   await page.setViewportSize({ width, height: 640 });
@@ -537,6 +551,12 @@ async function compactHeaderJourney(narrow) {
   const hot = await chip();
   check(`${size}/header: any mode other than Ask first is highlighted`, hot.count === 1 && hot.text === 'Accept edits' && hot.hot && hot.color !== askFirst.color
     && (await geometry()).children.join() === 'qtitle,qbar');
+  // Only the modes that act without asking are orange; Plan only and Ask first stay gold.
+  for (const [mode, hotCount] of [['Plan only', 0], ['Accept edits', 1], ['Auto', 1], ['Ask first', 0]]) {
+    await page.evaluate(mode => { const p = window.preview; p.model.detail.mode = mode; p.emit('model', { ...p.model }); }, mode);
+    check(`${size}/header: ${mode} chip is ${hotCount ? 'orange' : 'gold'}`, await page.locator('.qmode.hot').count() === hotCount
+      && (await chip()).text === mode);
+  }
   await page.evaluate(() => { const p = window.preview; p.model.detail.mode = 'Ask first'; p.emit('model', { ...p.model }); });
   check(`${size}/header: provider and handoff action remain visible`, (await page.locator('.qtitle').textContent()).includes('Claude')
     && (await page.locator(action('openInApp')).textContent()).includes('Continue in Claude app'));
@@ -658,6 +678,28 @@ try {
       check(`${size}/approval-always: ${selector} sends exactly one ${decision}`, calls.length === 1 && calls[0].type === 'decide' && calls[0].decision === decision
         && calls[0].requestId === 'preview');
     }
+    // The pending card names the folder it acts in, and Always says how long it lasts per provider.
+    await open('approval-always', narrow);
+    const card = () => page.evaluate(() => ({ where: [...document.querySelectorAll('.card-where')].map(e => e.textContent),
+      always: document.querySelector('.btn.always')?.textContent, cwd: window.preview.model.detail.cwd }));
+    let pendingCard = await card();
+    check(`${size}/approval-always: pending card names its folder`, pendingCard.cwd.length > 0 && pendingCard.where.length === 1
+      && pendingCard.where[0] === `in ${pendingCard.cwd}`);
+    check(`${size}/approval-always: Claude's Always lasts this quest`, pendingCard.always === 'Always (this quest)');
+    await page.evaluate(() => { const p = window.preview; p.model.detail.agent = 'hermes'; p.emit('model', { ...p.model }); });
+    check(`${size}/approval-always: an ACP agent's Always says the agent decides`, (await card()).always === 'Always (agent decides how long)');
+    await page.evaluate(() => { const p = window.preview; p.model.detail.cwd = ''; p.emit('model', { ...p.model }); });
+    pendingCard = await card();
+    check(`${size}/approval-always: a hidden folder is not shown`, pendingCard.where.length === 0 && await page.locator(action('decide')).count() === 3);
+    check(`${size}/approval-always: no automatic action`, await page.evaluate(() => window.preview.calls.length) === 0);
+    // Outcome unknown is a whole sentence on its own line, never clipped by the tool line.
+    await open('interrupted', narrow);
+    const unknown = await page.locator('.outcome-unknown').evaluate(el => {
+      const r = el.getBoundingClientRect(), pane = document.getElementById('detail').getBoundingClientRect();
+      return { fits: el.scrollWidth <= el.clientWidth + 1, inside: r.bottom <= pane.bottom && r.right <= pane.right + 1, text: el.textContent.trim() };
+    });
+    check(`${size}/interrupted: Outcome unknown is fully visible on its own line`, unknown.fits && unknown.inside && unknown.text.endsWith('resending'));
+    await snapshot(`${size}-interrupted`);
     // Pending approvals are never shortened: the whole provider preview sits above Approve/Deny.
     for (const scenario of ['approval-long', 'approval-permissions']) {
       await open(scenario, narrow);
@@ -748,10 +790,24 @@ try {
   });
   check('quiet: Needs approval stands out from body text', quiet.label === 'Needs approval' && !!quiet.warn && quiet.warn !== quiet.body);
   check('quiet: only the approval glyph is coloured in the list row', !!quiet.rowGlyph && quiet.rowGlyph === quiet.warn && quiet.rowText !== quiet.warn);
-  check('quiet: catch-up notes do not show the folder path', quiet.meta.length > 0 && !quiet.meta.includes('C:\\preview'));
-  const status = await page.evaluate(() => { const p = window.preview; p.model.private = true; p.emit('model', { ...p.model });
-    const el = document.getElementById('status'); return { text: el.textContent, dot: getComputedStyle(el, '::before').content }; });
+  check('quiet: catch-up notes name agent, project, mode and folder', quiet.meta.length > 0
+    && quiet.meta.split('|').every(m => m === 'Claude · Preview project · Ask first · C:\\preview'));
+  const actions = await page.evaluate(() => ({ directions: [...document.querySelectorAll('.catch-actions')].map(e => getComputedStyle(e).flexDirection),
+    buttons: document.querySelectorAll('.catch-actions .btn').length }));
+  check('quiet: Open quest and Caught up sit side by side', actions.directions.length > 0 && actions.directions.every(d => d === 'row'));
+  for (let i = 0; i < actions.buttons; i++) await point(`.catch-actions .btn >> nth=${i}`);
+  check('quiet: every catch-up action is reachable', actions.buttons > 0 && await page.evaluate(() => window.preview.calls.length) === 0);
+  // The hub blanks folders in Hide names; the fixture does the same here.
+  const status = await page.evaluate(() => { const p = window.preview; p.model.private = true;
+    p.model.attention = p.model.attention.map(item => ({ ...item, cwd: '' })); p.emit('model', { ...p.model });
+    const el = document.getElementById('status'); return { text: el.textContent, dot: getComputedStyle(el, '::before').content,
+      meta: [...document.querySelectorAll('.catch-meta')].map(e => e.textContent).join('|') }; });
   check('status: level dot then text, and Hide names is announced', status.dot.includes('●') && status.text.endsWith(' · Hide names on'));
+  check('quiet: Hide names leaves the folder out of catch-up notes', status.meta.length > 0 && !status.meta.includes('C:\\preview'));
+  const glyphs = await page.evaluate(() => { const p = window.preview, el = document.getElementById('status'), seen = {};
+    for (const level of ['warn', 'off', 'ok']) { p.model.status = { ...p.model.status, level }; p.emit('model', { ...p.model }); seen[level] = getComputedStyle(el, '::before').content; }
+    return seen; });
+  check('status: each level has its own glyph', glyphs.ok.includes('●') && glyphs.warn.includes('▲') && glyphs.off.includes('○'));
   await snapshot('quiet-catch-up');
   await open('finished');
   for (const [name, passed] of Object.entries(await rendererUpdateJourney(page))) check(`entry updates: ${name}`, passed);
