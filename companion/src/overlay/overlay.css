@@ -130,6 +130,10 @@ body.hidden { opacity: 0; }
 .qbar .qapp { margin: 0; }
 .qmode { font-family: var(--display); font-size: var(--small-font); color: var(--gold-dim); text-shadow: 1px 1px 0 #000; }
 .qmode.hot { color: var(--warn); }
+/* In a narrow pane the chip would wrap the bar onto a second header line (and move the reader's
+   place when switching to Focus); the mode is still in Details there. */
+.qhead { container-type: inline-size; }
+@container (max-width: 420px) { .qbar .qmode { display: none; } }
 .qbar .qstate { flex: 1 1 160px; min-width: 0; }
 .qbar .btn.qdetails-toggle { margin-left: auto; padding: 1px 4px; border-color: transparent; background: none; box-shadow: none; color: var(--muted); font-family: var(--sans); text-shadow: none; }
 .qbar .qdetails-toggle[aria-expanded="true"] { color: var(--gold); }
