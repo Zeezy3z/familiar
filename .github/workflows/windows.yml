@@ -1,0 +1,54 @@
+name: Windows verify
+on:
+  # addon/** too: npm test runs the addon API-conformance and Lua<->TS codec parity checks.
+  # Never pull_request_target: PR code must not run with repository privileges.
+  pull_request:
+    paths: ['companion/**', 'addon/**', '.github/workflows/windows.yml']
+  push:
+    branches: [main]
+    # Path filters are not evaluated for tag pushes, so v* tags always run.
+    tags: ['v*']
+    paths: ['companion/**', 'addon/**', '.github/workflows/windows.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  verify:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: companion
+        shell: bash
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: companion/package-lock.json
+      - name: Install locked application dependencies without install hooks
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Test
+        run: npm test
+      - name: Build
+        run: npm run build
+      # README promises no telemetry. fetch/http can't be grepped naively (dependencies mention
+      # them), so this checks only for Electron's crash reporter and auto-updater.
+      - name: Bundle contains no crash reporter or auto-updater
+        run: |
+          if grep -l -E "crashReporter|autoUpdater" dist/main.js; then
+            echo "::error file=companion/dist/main.js::crashReporter/autoUpdater found in the main bundle"
+            exit 1
+          fi
