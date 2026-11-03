@@ -247,8 +247,9 @@ sign-in and their own privacy terms. Familiar identifies itself to them as a cli
   (The OBS steps are untested across OBS versions.)
 * **Hide names (for streaming):** control panel → **In game** → **Hide names** (the `/fam private` command and `privateMode` config key keep their names), or
   `/fam private on|off`. Zones show as *Project 1, 2, …* and quests as *Quest #1, #2, …* (chats as
-  *Chat #n*), desktop threads are hidden, notices and raid warnings say only "Claude needs
-  approval", "Codex finished" or "Quest failed", nothing is spoken, and the FamiliarSync snapshot
+  *Chat #n*), desktop threads are hidden, notices and raid warnings say only
+  `Finished · Claude`, `Needs approval · Claude` or `Failed · Claude` (normally they also name the project
+  and quest, never the reply text), nothing is spoken, and the FamiliarSync snapshot
   holds no titles and no transcript. It hides names, not content: replies, tool lines, approval
   cards and what you type stay visible on screen and can contain file names or paths. Your real
   names and conversations are kept on your PC as before.
