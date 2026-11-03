@@ -42,7 +42,7 @@ function render(s: any) {
   $("linkbadge").innerHTML = s.linked ? '<span class="ok">● linked</span>' : '<span class="muted">○ not linked</span>';
   const c = s.capture ?? {};
   $("link").innerHTML = kv([
-    ["Status", s.linked ? "Linked" : s.game ? "Searching for the Runestrip…" : "Waiting for WoW", s.linked ? "ok" : "warn"],
+    ["Status", s.linked ? "Linked" : s.game ? "Searching for the game link…" : "Waiting for WoW", s.linked ? "ok" : "warn"],
     ["Capture", c.fps ? `${c.fps} fps · ${c.frameW}×${c.frameH}` : "—"],
     ["Frames", `${c.decoded ?? 0} decoded · ${c.crc ?? 0} crc · ${c.missed ?? 0} missed`],
     ["Messages", `${c.msgs ?? 0} received${s.lastMsgAgo != null ? ` · last ${Math.round(s.lastMsgAgo / 1000)}s ago` : ""}`],
@@ -245,6 +245,14 @@ $("journey-action").addEventListener("click", (e) => {
 // In game: text size, sounds, notices as raid warnings.
 const fontSel = $("ui-font") as HTMLSelectElement;
 for (let p = 80; p <= 160; p += 10) fontSel.add(new Option(`${p}%${p === 100 ? " (default)" : ""}`, String(p / 100)));
+// Display only: warn while the chosen default lets new quests act without asking.
+const risky = (v: string) => v === "edits" || v === "auto";
+function setModeWarn(v: string) {
+  $("ui-mode-warn").hidden = !risky(v);
+  const b = $("modebadge");
+  b.hidden = !risky(v);
+  b.textContent = risky(v) ? `Default: ${v === "auto" ? "Auto" : "Accept edits"}` : "";
+}
 function renderUi(ui?: { fontScale: number; sound: boolean; raidWarnings: boolean; quiet?: boolean; privateMode?: boolean; defaultMode?: string; approveKey?: string }) {
   if (!ui) return;
   if (document.activeElement !== fontSel) fontSel.value = String(Math.round(ui.fontScale * 10) / 10);
@@ -252,7 +260,7 @@ function renderUi(ui?: { fontScale: number; sound: boolean; raidWarnings: boolea
   ($("ui-raid") as HTMLInputElement).checked = ui.raidWarnings;
   ($("ui-quiet") as HTMLInputElement).checked = !!ui.quiet;
   ($("ui-private") as HTMLInputElement).checked = !!ui.privateMode;
-  if (ui.defaultMode) ($("ui-mode") as HTMLSelectElement).value = ui.defaultMode;
+  if (ui.defaultMode) { ($("ui-mode") as HTMLSelectElement).value = ui.defaultMode; setModeWarn(ui.defaultMode); }
   const key = $("ui-approve-key") as HTMLInputElement;
   if (document.activeElement !== key) key.value = ui.approveKey ?? "";
 }
@@ -264,6 +272,7 @@ $("ui-quiet").addEventListener("change", (e) => setUi({ quiet: (e.target as HTML
 $("ui-private").addEventListener("change", (e) => setUi({ privateMode: (e.target as HTMLInputElement).checked }));
 $("ui-mode").addEventListener("change", (e) => {
   const mode = (e.target as HTMLSelectElement).value;
+  setModeWarn(mode);
   setUi({ defaultMode: mode }, `New quests will start in ${modeNames[mode] ?? mode}`);
 });
 $("ui-approve-key").addEventListener("change", (e) => setUi({ approveKey: (e.target as HTMLInputElement).value }));
