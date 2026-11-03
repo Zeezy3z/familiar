@@ -32,11 +32,16 @@ for /f %%h in ('certutil -hashfile package-lock.json SHA256 ^| find /v ":"') do 
 set STAMP=node_modules\.familiar-installed
 set HAVE=
 if exist "%STAMP%" set /p HAVE=<"%STAMP%"
-if not exist node_modules\electron\dist\electron.exe set HAVE=
 if not "%HAVE%"=="%LOCK%" (
   echo Installing dependencies ^(about 800 MB, a few minutes^)...
   call npm ci --no-audit --no-fund || goto :fail
   >"%STAMP%" echo %LOCK%
+)
+rem Electron's npm package no longer downloads its binary on install (no postinstall script since
+rem Electron 44); its install script does. Run it whenever the exe is missing.
+if not exist node_modules\electron\dist\electron.exe (
+  echo Downloading Electron ^(about 120 MB^)...
+  call node node_modules\electron\install.js || goto :fail
 )
 rem Already running: starting it again only opens its control panel, which loads dist\ from disk.
 rem Rebuilding under it would pair new panel code with the old main process, so leave dist\ alone.
