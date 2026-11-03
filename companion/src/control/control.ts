@@ -230,6 +230,7 @@ const openFile = async (cmd: string) => {
 btn("b-config", "Config opened", () => openFile("openConfig"));
 btn("b-reload", "Config reloaded", async () => { await window.familiar.invoke("reloadConfig"); await refreshStatus(); });
 btn("b-logs", "Log file opened", () => openFile("openLogs"));
+btn("b-diag", "Diagnostics copied to the clipboard (redacted). Review before posting.", () => window.familiar.invoke("diagnostics"));
 btn("b-refresh", "Desktop conversations rescanned", async () => { await window.familiar.invoke("refresh"); await refreshStatus(); });
 $("c-login").addEventListener("change", (e) => act("Windows startup preference updated", () => window.familiar.invoke("launchAtLogin", (e.target as HTMLInputElement).checked)));
 $("journey-action").addEventListener("click", (e) => {

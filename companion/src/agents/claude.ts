@@ -2,6 +2,7 @@
 // thread; approvals arrive through canUseTool and wait for an in-game decision. Uses the user's
 // logged-in Claude Code subscription (no API key).
 import { randomUUID } from "node:crypto";
+import { StderrFilter } from "./acp";
 import { readDesktopSessions, readLiveSessions } from "./claude-desktop";
 import {
   AgentBackend,
@@ -232,6 +233,7 @@ export class ClaudeBackend implements AgentBackend {
   private async startQuery(l: Live) {
     const sdk = await loadSdk();
     l.input = new AsyncQueue();
+    const stderrFilter = new StderrFilter();
     const options: any = {
       cwd: l.cwd,
       permissionMode: PERMISSION_MODE[l.mode],
@@ -242,7 +244,10 @@ export class ClaudeBackend implements AgentBackend {
       allowedTools: ["WebSearch"],
       env: { ...process.env, CLAUDE_CODE_ENABLE_TODO_TOOLS: "1", CLAUDE_AGENT_SDK_CLIENT_APP: `familiar-wow/${this.opts.version}` },
       canUseTool: (toolName: string, input: Record<string, unknown>, opts: any) => this.canUseTool(l, toolName, input, opts),
-      stderr: (s: string) => this.opts.log("[claude:stderr] " + s.trim().slice(0, 300)),
+      // Warnings and errors only (the CLI prints config paths and MCP command lines at startup).
+      stderr: (s: string) => {
+        for (const line of stderrFilter.lines(s)) this.opts.log("[claude:stderr] " + line);
+      },
     };
     if (this.opts.executable) options.pathToClaudeCodeExecutable = this.opts.executable;
     const model = l.model ?? this.opts.defaultModel;

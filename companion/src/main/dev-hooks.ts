@@ -63,7 +63,7 @@ export function serveDevHooks(
       bound = (server.address() as { port: number }).port;
       const file = devTokenFile(bound);
       fs.writeFileSync(file, token);
-      log(`[dev] test hooks on 127.0.0.1:${bound} (token in ${file})`);
+      log(`[dev] test hooks on 127.0.0.1:${bound} (token in %TEMP%\\${path.basename(file)})`);
       resolve({
         port: bound,
         token,

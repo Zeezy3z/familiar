@@ -3,8 +3,9 @@
 //   Hub --> render model --> Glass overlay (click-through window aligned over the game)
 // Account-safety rule: we only READ the game's pixels and draw our own window above it.
 // No input, messages or focus changes are ever sent to the game process.
-import { app, BrowserWindow, desktopCapturer, dialog, ipcMain, Menu, nativeImage, screen, shell, Tray } from "electron";
+import { app, BrowserWindow, clipboard, desktopCapturer, dialog, ipcMain, Menu, nativeImage, screen, shell, Tray } from "electron";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { AcpBackend } from "../agents/acp";
 import { ClaudeBackend } from "../agents/claude";
@@ -15,7 +16,7 @@ import { providerSetup, startLogin } from "../agents/setup";
 import type { AgentBackend, Mode } from "../agents/types";
 import { MODES } from "../agents/types";
 import { resolveCommand } from "../agents/which";
-import { appDataDir, loadConfig, saveConfig } from "../hub/config";
+import { appDataDir, DEFAULT_CONFIG, loadConfig, saveConfig } from "../hub/config";
 import { FONT_MAX, FONT_MIN, Hub } from "../hub/hub";
 import { buildModel } from "../hub/viewmodel";
 import { activity } from "../hub/activity";
@@ -40,7 +41,7 @@ import { Drag, dragLayout, dragZone, LogMemo, logLayout, rememberLog } from "./g
 import { findWowInstall, installAddon, interfaceCheck, SnapshotWriter, tocInterfaces, uninstallAddon, WowInstall } from "./wow";
 import { RUNNING_BUILD } from "./build";
 import { devEnabled, serveDevHooks } from "./dev-hooks";
-import { describeAddonMessage, describeOverlayAction, logLine, rotateLog } from "./log-file";
+import { changedConfigKeys, describeAddonMessage, describeOverlayAction, diagnosticsText, logLine, redact, rotateLog } from "./log-file";
 
 const VERSION = "0.1.0";
 
@@ -48,8 +49,10 @@ const VERSION = "0.1.0";
 const logFile = path.join(appDataDir(), "familiar.log");
 rotateLog(logFile);
 const logRing: string[] = [];
+// Every line is redacted here (home folder, usernames, keys, tokens; see log-file.ts) before it
+// reaches the ring, the file or the control panel.
 function log(s: string) {
-  const line = logLine(s);
+  const line = logLine(redact(s));
   logRing.push(line);
   if (logRing.length > 400) logRing.shift();
   try {
@@ -617,6 +620,27 @@ function statusSnapshot() {
   };
 }
 
+/** "Copy diagnostics": versions, install/capture/provider state and the redacted log tail. No
+ * paths (beyond what redact() leaves), no config values except booleans, no transcript. */
+function diagnosticsReport(): string {
+  const check = install ? interfaceCheck(install, tocInterfaces(path.join(REPO_ADDON, "Familiar.toc"))) : null;
+  const c = captureStats ?? {};
+  return diagnosticsText({
+    version: VERSION,
+    build: `commit ${RUNNING_BUILD.commit ?? "unavailable"}${RUNNING_BUILD.dirty === null ? "" : RUNNING_BUILD.dirty ? " (local changes)" : " (clean)"}`,
+    electron: process.versions.electron ?? "?",
+    node: process.versions.node ?? "?",
+    windows: `${os.release()} (${os.arch()})`,
+    wow: install
+      ? `${install.flavor} product ${install.product ?? "?"} version ${install.version ?? "?"} iface ${install.iface ?? "?"} (${install.source}); ${check?.text ?? ""}`
+      : `no install (${installError ?? "unknown"})${wrongClient ? `; another client running: ${wrongClient.exe}` : ""}`,
+    capture: `mode ${captureMode}, fps ${c.fps ?? 0}, lock ${c.lock ? "yes" : "no"}, linked ${linked() ? "yes" : "no"}, game ${game ? (minimized ? "minimized" : fg === game.key ? "foreground" : "background") : "not found"}, overlay ${paused ? "paused" : overlayShown ? "shown" : "hidden"}${c.error ? `, error: ${c.error}` : ""}`,
+    providers: providersNow().map((p) => `${p.id} ${p.installed ? "installed" : "not installed"}${p.signedIn === undefined ? "" : p.signedIn ? ", signed in" : ", not signed in"}${p.enabled ? ", on" : ", off"}`),
+    configKeys: changedConfigKeys(cfg as unknown as Record<string, unknown>, DEFAULT_CONFIG as unknown as Record<string, unknown>),
+    log: logRing.slice(-80),
+  });
+}
+
 let statusTimer: NodeJS.Timeout | undefined;
 function sendStatus() {
   if (!control || statusTimer) return;
@@ -780,6 +804,9 @@ app.whenReady().then(async () => {
         return statusSnapshot();
       case "logs":
         return logRing.slice(-200);
+      case "diagnostics":
+        clipboard.writeText(diagnosticsReport());
+        return true;
       case "install":
         doInstall(true);
         return installNotes;
@@ -886,7 +913,8 @@ function makeAcpBackend(id: string): AcpBackend | null {
   const p = { ...DEFAULT_ACP_PROVIDERS[id], ...cfg.providers?.[id] };
   if (!p.command || !resolveCommand(p.command)) return null;
   registerProvider({ id, label: p.label ?? providerInfo(id).label, glyph: p.glyph ?? providerInfo(id).glyph });
-  log(`[boot] provider ${id}: ${p.command} ${(p.args ?? []).join(" ")}${p.enabled === false ? " (switched off)" : ""}`);
+  // Basename and arg count only: users put keys and tokens in a custom provider's args.
+  log(`[boot] provider ${id}: ${path.basename(p.command)} (${(p.args ?? []).length} args)${p.enabled === false ? " (switched off)" : ""}`);
   return new AcpBackend({
     id,
     command: p.command,

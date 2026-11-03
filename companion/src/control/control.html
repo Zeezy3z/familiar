@@ -99,8 +99,9 @@
     <input id="build-id" readonly aria-label="Copyable running build identity">
     <p><b id="restart-title"></b> <span class="hint" id="restart-state"></span></p>
     <p class="hint">Companion source updates take effect after a full Familiar restart. Once quests have settled, choose <b>Quit</b> from the tray, then open <b>Run Familiar.cmd</b>. Opening the launcher while Familiar runs only opens this panel. Reload config changes settings; it does not reload app code. Addon changes load on your next WoW launch or a user-initiated /reload.</p>
-    <div class="btns"><button id="b-config">Open config</button><button id="b-reload">Reload config</button><button id="b-logs">Open log file</button><button id="b-refresh">Rescan desktop threads</button><button id="b-pause">Pause overlay</button>
+    <div class="btns"><button id="b-config">Open config</button><button id="b-reload">Reload config</button><button id="b-logs">Open log file</button><button id="b-diag" title="Copies a redacted summary for a bug report; review it before posting.">Copy diagnostics</button><button id="b-refresh">Rescan desktop threads</button><button id="b-pause">Pause overlay</button>
       <label class="hint"><input type="checkbox" id="c-login"> Start Familiar when I sign in to Windows</label></div>
+    <p class="hint"><b>Copy diagnostics</b> copies a redacted summary for a bug report; review it before posting.</p>
   </section>
   <details class="wide diagnostics"><summary>Link details &amp; troubleshooting</summary><div class="diagnostic-grid">
     <section class="card"><h2>Runestrip link</h2><div class="kv" id="link"></div></section>

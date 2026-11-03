@@ -702,8 +702,9 @@ export function digest(hist: HistoryEntry[], maxChars = 6000): string {
   return `This continues an earlier conversation you had with the user (most recent part below). Pick up where it left off.\n\n--- earlier conversation ---\n${body}\n--- end ---`;
 }
 
-/** Agents' stderr is chatty (Hermes logs every plugin at INFO): keep warnings and errors, one log
- * line per line, without colour codes, and collapse repeats. */
+/** Agents' stderr is chatty (Hermes logs every plugin at INFO) and can carry config paths, MCP
+ * command lines and tokens: keep only warning/error lines, one log line per line, without colour
+ * codes, capped at 200 chars, and collapse repeats. (main.ts log() redacts what remains.) */
 export class StderrFilter {
   private last = "";
   private repeats = 0;
@@ -712,13 +713,14 @@ export class StderrFilter {
     for (const raw of chunk.split(/\r?\n/)) {
       const line = raw.replace(/\x1b\[[0-9;]*m/g, "").trim();
       if (!line || /^(\S+\s+){0,3}\[?(INFO|DEBUG|TRACE)\]?\b/.test(line)) continue;
+      if (!/error|warn|fail|exception|denied|refused/i.test(line)) continue;
       if (line === this.last) {
         if (++this.repeats === 1) out.push("(repeating)");
         continue;
       }
       this.last = line;
       this.repeats = 0;
-      out.push(line.length > 400 ? line.slice(0, 397) + "..." : line);
+      out.push(line.length > 200 ? line.slice(0, 197) + "..." : line);
     }
     return out;
   }
