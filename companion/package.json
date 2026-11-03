@@ -28,7 +28,7 @@
   },
   "devDependencies": {
     "@types/node": "^26.6.4",
-    "electron": "^44.5.1",
+    "electron": "^44.10.1",
     "esbuild": "^0.28.2",
     "fengari": "^0.1.5",
     "tsx": "^4.23.15",
