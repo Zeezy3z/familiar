@@ -3,7 +3,7 @@ on:
   push:
     tags: ['v*']
 permissions:
-  contents: write # the packager creates the GitHub release and uploads the zip + release.json
+  contents: write # the packager creates the GitHub release and uploads the addon zip + release.json; a later step adds the app zip + SHA256SUMS.txt
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false # never cancel a half-uploaded release
@@ -60,3 +60,31 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --prerelease --title "Familiar ${TAG#v} beta"
+      # The addon zip is useless without the companion, so also attach the whole app (what the README
+      # tells users to download) plus SHA256SUMS.txt for both. The app zip is deliberately named
+      # FamiliarApp-*, which the verify step's Familiar-*.zip glob does not match. Re-running a tag
+      # replaces both files in place (--clobber).
+      - name: Attach the full app zip and SHA256SUMS.txt
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          out="$RUNNER_TEMP/dist"
+          mkdir -p "$out"
+          app="FamiliarApp-$TAG-windows.zip"
+          fail() { echo "::error::$1"; exit 1; }
+          # git archive applies .gitattributes, so Run Familiar.cmd comes out with CRLF line endings.
+          git archive --format=zip --prefix=Familiar/ -o "$out/$app" "refs/tags/$TAG"
+          entries=$(unzip -Z1 "$out/$app")
+          for f in 'Familiar/Run Familiar.cmd' Familiar/companion/package-lock.json Familiar/addon/Familiar/Familiar.toc; do
+            grep -qxF "$f" <<< "$entries" || fail "$f missing from $app"
+          done
+          lf=$(unzip -p "$out/$app" 'Familiar/Run Familiar.cmd' | tr -cd '\n' | wc -c)
+          cr=$(unzip -p "$out/$app" 'Familiar/Run Familiar.cmd' | tr -cd '\r' | wc -c)
+          { [ "$lf" -gt 0 ] && [ "$cr" -eq "$lf" ]; } || fail "Run Familiar.cmd in $app must have CRLF line endings (LF=$lf, CR=$cr)"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir "$out" --pattern 'Familiar-*.zip'
+          shopt -s nullglob
+          addon=("$out"/Familiar-*.zip)
+          [ "${#addon[@]}" -eq 1 ] || fail "expected exactly one Familiar-*.zip asset, found ${#addon[@]}"
+          (cd "$out" && sha256sum "$app" "$(basename "${addon[0]}")" > SHA256SUMS.txt)
+          cat "$out/SHA256SUMS.txt"
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber "$out/$app" "$out/SHA256SUMS.txt"

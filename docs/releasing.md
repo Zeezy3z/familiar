@@ -18,7 +18,7 @@ publishes a GitHub release. Configuration: [`.pkgmeta`](../.pkgmeta).
 
 The workflow fails before publishing anything if the tag, the TOC and `package.json` disagree.
 A tag push also runs the Windows verify workflow. A rerun of the same tag updates the existing
-release in place.
+release in place. Open the release afterwards and check that all four files are there.
 
 ## What the release contains
 
@@ -26,7 +26,15 @@ release in place.
   the Lua/XML files and `LICENSE`. The workflow downloads it again and fails unless that holds.
 * `release.json`: packager metadata (file name, flavor `forever`, Interface numbers) that addon
   managers read.
-* GitHub's automatic "Source code (zip)": the companion download (run `Run Familiar.cmd`).
+* `FamiliarApp-vX.Y.Z-windows.zip`: the app users download (companion plus addon, root folder
+  `Familiar/`, `Run Familiar.cmd` inside). The workflow builds it from the tag with `git archive`,
+  checks it holds `Run Familiar.cmd`, `companion/package-lock.json` and `addon/Familiar/Familiar.toc`
+  and that `Run Familiar.cmd` has CRLF line endings, then uploads it. Its name must not start with
+  `Familiar-`: the addon zip check expects exactly one `Familiar-*.zip`.
+* `SHA256SUMS.txt`: SHA-256 of the app zip and the addon zip, written by the workflow after it
+  re-downloads the addon zip. Re-running a tag replaces both new files.
+* GitHub's automatic "Source code (zip)": not the supported download; the README points to the
+  `FamiliarApp` zip.
 * Notes: the commit log since the previous tag. While Familiar is in beta the workflow marks the
   release as a prerelease titled `Familiar X.Y.Z beta`.
 
@@ -54,7 +62,8 @@ tag uploads as a release. WoWInterface does not support WoW: Forever yet.
 
 ## Checksums
 
-GitHub computes a SHA-256 digest for every uploaded release asset and shows it next to the asset
-on the release page (also `gh release view vX.Y.Z --json assets` and the REST API's `digest`
-field). Verify with `sha256sum` (or `Get-FileHash` on Windows). The automatic source archive is not
-an uploaded asset and has no published digest.
+`SHA256SUMS.txt` (above) is the checksum list the README sends users to. GitHub also computes a
+SHA-256 digest for every uploaded release asset and shows it next to the asset on the release page
+(also `gh release view vX.Y.Z --json assets` and the REST API's `digest` field). Verify with
+`sha256sum` (or `Get-FileHash` on Windows). The automatic source archive is not an uploaded asset
+and has no published digest.

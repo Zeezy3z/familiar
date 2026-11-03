@@ -29,11 +29,20 @@ WoW addon (Lua)  ── Runestrip pixels ──►  Familiar companion (Electron
 
 ## Install
 
-1. Get the code: `git clone https://github.com/Zeezy3z/familiar.git C:\Familiar`, or download the
-   ZIP from the [Releases page](https://github.com/Zeezy3z/familiar/releases) and extract it to
-   `C:\Familiar`. Not inside OneDrive, a synced folder or a network drive: WoW's AddOns folder is
-   linked to this folder. If you downloaded a ZIP, right-click it → **Properties** → **Unblock**
-   before extracting (see [Troubleshooting](#troubleshooting) for the SmartScreen warning).
+1. Get the app: download **`FamiliarApp-v<version>-windows.zip`** (for example
+   `FamiliarApp-v0.1.0-windows.zip`) from the
+   [Releases page](https://github.com/Zeezy3z/familiar/releases) and extract it so that
+   `Run Familiar.cmd` ends up in `C:\Familiar`. That ZIP is the whole thing: companion and addon.
+   Or `git clone https://github.com/Zeezy3z/familiar.git C:\Familiar`. Not inside OneDrive, a
+   synced folder or a network drive: WoW's AddOns folder is linked to this folder. If you
+   downloaded a ZIP, right-click it → **Properties** → **Unblock** before extracting (see
+   [Troubleshooting](#troubleshooting) for the SmartScreen warning).
+
+   `Familiar-v<version>-forever.zip` on the same page is the addon alone, for addon managers such
+   as WowUp. It does nothing without the app, so most people want the `FamiliarApp` ZIP.
+   To check a download, compare
+   `Get-FileHash .\FamiliarApp-v0.1.0-windows.zip -Algorithm SHA256` with the line for that file
+   in `SHA256SUMS.txt` on the same release page.
 2. Double-click **`Run Familiar.cmd`**. It checks for Node.js 24+, installs dependencies with
    `npm ci` (first run: a few minutes), builds the companion, puts it in the system tray and opens
    the Familiar control panel.
