@@ -23,9 +23,9 @@ function Options.Init()
   category = Settings.RegisterVerticalLayoutCategory("Familiar")
   setting = Settings.RegisterAddOnSetting(category, "FAMILIAR_OPACITY", "opacity", ns.db, Settings.VarType.Number, "Window opacity", 100)
   setting:SetValueChangedCallback(function(_, value) ns.UI.ApplyOpacity(value) end)
-  local slider = Settings.CreateSliderOptions(0, 100, 5)
+  local slider = Settings.CreateSliderOptions(60, 100, 5)
   slider:SetLabelFormatter(MinimalSliderWithSteppersMixin.Label.Right, function(v) return ("%d%%"):format(v) end)
   Settings.CreateSlider(category, setting, slider,
-    "How solid the Familiar window's background is. Text, borders and buttons stay solid: lower it to see the game through the window.")
+    "How solid the Familiar window's background is. Text, borders and buttons stay solid: lower it to see the game through the window. Below 60% the text becomes hard to read, so the slider stops there (/fam opacity still accepts lower).")
   Settings.RegisterAddOnCategory(category)
 end
