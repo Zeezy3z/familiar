@@ -12,7 +12,8 @@ import { createRequire, syncBuiltinESMExports } from "node:module";
 import { buildSnapshot } from "../src/main/wow";
 import type { AgentBackend, AgentEvent, BackendStatus, Decision, HistoryEntry, Mode, StartOptions, ThreadInfo } from "../src/agents/types";
 
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "familiar-hub-"));
+// realpath: on CI runners os.tmpdir() is an 8.3 short path (RUNNER~1); the hub compares real paths.
+const tmp = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "familiar-hub-")));
 let appData = tmp;
 process.env.APPDATA = appData;
 const projRoot = path.join(tmp, "dev");
