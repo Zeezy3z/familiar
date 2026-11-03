@@ -533,7 +533,7 @@ export class Hub {
     }
     if (prompting && !this.within("prompt", PROMPT_BUDGET.max, PROMPT_BUDGET.perMs)) {
       this.log("[hub] prompt budget exceeded (20 / 5 min)");
-      return this.toast("Too many messages from the game in 5 minutes; waiting a bit.", "error");
+      return this.toast("Too many messages from the game in 5 minutes; waiting a bit. If you didn't send them, an addon may be: /fam stop, then disable addons.", "error");
     }
     switch (msg.t) {
       case "quests":
@@ -1545,7 +1545,7 @@ export class Hub {
         });
         t.status = "approval";
         t.unread = this.view.selected !== t.id;
-        this.toast(`${agentName(t.agent)} · ${this.projectName(t)}: ${e.title}`, "approval", t.id, `${agentName(t.agent)} needs approval`);
+        this.toast(`Needs approval · ${agentName(t.agent)} · ${this.projectName(t)} · ${e.title}`, "approval", t.id, `Needs approval · ${agentName(t.agent)}`);
         this.onSound("approval");
         break;
       case "approvalResolved": {
@@ -1580,7 +1580,7 @@ export class Hub {
           t.status = "error";
           t.lastError = e.error ?? "failed";
           this.note(t, `Turn failed: ${t.lastError}`, "error");
-          this.toast(`${agentName(t.agent)} · ${this.projectName(t)}: failed`, "error", t.id, "Quest failed");
+          this.toast(`Failed · ${agentName(t.agent)} · ${this.projectName(t)} · ${t.title}`, "error", t.id, `Failed · ${agentName(t.agent)}`);
           this.onSound("error");
         } else {
           t.status = "idle";
@@ -1589,9 +1589,8 @@ export class Hub {
             this.markCaughtUp(t); // the player stopped it; nothing to catch up on
           } else {
             const last = [...t.entries].reverse().find((x) => x.kind === "assistant");
-            const gist = last ? firstSentence(last.text) : "done";
             if (this.view.selected !== t.id) t.unread = true;
-            this.toast(`${agentName(t.agent)} · ${this.projectName(t)} — ${gist}`, "done", t.id, `${agentName(t.agent)} finished`);
+            this.toast(`Finished · ${agentName(t.agent)} · ${this.projectName(t)} · ${t.title}`, "done", t.id, `Finished · ${agentName(t.agent)}`);
             if (!this.cfg().quiet) this.onSound("done");
             if (!this.cfg().quiet && !this.cfg().privateMode && this.cfg().speak && last) this.onSpeak(`${agentName(t.agent)} finished in ${this.projectName(t)}. ${firstSentence(last.text, 200)}`);
           }
@@ -1643,7 +1642,7 @@ export class Hub {
     if (!!cfg.privateMode === on) return;
     cfg.privateMode = on;
     this.onConfigChanged(cfg);
-    this.toast(on ? "Private mode on: project and quest names are hidden." : "Private mode off.", "info");
+    this.toast(on ? "Hide names on: project and quest names are hidden. Replies, approval cards and what you type stay visible." : "Hide names off.", "info");
     this.changed("config");
   }
 
