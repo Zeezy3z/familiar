@@ -534,7 +534,7 @@ function targetLine(hub: Hub): RenderModel["target"] {
   if (v.draft) return { text: `New ${agentName(v.draft.agent)} quest in ${zone(v.draft.projectKey, v.draft.cwd)}` };
   if (v.list === "pick") return { text: "Type a zone name or a folder path" };
   const t = hub.selectedThread();
-  if (t) return { text: t.kind === "chat" ? `Chat - ${t.title}` : `${agentName(t.agent)} - ${t.title} - ${hub.projectName(t)}` };
+  if (t) return { text: t.kind === "chat" ? `Chat - ${t.title}` : `${agentName(t.agent)} - ${t.title} - ${hub.projectName(t)} - ${MODE_LABEL[t.mode]}` };
   if (v.selected?.startsWith("ext:")) {
     const x = hub.external.get(v.selected);
     if (x) return { text: `Desktop ${agentName(x.agent)} conversation in ${zone(x.projectKey, x.cwd)} (asks before continuing)`, warn: true };
