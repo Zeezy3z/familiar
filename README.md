@@ -77,7 +77,9 @@ when I sign in to Windows**, or `/fam autostart on` in game.
 | `/fam <text>` | send to the selected quest without opening the window |
 | `/fam claude <text>` / `/fam codex <text>` | start a quest in the current zone |
 | `/fam stop` · `tracker` · `strip tr` · `quiet on` · `diag` · `reload` · `help` | stop the agent, toggle the tracker, move the strip, mute ordinary notices, print diagnostics, … |
+| `/fam private on` · `off` | private mode for streaming: hide project and quest names (see [Privacy & data](#privacy--data)) |
 | `/fam draft discard` | clear this character's unfinished composer draft |
+| `/fam suggest <idea>` | open a pre-filled GitHub issue in your browser (up to 500 characters; also **Suggest a change** in the control panel). Only your text and version numbers go in; nothing is sent until you submit it there |
 
 Keybindings: *Options → Keybindings → AddOns → Familiar*. In the composer, **Ctrl+Up / Ctrl+Down**
 browses sent messages; an unfinished draft survives `/reload` and logout and never sends itself.
@@ -167,6 +169,7 @@ defaults.
 | `chatAgent` / `chatModel` / `chatEffort` | `claude` / `haiku` / `medium` | defaults for Chats |
 | `externalDays`, `externalPerZone`, `followDesktopArchive` | `21`, `6`, `true` | which desktop threads are listed |
 | `sound`, `speak`, `quiet`, `raidWarnings`, `fontScale`, `toolDetail` | | notices and display |
+| `privateMode` | `false` | streamer mode: generic project/quest names, no desktop threads, generic notices (see [Privacy & data](#privacy--data)) |
 
 Logs: `%APPDATA%\Familiar\familiar.log` (control panel → **Open log file**). **Companion controls**
 shows a copyable build line (version, commit, source status; no paths) for bug reports.
@@ -197,8 +200,13 @@ sign-in and their own privacy terms. Familiar identifies itself to them as a cli
   * Conversations you start also live in each agent's own history.
 * **On stream or in screenshots:** the overlay (project names, titles, replies, approval commands)
   is a separate window: it shows up in OBS **Display Capture**, not in **Game Capture**. The small
-  coloured strip at the top-left of the game encodes what you are sending; crop it out. A private
-  mode that hides names and titles is planned.
+  coloured strip at the top-left of the game encodes what you are sending; crop it out.
+* **Private mode (for streaming):** control panel → **In game** → **Private mode**, or
+  `/fam private on|off`. Zones show as *Project 1, 2, …* and quests as *Quest #1, #2, …* (chats as
+  *Chat #n*), desktop threads are hidden, notices and raid warnings say only "Claude needs
+  approval", "Codex finished" or "Quest failed", nothing is spoken, and the FamiliarSync snapshot
+  holds no titles and no transcript. Approval cards still show the full command or change, so you
+  always see what you approve. Your real names and conversations are kept on your PC as before.
 
 ## What can talk to your agents
 
@@ -279,6 +287,9 @@ guarantee otherwise. Use at your own discretion.
 
 When reporting a bug, include the build line from **Companion controls**, `/fam diag`, and the
 `Version` from your WoW folder's `.build.info`; remove personal paths and conversation text.
+
+Ideas and small change requests: `/fam suggest <idea>` in game or **Suggest a change** in the control
+panel opens a pre-filled issue (text and versions only) that you review and submit yourself.
 
 ## Updating / Uninstalling
 

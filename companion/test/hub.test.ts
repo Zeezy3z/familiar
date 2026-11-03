@@ -559,6 +559,21 @@ describe("Hub", () => {
     expect(claude.sent).toEqual([{ threadId: t.id, text: "go on" }]);
   });
 
+  it("/fam suggest opens a pre-filled issue form (versions only) without corroboration", async () => {
+    const opened: string[] = [];
+    hub.openIssue = (url) => opened.push(url);
+    hub.suggestVersions = () => ({ familiar: "0.1.0", wow: "1.60.2.70500", iface: 16002, windows: "10.0.26200" });
+    await hub.key("suggest", "Let me rename quests", "full", NO_PROOF);
+    expect(opened).toHaveLength(1);
+    const q = new URL(opened[0]).searchParams;
+    expect(q.get("suggestion")).toBe("Let me rename quests");
+    expect(q.get("diagnostics")).toContain("WoW client 1.60.2.70500 (interface 16002)");
+    expect(hub.toasts.at(-1)!.text).toBe("Opened a pre-filled GitHub issue in your browser. Review it and submit there; nothing is sent until you do.");
+    await hub.key("suggest", "", "full", NO_PROOF);
+    expect(opened).toHaveLength(1);
+    expect(hub.toasts.at(-1)!.text).toMatch(/Usage: \/fam suggest/);
+  });
+
   it("Continue in <app> hands a finished quest over: Familiar lets go first, then the app opens the same conversation", async () => {
     const opened: string[] = [];
     hub.openExternal = (url) => opened.push(url);

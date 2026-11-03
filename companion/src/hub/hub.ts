@@ -28,6 +28,7 @@ import { CodexBackend } from "../agents/codex";
 import { providerAvailable } from "../agents/setup";
 import { CHAT_INSTRUCTIONS, withGameContext } from "./chat";
 import { CHATS_KEY, Project, ProjectRegistry, projectRootOf } from "./projects";
+import { SUGGEST_TOAST, suggestionUrl, type SuggestVersions } from "./suggest";
 
 export type EntryKind = "user" | "assistant" | "reasoning" | "tool" | "approval" | "notice";
 
@@ -96,6 +97,9 @@ export interface Toast {
   kind: "done" | "approval" | "error" | "info";
   at: number;
   threadId?: string;
+  /** Text shown instead in private mode (no project, title, command or reply). Without it,
+   * private mode shows a generic line per kind (see privateToast in viewmodel.ts). */
+  generic?: string;
 }
 
 export interface View {
@@ -212,6 +216,10 @@ export class Hub {
   private catchUpAttempt = 0;
   /** Opens an agent app's link ("Continue in <app>"); main sets it to the shell. */
   openExternal: (url: string) => void = () => {};
+  /** "Suggest a change": opens our pre-filled new-issue form (main gates the URL prefix). */
+  openIssue: (url: string) => void = () => {};
+  /** Versions for a suggestion (main: install probe + os.release); never paths or names. */
+  suggestVersions: () => SuggestVersions = () => ({});
   private threadStore: ThreadStore;
   get storage() { return this.threadStore.warning; }
   notice?: { text: string; at: number };
@@ -605,6 +613,11 @@ export class Hub {
         this.setQuiet(a === "on" ? true : a === "off" ? false : !this.cfg().quiet);
         break;
       }
+      case "private": {
+        const a = (arg ?? "").toLowerCase();
+        this.setPrivate(a === "on" ? true : a === "off" ? false : !this.cfg().privateMode);
+        break;
+      }
       case "caughtup": {
         const t = this.selectedThread();
         const e = t && attentionEntry(t);
@@ -619,6 +632,14 @@ export class Hub {
       case "archived":
         this.toast(this.hidden.size ? `${this.hidden.size} archived thread${this.hidden.size > 1 ? "s" : ""} - /fam unarchive restores them.` : "Nothing is archived.", "info");
         break;
+      case "suggest": {
+        // Only opens a browser page the user must submit there, so no physical corroboration.
+        const url = suggestionUrl(arg ?? "", this.suggestVersions());
+        if (!url) return this.toast("Usage: /fam suggest <your idea> (up to 500 characters)", "info");
+        this.openIssue(url);
+        this.toast(SUGGEST_TOAST, "info");
+        break;
+      }
       case "show": {
         const want = (arg ?? "").toLowerCase().split(/[\s,]+/).filter(Boolean);
         const kinds = Object.keys(this.backends) as AgentKind[];
@@ -936,10 +957,10 @@ export class Hub {
         }
         if (a.type === "pin") {
           if (x?.starred) this.toast("Starred in the desktop app - it stays listed.", "info");
-          else if (this.pinned.delete(ref)) this.toast(`Unpinned: ${x?.title ?? own?.title}`, "info");
+          else if (this.pinned.delete(ref)) this.toast(`Unpinned: ${x?.title ?? own?.title}`, "info", undefined, "Unpinned.");
           else {
             this.pinned.add(ref);
-            this.toast(`Pinned: ${x?.title ?? own?.title} - listed even when old`, "info");
+            this.toast(`Pinned: ${x?.title ?? own?.title} - listed even when old`, "info", undefined, "Pinned - listed even when old.");
           }
         }
         if (x) this.refreshExternal().catch(() => {});
@@ -998,6 +1019,8 @@ export class Hub {
         ? `Archived: ${title} - in ${agentName(agent)} too (/fam unarchive restores)`
         : `Archived: ${title} - in Familiar only; ${agentName(agent)} doesn't let other apps archive (/fam unarchive restores)`,
       "info",
+      undefined,
+      "Archived (/fam unarchive restores).",
     );
     this.changed("archive");
   }
@@ -1168,7 +1191,7 @@ export class Hub {
       const proj = this.matchProject(text);
       if (proj) {
         this.beginDraft(this.agentOr(this.view.pickAgent), proj);
-        this.toast(`Zone: ${proj.name} — now describe the quest`, "info");
+        this.toast(`Zone: ${proj.name} — now describe the quest`, "info", undefined, "Zone chosen — now describe the quest");
         this.changed("draft");
         return;
       }
@@ -1302,7 +1325,7 @@ export class Hub {
     this.view.selected = t.id;
     this.view.collapsed.delete(t.projectKey);
     // Every start is visible on the Glass, so one another addon makes can't pass unnoticed.
-    this.toast(`Started: ${t.title} (${this.projectName(t)})`, "info", t.id);
+    this.toast(`Started: ${t.title} (${this.projectName(t)})`, "info", t.id, `${agentName(t.agent)} quest started`);
     return t;
   }
 
@@ -1522,7 +1545,7 @@ export class Hub {
         });
         t.status = "approval";
         t.unread = this.view.selected !== t.id;
-        this.toast(`${agentName(t.agent)} · ${this.projectName(t)}: ${e.title}`, "approval", t.id);
+        this.toast(`${agentName(t.agent)} · ${this.projectName(t)}: ${e.title}`, "approval", t.id, `${agentName(t.agent)} needs approval`);
         this.onSound("approval");
         break;
       case "approvalResolved": {
@@ -1557,7 +1580,7 @@ export class Hub {
           t.status = "error";
           t.lastError = e.error ?? "failed";
           this.note(t, `Turn failed: ${t.lastError}`, "error");
-          this.toast(`${agentName(t.agent)} · ${this.projectName(t)}: failed`, "error", t.id);
+          this.toast(`${agentName(t.agent)} · ${this.projectName(t)}: failed`, "error", t.id, "Quest failed");
           this.onSound("error");
         } else {
           t.status = "idle";
@@ -1568,9 +1591,9 @@ export class Hub {
             const last = [...t.entries].reverse().find((x) => x.kind === "assistant");
             const gist = last ? firstSentence(last.text) : "done";
             if (this.view.selected !== t.id) t.unread = true;
-            this.toast(`${agentName(t.agent)} · ${this.projectName(t)} — ${gist}`, "done", t.id);
+            this.toast(`${agentName(t.agent)} · ${this.projectName(t)} — ${gist}`, "done", t.id, `${agentName(t.agent)} finished`);
             if (!this.cfg().quiet) this.onSound("done");
-            if (!this.cfg().quiet && this.cfg().speak && last) this.onSpeak(`${agentName(t.agent)} finished in ${this.projectName(t)}. ${firstSentence(last.text, 200)}`);
+            if (!this.cfg().quiet && !this.cfg().privateMode && this.cfg().speak && last) this.onSpeak(`${agentName(t.agent)} finished in ${this.projectName(t)}. ${firstSentence(last.text, 200)}`);
           }
         }
         break;
@@ -1597,9 +1620,9 @@ export class Hub {
     this.changed("note");
   }
 
-  toast(text: string, kind: Toast["kind"], threadId?: string) {
+  toast(text: string, kind: Toast["kind"], threadId?: string, generic?: string) {
     if (kind === "done" && this.cfg().quiet) return;
-    this.toasts.push({ id: this.toastSeq++, text, kind, at: Date.now(), threadId });
+    this.toasts.push({ id: this.toastSeq++, text, kind, at: Date.now(), threadId, ...(generic ? { generic } : {}) });
     if (this.toasts.length > 4) this.toasts.shift();
     this.changed("toast");
   }
@@ -1611,6 +1634,17 @@ export class Hub {
     if (on) this.toasts = this.toasts.filter(t => t.kind !== "done");
     this.onConfigChanged(cfg);
     this.changed("quiet");
+  }
+
+  /** Private (streamer) mode: the render model and FamiliarSync snapshot use generic names (see
+   * privateModel in viewmodel.ts); the hub and threads.json keep the real data. */
+  setPrivate(on: boolean) {
+    const cfg = this.cfg();
+    if (!!cfg.privateMode === on) return;
+    cfg.privateMode = on;
+    this.onConfigChanged(cfg);
+    this.toast(on ? "Private mode on: project and quest names are hidden." : "Private mode off.", "info");
+    this.changed("config");
   }
 
   private pruneToasts() {

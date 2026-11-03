@@ -282,12 +282,14 @@ local HELP = {
   "/fam archive - archive the selected quest or thread (or right-click it); also in Codex/Hermes",
   "/fam unarchive - restore everything archived from Familiar; /fam archived counts them",
   "/fam show all | claude | codex - filter the Quest Log by agent",
+  "/fam suggest <idea> - open a pre-filled GitHub issue in your browser (up to 500 characters); nothing is sent until you submit it there",
   "/fam ask <question> - chat (no project, web search): game questions, anything; /fam ask new <q> starts a fresh chat",
   "/fam ask context on | off - include your class, level, zone and quest log in chats",
   "/fam resend | discard - send again / drop messages that did not reach the PC",
   "/fam draft discard - clear the unfinished composer draft for this character",
   "/fam autostart [on | off] - start Familiar with Windows (in the tray)",
   "/fam quiet [on | off] - defer ordinary completion notices; approvals and failures remain",
+  "/fam private [on | off] - streamer mode: hide project and quest names (approval cards still show the request)",
   "/fam caughtup - mark the selected quest's saved update caught up (never approves a request)",
   "/fam font bigger | smaller | reset | 80-160 - text size in the Familiar window",
   "/fam opacity [0-100] - window background opacity; no number opens Options -> AddOns -> Familiar",
@@ -379,7 +381,7 @@ SlashCmdList.FAMILIAR = function(input)
     local n = #ns.db.outbox
     ns.db.outbox = {}
     ns.Print(("dropped %d unsent message%s."):format(n, n == 1 and "" or "s"))
-  elseif (cmd == "autostart" or cmd == "sound" or cmd == "warnings" or cmd == "quiet") and (rest == "" or rest:lower() == "on" or rest:lower() == "off") then
+  elseif (cmd == "autostart" or cmd == "sound" or cmd == "warnings" or cmd == "quiet" or cmd == "private") and (rest == "" or rest:lower() == "on" or rest:lower() == "off") then
     ns.Send({ t = "key", k = cmd, a = rest:lower(), view = ns.UI.focusMode and "focus" or "full" }, true)
   elseif cmd == "font" and IsFontArg(rest) then
     ns.Send({ t = "key", k = "font", a = rest:lower(), view = ns.UI.focusMode and "focus" or "full" }, true)
@@ -415,6 +417,18 @@ SlashCmdList.FAMILIAR = function(input)
     ns.UI.Key(cmd, "slash")
   elseif cmd == "show" and IsAgentFilter(rest) then
     ns.Send({ t = "key", k = "show", a = rest:lower(), view = ns.UI.focusMode and "focus" or "full" }, true)
+  elseif cmd == "suggest" then
+    -- The companion opens a pre-filled GitHub issue form; the player submits it in the browser.
+    if rest == "" then ns.Print("/fam suggest <idea> - opens a pre-filled GitHub issue in your browser (up to 500 characters).")
+    else
+      local text = ns.Unescape(rest)
+      if #text > 500 then -- cut at a character boundary, not inside a UTF-8 sequence
+        local cut = 500
+        while cut > 0 and (text:byte(cut + 1) or 0) >= 128 and text:byte(cut + 1) < 192 do cut = cut - 1 end
+        text = text:sub(1, cut)
+      end
+      ns.Send({ t = "key", k = "suggest", a = text, view = ns.UI.focusMode and "focus" or "full" }, true)
+    end
   elseif cmd == "native" then
     ns.UI.ToggleNative()
   elseif cmd == "reload" or cmd == "sync" then

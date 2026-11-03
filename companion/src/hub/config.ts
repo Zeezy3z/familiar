@@ -34,6 +34,10 @@ export interface Config {
   speak: boolean;
   /** Defer ordinary completion notifications until the player returns. Approvals/errors remain. */
   quiet: boolean;
+  /** Streamer mode: the Glass, notices and the FamiliarSync snapshot show "Project n" / "Quest #n"
+   * instead of real names, hide desktop threads and transcripts in the snapshot, and never speak.
+   * Pending approval cards still show the full request. */
+  privateMode: boolean;
   /** Overlay font scale multiplier (0.8 - 1.6). */
   fontScale: number;
   /** Notices (done, approval needed, failed, settings) big in the middle of the screen like raid
@@ -80,6 +84,7 @@ export const DEFAULT_CONFIG: Config = {
   sound: true,
   speak: false,
   quiet: false,
+  privateMode: false,
   fontScale: 1,
   raidWarnings: true,
   launchAtLogin: false,

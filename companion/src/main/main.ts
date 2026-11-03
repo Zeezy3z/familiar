@@ -20,6 +20,7 @@ import { appDataDir, DEFAULT_CONFIG, loadConfig, saveConfig } from "../hub/confi
 import { FONT_MAX, FONT_MIN, Hub } from "../hub/hub";
 import { buildModel } from "../hub/viewmodel";
 import { activity } from "../hub/activity";
+import { isIssueUrl, suggestionUrl, type SuggestVersions } from "../hub/suggest";
 import {
   clientRectOnScreen,
   extendedFrameBounds,
@@ -656,7 +657,7 @@ function pushAll() {
 }
 
 function uiSettings() {
-  return { fontScale: cfg.fontScale, sound: cfg.sound, raidWarnings: cfg.raidWarnings !== false, quiet: !!cfg.quiet, defaultMode: cfg.defaultMode, approveKey: cfg.approveKey ?? "" };
+  return { fontScale: cfg.fontScale, sound: cfg.sound, raidWarnings: cfg.raidWarnings !== false, quiet: !!cfg.quiet, privateMode: !!cfg.privateMode, defaultMode: cfg.defaultMode, approveKey: cfg.approveKey ?? "" };
 }
 
 function statusSnapshot() {
@@ -689,6 +690,11 @@ function statusSnapshot() {
     chat: { agent: cfg.chatAgent, model: cfg.chatModel, effort: cfg.chatEffort },
     logPath: logFile,
   };
+}
+
+/** Versions for "Suggest a change": no paths, names or logs. */
+function suggestVersions(): SuggestVersions {
+  return { familiar: VERSION, wow: install?.version, iface: install?.iface, windows: os.release() };
 }
 
 /** "Copy diagnostics": versions, install/capture/provider state and the redacted log tail. No
@@ -827,6 +833,11 @@ app.whenReady().then(async () => {
   hub.openExternal = (url) => {
     if (/^(claude|codex):\/\//i.test(url)) shell.openExternal(url).catch((e) => log(`[open] ${e}`));
   };
+  // "Suggest a change": only our own pre-filled new-issue form; the user submits it there.
+  hub.openIssue = (url) => {
+    if (isIssueUrl(url)) shell.openExternal(url).catch((e) => log(`[open] ${e}`));
+  };
+  hub.suggestVersions = suggestVersions;
   hub.onSound = (k) => cfg.sound && overlay?.webContents.send("sound", k);
   hub.onSpeak = (t) => overlay?.webContents.send("speak", t);
   hub.onConfigChanged = (c) => {
@@ -938,11 +949,12 @@ app.whenReady().then(async () => {
         sendStatus();
         return true;
       case "uiSettings": {
-        const a = (args ?? {}) as { fontScale?: number; sound?: boolean; raidWarnings?: boolean; quiet?: boolean; defaultMode?: string; approveKey?: string };
+        const a = (args ?? {}) as { fontScale?: number; sound?: boolean; raidWarnings?: boolean; quiet?: boolean; privateMode?: boolean; defaultMode?: string; approveKey?: string };
         if (typeof a.fontScale === "number" && isFinite(a.fontScale)) cfg.fontScale = Math.min(FONT_MAX, Math.max(FONT_MIN, a.fontScale));
         if (typeof a.sound === "boolean") cfg.sound = a.sound;
         if (typeof a.raidWarnings === "boolean") cfg.raidWarnings = a.raidWarnings;
         if (typeof a.quiet === "boolean") hub.setQuiet(a.quiet);
+        if (typeof a.privateMode === "boolean") hub.setPrivate(a.privateMode);
         if (MODES.includes(a.defaultMode as Mode)) cfg.defaultMode = a.defaultMode as Mode; // never a bypass mode: MODES has none
         // Only keys Familiar can check on the keyboard; anything else clears it (keybind approvals refused).
         if (typeof a.approveKey === "string") cfg.approveKey = bindingToVk(a.approveKey) ? a.approveKey.trim().toUpperCase() : "";
@@ -962,6 +974,12 @@ app.whenReady().then(async () => {
       case "refresh":
         await hub.refreshExternal();
         return true;
+      case "suggest": {
+        const url = suggestionUrl(String(args ?? ""), suggestVersions());
+        if (!url) throw new Error("Write a suggestion first.");
+        hub.openIssue(url);
+        return true;
+      }
       case "testToast":
         hub.toast("Familiar overlay test — if you can read this over WoW, the Glass works.", "info");
         return true;

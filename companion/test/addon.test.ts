@@ -187,6 +187,15 @@ describe("Familiar addon (headless)", () => {
     expect(last("prompt").text).toBe("what changed today?");
   });
 
+  it("/fam suggest sends the idea to the companion as a key, capped at 500 bytes", () => {
+    vm.run(`SlashCmdList.FAMILIAR("suggest Add a || pipe Option")`);
+    advance(3);
+    expect(messages.filter((m) => m.t === "key" && m.k === "suggest").at(-1)).toMatchObject({ a: "Add a | pipe Option" });
+    vm.run(`SlashCmdList.FAMILIAR("suggest ${"x".repeat(499)}é")`);
+    advance(6);
+    expect(messages.filter((m) => m.t === "key" && m.k === "suggest").at(-1)!.a).toBe("x".repeat(499));
+  });
+
   it("un-escapes typed pipes, treats '/fam help me ...' as a prompt, refuses oversized text", () => {
     // WoW edit boxes hand us a typed "|" as "||".
     vm.run(`FamiliarComposer:SetText("grep x || wc -l") MOCK.fire(FamiliarComposer, "OnEnterPressed")`);

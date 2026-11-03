@@ -85,6 +85,7 @@
     <div class="kv">
       <div>Text size</div><div><select id="ui-font" aria-label="In-game text size"></select></div>
       <div>Quiet play</div><div><label class="hint"><input type="checkbox" id="ui-quiet"> Keep ordinary completion notifications quiet until I turn this off</label><div class="hint">Replies wait in your catch-up notes when you open /fam. Approvals and failures keep their attention cues; agents continue working.</div></div>
+      <div>Private mode</div><div><label class="hint"><input type="checkbox" id="ui-private"> Private mode (for streaming): hide project and quest names</label><div class="hint">Zones show as Project 1, 2, ... and quests as Quest #1, #2, ...; desktop threads are hidden, notices are generic and nothing is spoken. Approval cards still show the full request. Also /fam private on | off.</div></div>
       <div>New quests start in</div><div><select id="ui-mode" aria-label="Mode for new quests"><option value="ask">Ask first</option><option value="edits">Accept edits</option><option value="plan">Plan only</option><option value="auto">Auto</option></select><div class="hint">Auto lets Claude's safety check approve routine actions and still asks you about risky ones. Change any quest with Mode.</div></div>
       <div>Approve key</div><div><input type="text" id="ui-approve-key" maxlength="24" spellcheck="false" autocomplete="off" placeholder="F9" aria-label="Approve key (as bound in WoW, e.g. F9 or CTRL-F9)"><div class="hint">Approve key (as bound in WoW, e.g. F9 or CTRL-F9): type the key you bound to <i>Approve pending request</i> (Options → Keybindings → AddOns → Familiar). Familiar checks it was really pressed. Without it, approve by clicking the card or the Approve button.</div></div>
       <div>Sounds</div><div><label class="hint"><input type="checkbox" id="ui-sound"> Chime when a quest finishes, needs approval or fails</label></div>
@@ -113,6 +114,11 @@
     </section>
     <section class="card wide"><h2>Log</h2><div id="log" tabindex="0" aria-label="Companion log"></div></section>
   </div></details>
+  <section class="card wide" id="suggest"><h2>Suggest a change</h2>
+    <textarea id="suggest-text" rows="3" maxlength="2000" spellcheck="true" aria-label="Your suggestion" aria-describedby="suggest-hint" style="width:100%;box-sizing:border-box"></textarea>
+    <div class="btns"><button id="b-suggest">Open as GitHub issue</button></div>
+    <p class="hint" id="suggest-hint">Opens a pre-filled issue in your browser. Nothing is sent until you submit it there. Only your text and version numbers are included.</p>
+  </section>
 </main>
 <script src="control.js"></script>
 </body>

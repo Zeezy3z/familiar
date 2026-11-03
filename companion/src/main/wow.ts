@@ -322,7 +322,11 @@ export function buildSnapshot(hub: Hub, opts: { stopping?: boolean } = {}): stri
   });
   let selected = "nil";
   const d = m.detail;
-  if (d.kind === "thread") {
+  if (d.kind === "thread" && m.private) {
+    // Private mode: generic header only and no transcript, so the native layer and screenshots don't leak.
+    const text = `${d.project} - ${m.providers[d.agent]?.label ?? d.agent} - ${d.mode}\n\nPrivate mode: the conversation shows on the Glass only.`;
+    selected = `{ title = ${luaString(d.title)}, text = ${luaString(m.storage ? m.storage.text + "\n\n" + text : text)} }`;
+  } else if (d.kind === "thread") {
     const lines: string[] = [];
     lines.push(`${d.project} - ${m.providers[d.agent]?.label ?? d.agent} - ${d.mode}`);
     if (d.todos.length) {

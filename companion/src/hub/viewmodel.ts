@@ -109,6 +109,8 @@ export interface TrackerLine {
 export interface RenderModel {
   storage?: { level: "warn" | "error"; text: string };
   quiet?: boolean;
+  /** Private (streamer) mode: names below are generic and desktop threads are left out. */
+  private?: boolean;
   attention?: AttentionItem[];
   seq: number;
   /** Where the next message typed in the composer will go (shown under the details pane). */
@@ -135,10 +137,7 @@ export function buildModel(hub: Hub, link: { linked: boolean; fps: number }): Re
   const anyPending = threads.some((t) => t.status === "approval");
   const sel = hub.selectedThread();
   const attention = attentionItems(hub);
-  const tracker = trackerLines(hub);
-  if (hub.cfg().quiet && attention.length) tracker.unshift({ id: attention[0].thread, agent: attention[0].agent,
-    title: `${attention.length} waiting for you`, project: "Quiet play", status: "idle", activity: "/fam opens your saved catch-up notes" });
-  return {
+  const m: RenderModel = {
     storage: hub.storage,
     quiet: !!hub.cfg().quiet,
     attention,
@@ -148,13 +147,91 @@ export function buildModel(hub: Hub, link: { linked: boolean; fps: number }): Re
     detail: detail(hub, link.linked),
     status: statusLine(hub, link),
     keys: { approve: anyPending, stop: !!sel && (sel.status === "running" || sel.status === "approval") },
-    tracker: tracker.slice(0, 8),
+    tracker: trackerLines(hub),
     toasts: hub.toasts,
     native: v.native,
     fontScale: hub.cfg().fontScale,
     raidWarnings: hub.cfg().raidWarnings !== false,
     providers: Object.fromEntries(Object.keys(hub.backends).map((id) => [id, { label: providerInfo(id).label, glyph: providerInfo(id).glyph }])),
   };
+  if (hub.cfg().privateMode) privateModel(hub, m, link.linked);
+  if (hub.cfg().quiet && m.attention?.length) m.tracker.unshift({ id: m.attention[0].thread, agent: m.attention[0].agent,
+    title: `${m.attention.length} waiting for you`, project: "Quiet play", status: "idle", activity: "/fam opens your saved catch-up notes" });
+  m.tracker = m.tracker.slice(0, 8);
+  return m;
+}
+
+// ---- private (streamer) mode --------------------------------------------------------------------
+// The one place real names leave the render model: zones become "Project n", quests "Quest #n" and
+// chats "Chat #n" (numbered in first-seen order, stable for the session), desktop threads are left
+// out, and notices lose their names. The hub and threads.json keep the real data. Pending approval
+// cards keep their full preview: the player must see what they approve.
+
+const aliases = new WeakMap<Hub, { zones: Map<string, number>; quests: Map<string, number>; chats: Map<string, number> }>();
+
+function privateNames(hub: Hub) {
+  let a = aliases.get(hub);
+  if (!a) aliases.set(hub, (a = { zones: new Map(), quests: new Map(), chats: new Map() }));
+  const names = a;
+  const num = (m: Map<string, number>, key: string) => {
+    if (!m.has(key)) m.set(key, m.size + 1);
+    return m.get(key)!;
+  };
+  const zone = (key: string) => (key === CHATS_KEY ? "Chats" : `Project ${num(names.zones, key)}`);
+  const thread = (id: string) => (hub.threads.get(id)?.kind === "chat" ? `Chat #${num(names.chats, id)}` : `Quest #${num(names.quests, id)}`);
+  return { zone, thread };
+}
+
+/** Generic toast text: never a project, title, command or reply excerpt. */
+function privateToast(x: Toast): Toast {
+  const text = x.generic ?? (x.kind === "approval" ? "Approval needed" : x.kind === "done" ? "Quest finished" : x.kind === "error" && x.threadId ? "Quest failed" : x.text);
+  return { ...x, text };
+}
+
+function privateModel(hub: Hub, m: RenderModel, linked: boolean) {
+  const { zone, thread } = privateNames(hub);
+  const v = hub.view;
+  m.private = true;
+  // Quest Log first, so numbering follows the order the player sees.
+  const shown = (agent: AgentKind) => !v.show.length || v.show.includes(agent);
+  const quests = (key: string) => [...hub.threads.values()].filter((t) => t.projectKey === key && shown(t.agent)).length;
+  const rows: Row[] = [];
+  for (const r of m.list.rows) {
+    if (r.kind === "ext" || r.key.startsWith("more:")) continue;
+    if (r.kind === "zone") {
+      const n = quests(r.key);
+      if (!n && r.key !== CHATS_KEY) continue; // only desktop threads in it
+      rows.push({ ...r, text: zone(r.key), count: n || undefined });
+    } else if (r.kind === "project") rows.push({ ...r, text: zone(r.key) });
+    else if (r.kind === "thread") rows.push({ ...r, text: thread(r.key) });
+    else rows.push(r);
+  }
+  if (!rows.length) rows.push({ kind: "hint", key: "hint", text: "Choose Chat for a question, or start a project quest." });
+  m.list = { ...m.list, rows };
+
+  const d = m.detail;
+  if (d.kind === "thread" && d.external) m.detail = welcome(hub, linked);
+  else if (d.kind === "thread") {
+    const t = hub.threads.get(d.id);
+    m.detail = { ...d, title: thread(d.id), project: t ? zone(t.projectKey) : "", cwd: "" };
+  } else if (d.kind === "draft" && v.draft) m.detail = { ...d, project: zone(v.draft.projectKey), cwd: "" };
+
+  const sel = hub.selectedThread();
+  if (v.draft) m.target = { text: v.draft.chat ? `New chat with ${agentName(v.draft.agent)}` : `New ${agentName(v.draft.agent)} quest in ${zone(v.draft.projectKey)}` };
+  else if (sel) m.target = { text: sel.kind === "chat" ? thread(sel.id) : `${agentName(sel.agent)} - ${thread(sel.id)} - ${zone(sel.projectKey)}` };
+  else if (v.selected?.startsWith("ext:")) m.target = { text: "Desktop conversations are hidden in private mode", warn: true };
+
+  m.tracker = m.tracker.map((l) => {
+    const t = hub.threads.get(l.id);
+    const activity = l.status === "approval" ? "Needs your approval" : l.status === "error" ? "Failed" : l.status === "running" ? "Working" : "Finished";
+    return { ...l, title: thread(l.id), project: t ? zone(t.projectKey) : "", activity };
+  });
+  m.attention = m.attention?.map((i) => {
+    const t = hub.threads.get(i.thread);
+    // A pending request keeps its title (what is being approved); replies wait in the quest itself.
+    return { ...i, title: thread(i.thread), project: t ? zone(t.projectKey) : "", cwd: "", excerpt: i.pending ? i.excerpt : "" };
+  });
+  m.toasts = m.toasts.map(privateToast);
 }
 
 function questList(hub: Hub): { title: string; rows: Row[] } {
@@ -338,6 +415,10 @@ function detail(hub: Hub, linked: boolean): DetailModel {
       };
     }
   }
+  return welcome(hub, linked);
+}
+
+function welcome(hub: Hub, linked: boolean): DetailModel {
   const threads = [...hub.threads.values()];
   return {
     kind: "welcome",
