@@ -1,0 +1,24 @@
+# BigWigsMods/packager config (release.yml). The addon lives in addon/Familiar, not the repo root.
+package-as: Familiar
+
+# Keys carry the package name as their first component. The packager copies the repo into
+# .release/Familiar/, then moves addon/Familiar/* up into Familiar/ and deletes the emptied addon/.
+# This entry also registers addon/Familiar/Familiar.toc for Interface/flavor detection.
+move-folders:
+  Familiar/addon/Familiar: Familiar
+
+# Working-copy paths (not affected by move-folders). Dotfiles and dot-dirs (.github, .gitignore,
+# .gitattributes, .pkgmeta) are always skipped. LICENSE stays in the zip.
+ignore:
+  - companion
+  - docs
+  - README.md
+  - AGENTS.md
+  - CLAUDE.md
+  - CODE_OF_CONDUCT.md
+  - CONTRIBUTING.md
+  - SECURITY.md
+  - THIRD_PARTY_NOTICES.md
+  - "Run Familiar.cmd"
+
+enable-nolib-creation: no

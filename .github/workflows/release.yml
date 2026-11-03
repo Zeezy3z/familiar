@@ -1,0 +1,62 @@
+name: Addon release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write # the packager creates the GitHub release and uploads the zip + release.json
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false # never cancel a half-uploaded release
+
+jobs:
+  addon:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0 # full history + tags: the packager builds the changelog since the previous tag
+          persist-credentials: false
+      - name: Tag matches Familiar.toc and companion/package.json
+        run: |
+          toc=$(sed -n 's/^## Version:[[:space:]]*//p' addon/Familiar/Familiar.toc | tr -d '\r')
+          pkg=$(jq -r .version companion/package.json)
+          if [ "$TAG" != "v$toc" ] || [ "$toc" != "$pkg" ]; then
+            echo "::error::tag $TAG, Familiar.toc $toc and package.json $pkg must agree (tag = v<version>)"
+            exit 1
+          fi
+      # GitHub only. CurseForge/Wago uploads are skipped while CF_API_TOKEN/WAGO_API_TOKEN and the
+      # TOC project IDs are absent (docs/releasing.md). WoWInterface does not support WoW: Forever.
+      - uses: BigWigsMods/packager@e50a250f8705041e40f2fa1ddcb280a686d65aa0 # v2.6.1
+        env:
+          GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }} # read by v2.6.1 and by master (GITHUB_OAUTH is deprecated there)
+      - name: Verify the released addon zip
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          dir="$RUNNER_TEMP/verify"
+          mkdir -p "$dir"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir "$dir" --pattern 'Familiar-*.zip' --pattern release.json
+          shopt -s nullglob
+          zips=("$dir"/Familiar-*.zip)
+          [ "${#zips[@]}" -eq 1 ] || { echo "::error::expected exactly one Familiar-*.zip asset, found ${#zips[@]}"; exit 1; }
+          zip=${zips[0]}
+          unzip -l "$zip"
+          entries=$(unzip -Z1 "$zip")
+          fail() { echo "::error::$1"; exit 1; }
+          [ "$(cut -d/ -f1 <<< "$entries" | sort -u)" = Familiar ] || fail "zip must have the single root folder Familiar/"
+          grep -qx 'Familiar/Familiar.toc' <<< "$entries" || fail "Familiar/Familiar.toc missing"
+          ! grep -E '^Familiar/(addon|companion|docs)/' <<< "$entries" || fail "non-addon folders leaked into the zip"
+          unzip -p "$zip" Familiar/Familiar.toc | tr -d '\r' | grep -v -e '^#' -e '^[[:space:]]*$' | tr '\' '/' |
+            while read -r f; do grep -qx "Familiar/$f" <<< "$entries" || fail "TOC lists $f but the zip lacks it"; done
+          jq -e --arg f "$(basename "$zip")" \
+            '.releases[0].filename == $f and any(.releases[0].metadata[]; .flavor == "forever")' \
+            "$dir/release.json" || fail "release.json does not describe $(basename "$zip") as flavor forever"
+      # Beta: version strings stay plain (0.1.0); "beta" lives only in the release title.
+      # Remove this step (or drop --prerelease) for the first non-beta release.
+      - name: Mark the release as a beta prerelease
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --prerelease --title "Familiar ${TAG#v} beta"
