@@ -187,7 +187,7 @@ function UI.RefreshNative()
       local color = item.kind == "zone" and "|cffffd100" or "|cffe0e0e0"
       r.text:SetText(indent .. color .. (item.text or "") .. "|r")
     else
-      r.text:SetText(i == 1 and not data and "|cff888888Start Familiar on your PC to see your quests here.|r" or "")
+      r.text:SetText(i == 1 and not data and "|cffff9d2eStart Familiar on your PC to see your quests here.|r" or "")
     end
   end
   if nativeBox then
@@ -196,7 +196,7 @@ function UI.RefreshNative()
     if sel then
       text = ("|cffffd100%s|r\n\n%s"):format(sel.title or "", sel.text or "")
     else
-      text = "Familiar isn't running on your PC.\n\nStart it from the Start menu, the tray, or Run Familiar.cmd; it paints "
+      text = "Familiar isn't running on your PC.\n\nOpen the Familiar folder and double-click Run Familiar.cmd; it paints "
         .. "live replies on top of this window. Messages you send meanwhile are kept: /fam resend sends them "
         .. "once it's running. A native copy of the selected quest is saved here on /reload."
     end
@@ -635,7 +635,7 @@ function UI.Init()
   nativeBtn:SetPoint("TOPRIGHT", -34, -28)
   local mode = button(frame, "Mode", 64, "mode", "Permission mode for this quest: Ask first <-> Plan only. Accept edits and Auto are chosen in the desktop control panel.")
   mode:SetPoint("RIGHT", nativeBtn, "LEFT", -4, 0)
-  local model = button(frame, "Model", 64, "model", "Cycle the model for this quest")
+  local model = button(frame, "Model", 64, "model", "Switch to the next model for this quest (click again to cycle)")
   model:SetPoint("RIGHT", mode, "LEFT", -4, 0)
 
   -- Panes
@@ -694,7 +694,7 @@ function UI.Init()
   send:SetPoint("BOTTOMRIGHT", -30, 14) -- leaves the corner to the resize grip
   local stop = button(frame, "Stop", 56, "stop", "Interrupt the running turn")
   stop:SetPoint("RIGHT", send, "LEFT", -4, 0)
-  local always = button(frame, "Always", 64, "always", "Approve, and allow this kind of action for the rest of the quest")
+  local always = button(frame, "Always", 64, "always", "Approve, and allow this kind of action for the rest of this quest (not other quests)")
   always:SetPoint("RIGHT", stop, "LEFT", -12, 0)
   local deny = button(frame, "Deny", 56, "deny", "Deny the pending request")
   deny:SetPoint("RIGHT", always, "LEFT", -4, 0)

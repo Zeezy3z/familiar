@@ -289,7 +289,7 @@ local HELP = {
   "/fam draft discard - clear the unfinished composer draft for this character",
   "/fam autostart [on | off] - start Familiar with Windows (in the tray)",
   "/fam quiet [on | off] - defer ordinary completion notices; approvals and failures remain",
-  "/fam private [on | off] - streamer mode: hide project and quest names (approval cards still show the request)",
+  "/fam private [on | off] - hide names (streaming): zones and quests become Project 1 / Quest #1; replies and what you type stay visible",
   "/fam caughtup - mark the selected quest's saved update caught up (never approves a request)",
   "/fam font bigger | smaller | reset | 80-160 - text size in the Familiar window",
   "/fam opacity [0-100] - window background opacity; no number opens Options -> AddOns -> Familiar",
