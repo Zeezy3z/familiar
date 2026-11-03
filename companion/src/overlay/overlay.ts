@@ -229,7 +229,7 @@ function applyLayout(moveOnly = false) {
   const fpx = (layout.fpx ?? layout.px) * k;
   const fs = model?.fontScale ?? 1;
   setVar("--row-h", `${rowH}px`);
-  setVar("--row-font", `${rowH * 0.62}px`);
+  setVar("--row-font", `${rowH * 0.68}px`);
   setVar("--body-font", `${Math.max(11, fpx * 12.5 * fs)}px`);
   setVar("--small-font", `${Math.max(10, fpx * 10.5 * fs)}px`);
   // The addon fades its own backgrounds by the same amount (Options -> AddOns -> Familiar).
@@ -340,6 +340,7 @@ function renderDetail(d: DetailModel) {
   const fullHeader = `
     <div class="qtitle"><span class="ag ag-${d.agent}">${AGENT_ICON[d.agent]} ${agentLabel(d.agent)}</span> ${esc(d.title)}</div>
     <div class="qbar">
+      <span class="qmode${d.mode === "Ask first" ? "" : " hot"}">${esc(d.mode)}</span>
       ${d.handOff ? `<div class="qapp">${handoff}</div>` : ""}
       ${routine ? "" : `<div class="qstate ${state.level}"><b>${state.label}</b><span>${state.hint}</span></div>`}
       ${detailControl}
@@ -444,7 +445,7 @@ function entryHtml(e: EntryView, threadId: string): string {
       return `<div class="body md">${md(e.text)}${e.streaming ? '<span class="caret">▍</span>' : ""}</div>`;
     case "tool": {
       const icon = e.status === "running" ? "◌" : e.status === "error" ? "✗" : "✓";
-      return `<div class="tool-line" data-act="${attr({ type: "tool", id: e.id })}"><span class="ti ${e.status}">${e.status === "unknown" ? "?" : icon}</span> <b>${esc(e.name ?? "tool")}</b> <span class="tsum">${esc(e.text)}</span>${e.status === "unknown" ? '<span class="outcome-unknown">Outcome unknown</span>' : ""}</div>${e.expanded && e.output ? `<pre class="tout">${diffHtml(e.output)}</pre>` : ""}`;
+      return `<div class="tool-line" data-act="${attr({ type: "tool", id: e.id })}"><span class="ti ${e.status}">${e.status === "unknown" ? "?" : icon}</span> <b>${esc(e.name ?? "tool")}</b> <span class="tsum">${esc(e.text)}</span>${e.status === "unknown" ? '<span class="outcome-unknown">Outcome unknown — check the folder before resending</span>' : ""}</div>${e.expanded && e.output ? `<pre class="tout">${diffHtml(e.output)}</pre>` : ""}`;
     }
     case "approval": {
       const pending = e.approval === "pending";
@@ -453,10 +454,11 @@ function entryHtml(e: EntryView, threadId: string): string {
         `<span class="btn ${cls}" data-act="${attr({ type: "decide", thread: threadId, requestId: e.requestId, decision })}">${label}</span>`;
       const opts = e.options?.length
         ? e.options.map((o) => `<span class="btn" data-act="${attr({ type: "answer", thread: threadId, requestId: e.requestId, label: o })}">${esc(o)}</span>`).join("")
-        : btn("Approve", "allow", "ok") + (e.canAlways ? btn("Always", "allowAlways") : "") + btn("Deny", "deny", "no");
+        : btn("Approve", "allow", "ok") + btn("Deny", "deny", "no") + (e.canAlways ? btn("Always (this quest)", "allowAlways", "always") : "");
       return `<div class="card ${pending ? "pending" : e.approval}">
-        <div class="card-h">${pending ? "⚠ " : ""}${esc(e.title ?? "Approval")}</div>
-        <div class="preview-note">Agent preview; may omit details.</div>
+        <div class="card-h">${pending ? '<span class="bang">!</span> ' : ""}${esc(e.title ?? "Approval")}</div>
+        <div class="preview-note">The agent's own summary. If unsure, Deny and check in the agent's app.</div>
+        ${pending && e.text.includes("omitted from this preview") ? `<div class="preview-cut" role="alert">! Part of this request is not shown. Deny unless you already know what it does.</div>` : ""}
         ${preview.shortened ? `<span class="btn preview-toggle" aria-expanded="${!!e.expanded}" data-act="${attr({ type: "approvalPreview", thread: threadId, id: e.id })}"><span aria-hidden="${!!e.expanded}">Show more of preview</span><span aria-hidden="${!e.expanded}">Collapse preview</span></span>` : ""}
         <pre class="card-b approval-preview">${diffHtml(preview.text)}${preview.shortened && !e.expanded ? "\n… [More preview text hidden]" : ""}</pre>
         ${pending ? `<div class="btns">${opts}</div>` : `<div class="card-s">${approvalText(e.approval)}</div>`}
@@ -497,7 +499,7 @@ function staticDetail(d: DetailModel): string {
         Use Model to see the available models. Check readiness below before sending.</div>
       <div class="hint welcome-continue"><b>Continue a conversation</b><br>
         Pick a quest or desktop conversation on the left. Familiar asks before sending your first message to a desktop conversation.</div>
-      <div class="hint"><b>Provider readiness</b></div>
+      <div class="hint"><b>Your familiars</b></div>
       ${d.backends.map((b) => `<div class="kv"><span>${AGENT_ICON[b.id]} ${esc(b.label)}</span> ${esc(b.status)}</div>`).join("")}
       <div class="kv"><span>Quests</span> ${d.counts.total} · ${d.counts.running} running · ${d.counts.approval} awaiting approval</div>
     </div>`;
@@ -505,7 +507,7 @@ function staticDetail(d: DetailModel): string {
   if (d.kind === "pick")
     return `<div class="welcome"><div class="big">New ${agentLabel(d.agent)} quest</div>
       <div class="sub">Choose a zone (project folder) on the left.</div>
-      <div class="hint">Not listed? Type a full folder path in the box below and press Enter.<br>Type <b>mkdir C:\\path\\to\\new</b> to create a new folder.<br>
+      <div class="hint">Not listed? Type a full folder path in the box below and press Enter.<br>Type <b>mkdir C:\\Users\\you\\Documents\\MyAddon</b> to create a new folder.<br>
       Switch familiar: ${Object.keys(PROVIDERS).map((id) => `<span class="btn" data-act="${attr({ type: "agent", agent: id })}">${AGENT_ICON[id]} ${esc(agentLabel(id))}</span>`).join(" ")}</div></div>`;
   if (d.kind === "draft" && d.chat)
     return `<div class="welcome"><div class="big">${AGENT_ICON[d.agent]} New chat</div>
@@ -556,7 +558,7 @@ function render() {
   els.target.classList.toggle("warn", !!model.target.warn);
   renderTracker(model.tracker);
   renderToasts(model);
-  els.status.textContent = model.status.text + (model.quiet ? " · Alerts muted (/fam quiet off)" : "");
+  els.status.textContent = model.status.text + (model.quiet ? " · Alerts muted (/fam quiet off)" : "") + (model.private ? " · Hide names on" : "");
   els.status.className = `lvl-${model.status.level}`;
   applyLayout();
   if (pendingJump && model.detail.kind === "thread" && pendingJump.thread === model.detail.id && els.detailScroll.clientHeight) {
@@ -582,7 +584,7 @@ function renderAttention() {
   notesPage = Math.min(notesPage, Math.max(0, Math.ceil(items.length / pageSize) - 1));
   const control = (label: string, action: unknown) => `<span class="btn" data-act="${attr(action)}">${label}</span>`;
   const html = `<div class="catch-head">${control(`<b>${notesOpen ? "▾" : "▸"} ${items.length} waiting</b>`, { type: "local", what: "notes" })}</div>` +
-    (notesOpen ? `<div class="catch-promise">Replies wait here until you choose Caught up or reply in that quest. Opening a quest alone doesn't count.</div>` + items.slice(notesPage * pageSize, notesPage * pageSize + pageSize).map(item => `<div class="catch-note"><div class="catch-copy"><div class="catch-title"><b>${esc(item.title)}</b><span class="${item.pending ? "warn" : ""}">${esc(item.label)}</span></div><div class="catch-meta">${esc(agentLabel(item.agent))} · ${esc(item.project)} · ${esc(item.mode)} · ${esc(item.cwd)}</div><div class="catch-excerpt">${esc(item.excerpt)}</div></div><div class="catch-actions">${control("Open quest", { type: "local", what: "openUpdate", thread: item.thread, entry: item.entry })}${item.pending ? "" : control("Caught up", { type: "caughtUp", thread: item.thread, entry: item.entry, revision: item.revision })}</div></div>`).join("") +
+    (notesOpen ? `<div class="catch-promise">Replies wait here until you choose Caught up or reply in that quest. Opening a quest alone doesn't count.</div>` + items.slice(notesPage * pageSize, notesPage * pageSize + pageSize).map(item => `<div class="catch-note"><div class="catch-copy"><div class="catch-title"><b>${esc(item.title)}</b><span class="${item.pending ? "warn" : ""}">${esc(item.label)}</span></div><div class="catch-meta">${esc(agentLabel(item.agent))} · ${esc(item.project)} · ${esc(item.mode)}</div><div class="catch-excerpt">${esc(item.excerpt)}</div></div><div class="catch-actions">${control("Open quest", { type: "local", what: "openUpdate", thread: item.thread, entry: item.entry })}${item.pending ? "" : control("Caught up", { type: "caughtUp", thread: item.thread, entry: item.entry, revision: item.revision })}</div></div>`).join("") +
       (items.length > pageSize ? `<div class="catch-pages">${notesPage ? control("Previous notes", { type: "local", what: "notesPage", page: notesPage - 1 }) : ""}<span>${notesPage * pageSize + 1}–${Math.min(items.length, notesPage * pageSize + pageSize)} of ${items.length}</span>${(notesPage + 1) * pageSize < items.length ? control("Next notes", { type: "local", what: "notesPage", page: notesPage + 1 }) : ""}</div>` : "") : "");
   if (els.attention.innerHTML !== html) els.attention.innerHTML = html;
 }
@@ -786,5 +788,5 @@ function escapeAttr(s: string) {
   return escapeHtml(s);
 }
 function approvalText(a?: string) {
-  return { approved: "Approved", always: "Approved (always)", denied: "Denied", expired: "Request expired" }[a ?? ""] ?? "";
+  return { approved: "Approved", always: "Approved (always)", denied: "Denied", expired: "Request expired. The agent no longer waits for this; send a message to retry." }[a ?? ""] ?? "";
 }
