@@ -25,6 +25,11 @@ if %NODE_MAJOR% LSS 24 (
   for /f %%v in ('node -v') do echo Familiar needs Node.js 24 or newer. Found %%v. Install the LTS from https://nodejs.org and run this again.
   goto :fail
 )
+rem Already running: starting it again only opens its control panel, which loads dist\ from disk.
+rem Installing or rebuilding under it would fail on locked files or pair new panel code with the
+rem old main process, so skip straight to the start.
+powershell -NoProfile -NonInteractive -Command "exit [int]!(Get-CimInstance Win32_Process -Filter \"Name='electron.exe'\" | Where-Object { $_.CommandLine -like '*%HERE%companion*' })"
+if not errorlevel 1 goto :start
 rem Dependencies: installed from the lockfile, once per lockfile. The stamp is written only after a
 rem complete install, so a half-failed one retries, and a changed package-lock.json reinstalls.
 set LOCK=
@@ -43,12 +48,8 @@ if not exist node_modules\electron\dist\electron.exe (
   echo Downloading Electron ^(about 120 MB^)...
   call node node_modules\electron\install.js || goto :fail
 )
-rem Already running: starting it again only opens its control panel, which loads dist\ from disk.
-rem Rebuilding under it would pair new panel code with the old main process, so leave dist\ alone.
-powershell -NoProfile -NonInteractive -Command "exit [int]!(Get-CimInstance Win32_Process -Filter \"Name='electron.exe'\" | Where-Object { $_.CommandLine -like '*%HERE%companion*' })"
-if errorlevel 1 (
-  call node scripts\build.mjs || goto :fail
-)
+call node scripts\build.mjs || goto :fail
+:start
 start "" /b "%HERE%companion\node_modules\electron\dist\electron.exe" "%HERE%companion" %*
 exit /b 0
 :fail
