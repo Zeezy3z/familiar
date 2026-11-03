@@ -250,7 +250,7 @@ describe("Familiar addon (headless)", () => {
   it("window opacity: Options slider and /fam opacity fade the backgrounds and tell the Glass", () => {
     // Options -> AddOns -> Familiar has the slider, at the saved value (solid by default).
     expect(vm.run(`return MOCK.settings.category`)).toBe("Familiar");
-    expect(vm.run(`local s = MOCK.settings.slider return s.name .. " " .. s.min .. "-" .. s.max .. " step " .. s.step`)).toBe("Window opacity 0-100 step 5");
+    expect(vm.run(`local s = MOCK.settings.slider return s.name .. " " .. s.min .. "-" .. s.max .. " step " .. s.step`)).toBe("Window opacity 60-100 step 5");
     expect(vm.run(`return MOCK.settings.registered and "yes" or "no"`)).toBe("yes");
     expect(last("layout").op).toBeUndefined();
 

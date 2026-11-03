@@ -189,8 +189,8 @@ export function editPreview(name: string, input: any, maxLines = 60): string | u
   return [head, ...body].join("\n");
 }
 
-/** One-line description of a tool call for the transcript. */
-export function summarizeTool(name: string, input: any): string {
+/** The field that says what a tool call does (command, path, query...), in full. */
+function toolText(name: string, input: any): string {
   if (!input || typeof input !== "object") return name;
   const s =
     input.command ??
@@ -203,6 +203,17 @@ export function summarizeTool(name: string, input: any): string {
     input.description ??
     input.subject ??
     input.prompt;
-  const text = typeof s === "string" ? s : Array.isArray(s) ? s.join(" ") : JSON.stringify(input);
+  return typeof s === "string" ? s : Array.isArray(s) ? s.join(" ") : JSON.stringify(input);
+}
+
+/** One-line description of a tool call for the transcript. */
+export function summarizeTool(name: string, input: any): string {
+  const text = toolText(name, input);
   return text.length > 160 ? text.slice(0, 157) + "…" : text;
+}
+
+/** What an approval card shows for a tool call: the whole request, never the transcript's short
+ * summary; past `maxChars` the cut is marked (truncatePreview), so the card can warn about it. */
+export function approvalDetail(name: string, input: any, maxChars = 4000): string {
+  return truncatePreview(toolText(name, input), maxChars);
 }

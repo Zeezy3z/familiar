@@ -6,8 +6,8 @@
 <title>Familiar</title>
 <style>
   @font-face { font-family: "Familiar Display"; src: url("assets/marcellus-latin-400-normal.woff2") format("woff2"); }
-  :root { --gold: #ffd100; --text: #e9e2d2; --muted: #afa595; --bg: #0b0a0d; --card: #15131a; --ok: #7dd96b; --warn: #ff9d2e; --err: #ff5a4f; }
-  body { margin: 0; background: var(--bg); color: var(--text); font: 13px "Segoe UI", system-ui, sans-serif; }
+  :root { color-scheme: dark; accent-color: #ffd100; --gold: #ffd100; --text: #e9e2d2; --muted: #afa595; --bg: #0b0a0d; --card: #15131a; --ok: #7dd96b; --warn: #ff9d2e; --err: #ff5a4f; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px "Segoe UI", system-ui, sans-serif; }
   header { padding: 14px 18px 8px; display: flex; align-items: baseline; gap: 12px; border-bottom: 1px solid #2a2418; }
   h1 { font-family: "Familiar Display", Georgia, serif; color: var(--gold); font-weight: normal; margin: 0; font-size: 24px; text-shadow: 1px 1px 0 #000; }
   .ver { color: var(--muted); }
@@ -15,16 +15,16 @@
   main { padding: 12px 18px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; max-width: 1000px; margin: auto; }
   .card { background: var(--card); border: 1px solid #2a2418; border-radius: 4px; padding: 10px 12px; }
   .card h2 { font-family: "Familiar Display", Georgia, serif; color: var(--gold); font-size: 15px; font-weight: normal; margin: 0 0 6px; }
-  .kv { display: grid; grid-template-columns: 110px 1fr; gap: 2px 8px; }
-  .kv div:nth-child(odd) { color: var(--muted); }
+  .kv { display: grid; grid-template-columns: 130px 1fr; gap: 2px 8px; }
+  .kv div:nth-child(odd) { color: var(--text); }
   .ok { color: var(--ok); } .warn { color: var(--warn); } .err { color: var(--err); } .muted { color: var(--muted); }
   .wide { grid-column: 1 / -1; }
   #log { height: 190px; overflow: auto; font: 11px Consolas, monospace; white-space: pre-wrap; color: #bdb5a4; }
-  button { background: linear-gradient(180deg, #5a1010, #2a0505); color: var(--gold); border: 1px solid #8a6d1f; border-radius: 3px; padding: 4px 12px; font-family: "Familiar Display", Georgia, serif; cursor: pointer; }
+  button { background: linear-gradient(180deg, #5a1010, #2a0505); color: var(--gold); border: 1px solid #000; box-shadow: inset 0 1px 0 rgba(255,209,0,.25), inset 0 -1px 0 #000; border-radius: 3px; padding: 4px 12px; font-family: "Familiar Display", Georgia, serif; cursor: pointer; }
   button:hover { filter: brightness(1.3); }
   .btns { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
   ul { margin: 4px 0; padding-left: 18px; } li { margin: 2px 0; }
-  .hint { color: var(--muted); font-size: 12px; line-height: 1.5; }
+  .hint { color: var(--muted); font-size: 13px; line-height: 1.5; max-width: 60ch; }
   #onboard { border-color: #8a6d1f; }
   .prov { display: grid; grid-template-columns: 22px 120px 1fr auto; gap: 6px 10px; align-items: center; padding: 6px 0; border-top: 1px solid #221d14; }
   .prov:first-child { border-top: none; }
@@ -35,8 +35,8 @@
   .prov .a { display: flex; gap: 6px; align-items: center; white-space: nowrap; }
   .prov.off .n, .prov.off .g { opacity: .45; }
   button.small { padding: 2px 8px; font-size: 12px; }
-  select, input[type="text"] { background: #1d1a22; color: var(--text); border: 1px solid #3a3122; border-radius: 3px; padding: 2px 4px; }
-  button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px solid var(--gold); outline-offset: 3px; }
+  textarea, select, input[type="text"] { background: #1d1a22; color: var(--text); border: 1px solid #9a8a66; border-radius: 3px; padding: 3px 6px; }
+  button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px solid var(--gold); outline-offset: 3px; }
   button:disabled { opacity: .6; cursor: wait; }
   a { color: var(--gold); }
   #journey { border-color: #665321; background: linear-gradient(120deg, #262016, var(--card)); }
@@ -85,9 +85,9 @@
     <div class="kv">
       <div>Text size</div><div><select id="ui-font" aria-label="In-game text size"></select></div>
       <div>Quiet play</div><div><label class="hint"><input type="checkbox" id="ui-quiet"> Keep ordinary completion notifications quiet until I turn this off</label><div class="hint">Replies wait in your catch-up notes when you open /fam. Approvals and failures keep their attention cues; agents continue working.</div></div>
-      <div>Private mode</div><div><label class="hint"><input type="checkbox" id="ui-private"> Private mode (for streaming): hide project and quest names</label><div class="hint">Zones show as Project 1, 2, ... and quests as Quest #1, #2, ...; desktop threads are hidden, notices are generic and nothing is spoken. Approval cards still show the full request. Also /fam private on | off.</div></div>
-      <div>New quests start in</div><div><select id="ui-mode" aria-label="Mode for new quests"><option value="ask">Ask first</option><option value="edits">Accept edits</option><option value="plan">Plan only</option><option value="auto">Auto</option></select><div class="hint">Auto lets Claude's safety check approve routine actions and still asks you about risky ones. Change any quest with Mode.</div></div>
-      <div>Approve key</div><div><input type="text" id="ui-approve-key" maxlength="24" spellcheck="false" autocomplete="off" placeholder="F9" aria-label="Approve key (as bound in WoW, e.g. F9 or CTRL-F9)"><div class="hint">Approve key (as bound in WoW, e.g. F9 or CTRL-F9): type the key you bound to <i>Approve pending request</i> (Options → Keybindings → AddOns → Familiar). Familiar checks it was really pressed. Without it, approve by clicking the card or the Approve button.</div></div>
+      <div>Hide names</div><div><label class="hint"><input type="checkbox" id="ui-private"> Hide names (streaming): zones and quests become Project 1 / Quest #1</label><div class="hint">Replies, tool lines, approval cards and what you type stay visible on screen. Desktop threads are hidden, notices are generic and nothing is spoken. Also /fam private on | off.</div></div>
+      <div>New quests start in</div><div><select id="ui-mode" aria-label="Mode for new quests"><option value="ask">Ask first</option><option value="edits">Accept edits</option><option value="plan">Plan only</option><option value="auto">Auto</option></select><div class="hint">Ask first is recommended. Accept edits: agents change files in project folders without asking. Auto: the agent approves its own "routine" actions (the vendor's judgement, not Familiar's). In either, any WoW addon can start quests that act without asking you. Change any quest with Mode.</div></div>
+      <div>Approve key</div><div><input type="text" id="ui-approve-key" maxlength="24" spellcheck="false" autocomplete="off" placeholder="F9" aria-label="Approve key (as bound in WoW, e.g. F9 or CTRL-F9)"><div class="hint">1. In WoW: Esc → Options → Keybindings → AddOns → Familiar → Approve pending request. 2. Type the same key here (F9 or CTRL-F9). Familiar checks it was really pressed; without it, approve by clicking the card or the Approve button.</div></div>
       <div>Sounds</div><div><label class="hint"><input type="checkbox" id="ui-sound"> Chime when a quest finishes, needs approval or fails</label></div>
       <div>Notices</div><div><label class="hint"><input type="checkbox" id="ui-raid"> As raid warnings (big, mid-screen); off: small, in the Familiar window</label></div>
     </div>

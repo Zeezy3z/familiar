@@ -36,7 +36,9 @@
     { id: "u1", kind: "user", text: "Help make the quest log easier to read." },
     { id: "a1", kind: "assistant", text: "I checked the spacing and the message target.\n\n- Keep the current quest visible.\n- Give approvals a clear label.\n- Preserve the conversation when you return.", streaming: scenario === "running" },
   ];
-  if (approval) entries.push({ id: "p1", kind: "approval", title: "Edit the synthetic quest log", text: "+ Clearer spacing for the preview", approval: "pending", requestId: "preview", canAlways: false });
+  // approval-always: the same short request from a provider that offers a per-quest Always.
+  const shortApproval = scenario === "approval" || scenario === "approval-always";
+  if (approval) entries.push({ id: "p1", kind: "approval", title: "Edit the synthetic quest log", text: "+ Clearer spacing for the preview", approval: "pending", requestId: "preview", canAlways: scenario === "approval-always" });
   if (scenario === "interrupted") entries.push({ id: "t1", kind: "tool", name: "+ 2 steps", text: "Read, Bash (1 outcome unknown)", status: "unknown" }, { id: "n1", kind: "notice", text: "Interrupted: Familiar was closed or restarted during this turn. Send a message to continue.", level: "error" });
   const model = {
     seq: 1, target: { text: "Claude · Quest log · Preview project" },
@@ -92,7 +94,7 @@
     model.target.text = `Claude · ${model.detail.title} · Preview project`;
     model.list.rows.at(-1).text = model.detail.title;
   }
-  if (approval && scenario !== "approval") {
+  if (approval && !shortApproval) {
     const status = scenario === "approval-expired" ? "expired" : scenario === "approval-resolved" ? "denied" : "pending";
     const text = scenario === "approval-permissions"
       ? "Synthetic permission scope: " + "read fixture directory; ".repeat(40)
@@ -143,7 +145,7 @@
       if (a.type === "decide" && a.thread === model.detail.id) {
         const entry = model.detail.entries.find(e => e.requestId === a.requestId && e.approval === "pending");
         if (entry) {
-          entry.approval = a.decision === "deny" ? "denied" : "approved";
+          entry.approval = a.decision === "deny" ? "denied" : a.decision === "allowAlways" ? "always" : "approved";
           model.detail.status = "idle";
           model.keys.approve = model.keys.stop = false;
         }

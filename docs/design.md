@@ -59,7 +59,7 @@ or at login, and is the fallback when the Glass cannot be shown.
   right-click a dimmed thread to hide it. `/fam pin`, `/fam show <agent>` filter what's listed.
 * **Quest details (right):** title, zone, status, mode, model, tokens/cost; **Objectives** (the
   agent's live todo/plan list); the transcript (markdown, syntax-highlighted code, collapsible tool
-  calls with output); **approval cards** with Approve / Always / Deny (or the agent's
+  calls with output); **approval cards** with Approve / Deny / Always (this quest) (or the agent's
   multiple-choice options).
 * **Chats zone (top of the Quest Log):** `+ Chat` / `/fam ask` — talk to a cheap model with web
   search and nothing else (no repo, files or shell), for game questions and lookups; the character's
@@ -70,6 +70,19 @@ or at login, and is the fallback when the Glass cannot be shown.
   the desktop control panel), `Text` (native copyable transcript).
 * **Bottom bar:** link/agent status; `Approve` `Deny` `Always` `Stop` `Send` (Approve glows when
   something is waiting).
+
+**Visual tokens and button order.** The Glass and the control panel share one token set, defined
+in `overlay.css` `:root` and `control.html`: gold `#ffd100` (titles, buttons), gold-dim `#c9a227`,
+text `#ece4d4`, text-dim `#bfb6a4`, muted `#9c9384`, ok `#7dd96b`, warn orange `#ff8040`
+(approval, unknown), err `#ff5a4f`, info blue `#71d5ff` (working, links), agent glyphs
+`#d98a60` (Claude) and `#7fd1a8` (Codex), borders `rgba(143,115,64,.45)`. Type sizes are ratios of
+the layout-derived `--body-font` / `--small-font`, never absolute pixels, because those carry the
+11/10 px floors; the display face is for chrome and buttons, the sans face for prose, mono for
+code only. State is never colour alone: each status shows a glyph and a word (✓ ! ✗ ◌). The
+canonical approval-card order is **Approve · Deny · Always (this quest)**: Approve and Deny are
+filled buttons, Always is a ghost button (dashed border, right-aligned) that applies only to the
+current quest. Pane rects, `--row-h` and the status/tracker rects come from `Layout.lua`; styling
+may add depth inside a rect but never changes its size.
 
 **Tracker** — a small movable frame like the quest objective tracker: active quests, what each
 familiar is doing right now (current objective or tool), progress `3/5`, approvals in orange.

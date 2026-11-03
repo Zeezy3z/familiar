@@ -39,6 +39,22 @@ describe("journey guidance for recoverable states", () => {
   it("shows the game link as healthy when an enabled backend is ready", () => {
     expect(journey(linked).level).toBe("ok");
   });
+  it("explains the restart, Familiar Sync and the coloured dots while the game link is missing", () => {
+    const j = journey({ ...linked, linked: false, layout: null });
+    expect(j.title).toBe("Looking for the game link");
+    expect(j.title + j.text).not.toContain("Runestrip");
+    expect(j.text).toContain("The coloured dots top-left are how Familiar talks to your PC.");
+    expect(j.text).toContain("/fam strip tr moves them to the top-right");
+    expect(j.steps[2]).toMatchObject({ done: false, text: "Restart WoW, tick Familiar and Familiar Sync at character select (Load out of date AddOns), then press Enter and type /fam" });
+    expect(j.steps[1].text).toBe("Game window found");
+  });
+  it("names the ready agent in step 1 before the game link exists", () => {
+    const j = journey({ ...linked, linked: false, layout: null });
+    expect(j.steps[0]).toMatchObject({ done: true, text: "An agent is ready (Codex)" });
+    const both = journey({ ...linked, linked: false, providers: [{ ...prepared, id: "claude", label: "Claude" }, prepared], backends: { claude: { ready: true }, codex: { ready: true } } });
+    expect(both.steps[0].text).toBe("Agents are ready (Claude, Codex)");
+    expect(journey({ ...linked, linked: false, backends: {} }).steps[0].text).toBe("Sign-in found; agents start with WoW");
+  });
   it("lets an installed custom ACP provider verify unknown sign-in when WoW starts", () => {
     const j = journey({ install: {}, providers: [{ ...prepared, id: "custom", signedIn: undefined, canLogin: false }] });
     expect(j.title).toBe("Your familiars are waiting for WoW");
