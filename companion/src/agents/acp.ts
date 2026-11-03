@@ -12,6 +12,7 @@ import {
   BackendStatus,
   Decision,
   editPreview,
+  truncatePreview,
   Emitter,
   HistoryEntry,
   Mode,
@@ -388,7 +389,7 @@ export class AcpBackend implements AgentBackend {
     const diff = (tc.content ?? []).find((c: any) => c.type === "diff") as any;
     const detail = diff
       ? editPreview("Edit", { file_path: diff.path, old_string: diff.oldText ?? "", new_string: diff.newText ?? "" }) ?? ""
-      : rawSummary(tc.rawInput) || contentText(tc.content) || "";
+      : truncatePreview(rawText(tc.rawInput) || contentText(tc.content), 4000);
     const kind = tc.kind === "edit" || tc.kind === "delete" || tc.kind === "move" ? "fileChange" : tc.kind === "execute" ? "command" : "tool";
     return new Promise((resolve) => {
       this.approvals.set(requestId, { threadId: l.threadId, sessionId: p.sessionId, options: p.options, resolve });
@@ -656,14 +657,19 @@ function contentText(content: any[] | undefined | null): string {
     .join("\n");
 }
 
-function rawSummary(v: unknown): string {
+/** A tool call's raw input or output as text, in full. */
+function rawText(v: unknown): string {
   if (v === undefined || v === null) return "";
   if (typeof v === "string") return v;
   try {
-    return JSON.stringify(v, null, 1).slice(0, 1500);
+    return JSON.stringify(v, null, 1);
   } catch {
     return "";
   }
+}
+
+function rawSummary(v: unknown): string {
+  return rawText(v).slice(0, 1500);
 }
 
 function tail(s?: string, n = 1200) {

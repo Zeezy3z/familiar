@@ -14,6 +14,7 @@ import {
   HistoryEntry,
   Mode,
   StartOptions,
+  approvalDetail,
   editPreview,
   summarizeTool,
   truncatePreview,
@@ -476,10 +477,10 @@ export class ClaudeBackend implements AgentBackend {
       const pending: PendingApproval = { resolve, input, suggestions: opts?.suggestions, toolName };
       let kind: "tool" | "question" | "planExit" = "tool";
       let title = opts?.title ?? `Allow ${opts?.displayName ?? toolName}?`;
-      let detail = opts?.description ? `${opts.description}\n${summarizeTool(toolName, input)}` : summarizeTool(toolName, input);
+      let detail = opts?.description ? `${opts.description}\n${approvalDetail(toolName, input)}` : approvalDetail(toolName, input);
       const diff = editPreview(toolName, input);
       if (diff) detail = diff;
-      else if (toolName === "Bash" && (input as any).description) detail = `${(input as any).command}\n# ${(input as any).description}`;
+      else if (toolName === "Bash" && (input as any).description) detail = `${approvalDetail(toolName, input)}\n# ${(input as any).description}`;
       if (toolName === "AskUserQuestion") {
         const q = (input as any).questions?.[0];
         kind = "question";
