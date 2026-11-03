@@ -65,21 +65,22 @@ await check("right-click a zone starts a draft there", async () => {
   await until(async () => (await model()).list.title === "Quest Log");
 });
 
-await check("mode cycles on a draft", async () => {
+await check("mode from the game needs a physical click (a synthetic one is refused)", async () => {
   await send({ t: "key", k: "newClaude" });
   await until(async () => (await model()).list.title === "New Quest");
   // The picker may start with one row per agent (when more than Claude and Codex are installed).
   await clickRow((await model()).list.rows.findIndex((r) => r.kind === "project"));
   await until(async () => (await model()).detail.kind === "draft");
-  const before = (await model()).detail.mode;
-  await send({ t: "key", k: "mode" });
-  const after = await until(async () => {
-    const d = (await model()).detail;
-    return d.mode !== before ? d.mode : null;
-  });
-  assert(after, "mode did not change");
-  await send({ t: "key", k: "back" });
-  await until(async () => (await model()).list.title === "Quest Log");
+  try {
+    const before = (await model()).detail.mode;
+    // FakeWoW's clicks are not physical mouse input, so physical.ts must refuse this (and say so).
+    await send({ t: "key", k: "mode" });
+    await new Promise((r) => setTimeout(r, 1500));
+    assert((await model()).detail.mode === before, "mode changed without physical input");
+  } finally {
+    await send({ t: "key", k: "back" });
+    await until(async () => (await model()).list.title === "Quest Log");
+  }
 });
 
 await check("collapse and expand a zone", async () => {
