@@ -17,6 +17,13 @@ WoW addon (Lua)  ── Runestrip pixels ──►  Familiar companion (Electron
 > **Beta.** This is version 0.1.0, a beta tested on a small number of PCs. Expect rough edges and
 > please [report bugs](https://github.com/Zeezy3z/familiar/issues/new/choose).
 
+## Is this for me?
+
+Familiar needs **Claude Code or Codex already installed and signed in** on this PC (a Claude Code
+sign-in is enough; an `ANTHROPIC_API_KEY` also works). If you have neither, set one up first.
+Familiar never holds your credentials: its **Sign in** button only opens the agent's own login
+window (see [Signing in](#signing-in)).
+
 ## Requirements
 
 | | |
@@ -26,6 +33,14 @@ WoW addon (Lua)  ── Runestrip pixels ──►  Familiar companion (Electron
 | Runtime | [Node.js](https://nodejs.org) 24 or newer (LTS) |
 | Disk | ~800 MB for dependencies (Electron, Claude Agent SDK) |
 | Agents | At least one, already installed and signed in: Claude (an `ANTHROPIC_API_KEY`, or Claude Code signed in), Codex (desktop app), or an ACP agent (Hermes, Grok Build, …) |
+
+## Safety at a glance
+
+* Nothing is typed or clicked in WoW for you: Familiar only reads the game window's pixels.
+* Approvals need your real click or key press on your PC; a message from the game cannot approve.
+* **Accept edits** and **Auto** can only be chosen on the desktop, and they let any addon start
+  quests that act without asking you. Keep **Ask first**. Details:
+  [What can talk to your agents](#what-can-talk-to-your-agents).
 
 ## Install
 
@@ -43,9 +58,11 @@ WoW addon (Lua)  ── Runestrip pixels ──►  Familiar companion (Electron
    To check a download, compare
    `Get-FileHash .\FamiliarApp-v0.1.0-windows.zip -Algorithm SHA256` with the line for that file
    in `SHA256SUMS.txt` on the same release page.
-2. Double-click **`Run Familiar.cmd`**. It checks for Node.js 24+, installs dependencies with
-   `npm ci` (first run: a few minutes), builds the companion, puts it in the system tray and opens
-   the Familiar control panel.
+2. Double-click **`Run Familiar.cmd`**. Windows may show "Windows protected your PC". That is
+   SmartScreen seeing a new file, not a malware verdict: **More info → Run anyway**. Leave the
+   black window open until the control panel appears. It checks for Node.js 24+, installs
+   dependencies with `npm ci` (first run: a few minutes), builds the companion, puts it in the
+   system tray and opens the Familiar control panel.
 3. The companion finds WoW: Forever — from the running game first, otherwise from `wowRoot` /
    `wowFlavor` in `%APPDATA%\Familiar\config.json` — and links the addon into
    `<WoW>\_forever_\Interface\AddOns\Familiar`, plus a small `FamiliarSync` data addon. If it can't
@@ -63,6 +80,11 @@ WoW addon (Lua)  ── Runestrip pixels ──►  Familiar companion (Electron
 Familiar does **not** start with Windows unless you turn it on: control panel → **Start Familiar
 when I sign in to Windows**, or `/fam autostart on` in game.
 
+> **Never played WoW?** Display mode: Esc → Options → System → Graphics → Display Mode →
+> Windowed. The **AddOns** button is at the bottom-left of the character-select screen. Enter opens
+> chat, where you type `/fam`. `/reload` reloads the interface only (it does not log you out), and
+> addons are only re-scanned when the game restarts.
+
 ## Using it in game
 
 | | |
@@ -76,7 +98,7 @@ when I sign in to Windows**, or `/fam autostart on` in game.
 | `Continue in Claude app` / `Continue in Codex app` (quest header), `/fam open` | hand the selected quest or desktop thread to the agent's own app, same conversation. One owner at a time: while the app has it open, sending from WoW asks you to close it there and press Retry, or continue as a copy |
 | `/fam show claude` · `codex` · `all` | filter the Quest Log by agent |
 | `+ Chat` / `/fam ask <question>` | chat without a project (see [Chats](#chats)). `/fam ask` continues your latest chat; `/fam ask new <question>` starts another |
-| `Approve` / `Deny` / `Always` | answer the agent's pending request by clicking the card on the Glass, the Approve button, or your Approve keybind. Register that key in the control panel (**Approve key**, e.g. `F9` or `CTRL-F9`) so Familiar can check it was really pressed. `/fam approve` and `/fam always` only remind you of this; `/fam deny` and `/fam stop` work from chat. See [What can talk to your agents](#what-can-talk-to-your-agents) |
+| `Approve` / `Deny` / `Always` | answer the agent's pending request by clicking the card on the Glass, the Approve button, or your Approve keybind. Register that key in the control panel (**Approve key**, e.g. `F9` or `CTRL-F9`) so Familiar can check it was really pressed. `/fam approve` and `/fam always` only remind you of this; `/fam deny` and `/fam stop` work from chat. `Always` also allows that kind of action for the rest of this quest (not other quests). See [What can talk to your agents](#what-can-talk-to-your-agents) |
 | `Mode` | switches the quest between **Ask first** and **Plan only**, with a click on the Mode button. **Accept edits** and **Auto** can be chosen only in the desktop control panel (**New quests start in**); new quests start in Ask first unless you change that |
 | `/fam focus game` · `stay` | after Enter/Send, give the keyboard back to WoW (default) or keep typing in Familiar |
 | `Model` | open the model list in the details pane; click one to use it |
@@ -86,7 +108,7 @@ when I sign in to Windows**, or `/fam autostart on` in game.
 | `/fam <text>` | send to the selected quest without opening the window |
 | `/fam claude <text>` / `/fam codex <text>` | start a quest in the current zone |
 | `/fam stop` · `tracker` · `strip tr` · `quiet on` · `diag` · `reload` · `help` | stop the agent, toggle the tracker, move the strip, mute ordinary notices, print diagnostics, … |
-| `/fam private on` · `off` | private mode for streaming: hide project and quest names (see [Privacy & data](#privacy--data)) |
+| `/fam private on` · `off` | hide names for streaming: project and quest names (see [Privacy & data](#privacy--data)) |
 | `/fam draft discard` | clear this character's unfinished composer draft |
 | `/fam suggest <idea>` | open a pre-filled GitHub issue in your browser (up to 500 characters; also **Suggest a change** in the control panel). Only your text and version numbers go in; nothing is sent until you submit it there |
 
@@ -178,7 +200,7 @@ defaults.
 | `chatAgent` / `chatModel` / `chatEffort` | `claude` / `haiku` / `medium` | defaults for Chats |
 | `externalDays`, `externalPerZone`, `followDesktopArchive` | `21`, `6`, `true` | which desktop threads are listed |
 | `sound`, `speak`, `quiet`, `raidWarnings`, `fontScale`, `toolDetail` | | notices and display |
-| `privateMode` | `false` | streamer mode: generic project/quest names, no desktop threads, generic notices (see [Privacy & data](#privacy--data)) |
+| `privateMode` | `false` | Hide names (streaming): generic project/quest names, no desktop threads, generic notices (see [Privacy & data](#privacy--data)) |
 
 Logs: `%APPDATA%\Familiar\familiar.log` (control panel → **Open log file**). **Companion controls**
 shows a copyable build line (version, commit, source status; no paths) for bug reports.
@@ -208,14 +230,20 @@ sign-in and their own privacy terms. Familiar identifies itself to them as a cli
     awaiting confirmation, settings, and your unsent draft (per character).
   * Conversations you start also live in each agent's own history.
 * **On stream or in screenshots:** the overlay (project names, titles, replies, approval commands)
-  is a separate window: it shows up in OBS **Display Capture**, not in **Game Capture**. The small
-  coloured strip at the top-left of the game encodes what you are sending; crop it out.
-* **Private mode (for streaming):** control panel → **In game** → **Private mode**, or
+  is a separate window, so it is **not** in OBS **Game Capture**. Capture it with **Display
+  Capture**, or with a **Window Capture** source on the window titled `Familiar Glass`
+  (`electron.exe`; pick the *Windows 10 (1903 and up)* capture method; if it shows black instead
+  of see-through, use Display Capture). The small coloured strip at the top-left of the game
+  encodes what you are sending; crop it out: it is 256×16 pixels in the game window's top-left
+  corner (use a *Crop/Pad* filter on the source), and `/fam strip dim` makes it near-black.
+  (The OBS steps are untested across OBS versions.)
+* **Hide names (for streaming):** control panel → **In game** → **Hide names**, or
   `/fam private on|off`. Zones show as *Project 1, 2, …* and quests as *Quest #1, #2, …* (chats as
   *Chat #n*), desktop threads are hidden, notices and raid warnings say only "Claude needs
   approval", "Codex finished" or "Quest failed", nothing is spoken, and the FamiliarSync snapshot
-  holds no titles and no transcript. Approval cards still show the full command or change, so you
-  always see what you approve. Your real names and conversations are kept on your PC as before.
+  holds no titles and no transcript. It hides names, not content: replies, tool lines, approval
+  cards and what you type stay visible on screen and can contain file names or paths. Your real
+  names and conversations are kept on your PC as before.
 
 ## What can talk to your agents
 
@@ -236,7 +264,9 @@ the game *decide* anything on its own:
   per 5 minutes, and shows **Started: <quest> (<zone>)** for every new quest. If you see one you
   didn't start, `/fam stop`, then find the addon.
 * **Quests start in Ask first.** Everything the agent wants to run or change comes to you as a
-  card, shown in full until it is answered.
+  card, shown as the agent reports it, until it is answered. Long edits are cut at 60 lines, plans
+  and commands at 4,000 characters and permission lists at 600 characters, and the card then says
+  in red that part of the request is not shown; if it does, Deny and check in the agent's app.
 * **Riskier modes only from the desktop.** In game, Mode only switches between Ask first and Plan
   only. **Accept edits** (the agent changes files in its project without a card; Codex: also runs
   sandboxed commands there) and **Auto** (the agent approves routine actions itself) can only be
