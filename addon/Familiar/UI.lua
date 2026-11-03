@@ -635,7 +635,7 @@ function UI.Init()
   nativeBtn:SetPoint("TOPRIGHT", -34, -28)
   local mode = button(frame, "Mode", 64, "mode", "Permission mode for this quest: Ask first <-> Plan only. Accept edits and Auto are chosen in the desktop control panel.")
   mode:SetPoint("RIGHT", nativeBtn, "LEFT", -4, 0)
-  local model = button(frame, "Model", 64, "model", "Switch to the next model for this quest (click again to cycle)")
+  local model = button(frame, "Model", 64, "model", "Choose the model for this quest (opens the list in the details pane)")
   model:SetPoint("RIGHT", mode, "LEFT", -4, 0)
 
   -- Panes

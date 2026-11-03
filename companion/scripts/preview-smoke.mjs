@@ -83,7 +83,10 @@ async function anchor() {
 }
 async function sameAnchor(before, name, contentUnchanged = true) {
   const after = await anchor();
-  check(name, !!before && !!after && (!contentUnchanged || before.text === after.text) && Math.abs(before.offset - after.offset) <= 2);
+  const ok = !!before && !!after && (!contentUnchanged || before.text === after.text) && Math.abs(before.offset - after.offset) <= 2;
+  // On failure, record what moved (entry start and offset only) for the CI log.
+  if (!ok) console.log(`ANCHOR ${name}: before ${JSON.stringify(before && { text: before.text.slice(0, 40), offset: before.offset })} after ${JSON.stringify(after && { text: after.text.slice(0, 40), offset: after.offset })}`);
+  check(name, ok);
 }
 async function controlChatJourney(width) {
   const size = `control-${width}`;
