@@ -11,6 +11,7 @@ echo %HERE% | find /i "\OneDrive\" >nul && (
   echo.
 )
 cd /d "%HERE%companion" || goto :fail
+echo This window installs and starts Familiar. Leave it open; the first run can take several minutes.
 where node >nul 2>nul || (
   echo Familiar needs Node.js 24 or newer. Install the LTS from https://nodejs.org and run this again.
   goto :fail
@@ -50,6 +51,7 @@ if not exist node_modules\electron\dist\electron.exe (
 )
 call node scripts\build.mjs || goto :fail
 :start
+echo Familiar is starting. Look for its window and the tray icon at the bottom right.
 start "" /b "%HERE%companion\node_modules\electron\dist\electron.exe" "%HERE%companion" %*
 exit /b 0
 :fail
