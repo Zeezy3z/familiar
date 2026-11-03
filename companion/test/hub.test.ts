@@ -397,6 +397,8 @@ describe("Hub", () => {
     expect(t.status).toBe("idle");
     expect(t.entries.at(-1)).toMatchObject({ text: "Hello there.", streaming: false });
     expect(hub.toasts.at(-1)!.kind).toBe("done");
+    expect(hub.toasts.at(-1)!.text).toMatch(/^Finished · /);
+    expect(hub.toasts.at(-1)!.text).not.toContain("Hello there");
   });
 
   it("approvals: pending → approve via key → backend gets allow; status recovers", async () => {
@@ -970,7 +972,7 @@ describe("Hub", () => {
     const m0 = buildModel(hub, { linked: true, fps: 30 });
     expect(m0.target.warn).toBe(true);
     await hub.quick("codex", "@familiar tgt");
-    expect(buildModel(hub, { linked: true, fps: 30 }).target.text).toBe("Codex - tgt - familiar");
+    expect(buildModel(hub, { linked: true, fps: 30 }).target.text).toBe("Codex - tgt - familiar - Ask first");
   });
 
   it("backends can report a mode change", async () => {
@@ -2033,6 +2035,7 @@ describe("game-side budgets and the start toast", () => {
       expect(hub.toasts.some((x) => /Too many messages from the game/.test(x.text))).toBe(false);
       hub.handleAddon({ t: "ask", id: "p20", text: " " });
       expect(hub.toasts.at(-1)!.text).toMatch(/Too many messages from the game in 5 minutes/);
+      expect(hub.toasts.at(-1)!.text).toContain("/fam stop");
       vi.advanceTimersByTime(300_001);
       const n = hub.toasts.length;
       hub.handleAddon({ t: "prompt", id: "p21", text: " " });

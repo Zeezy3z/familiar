@@ -229,7 +229,7 @@ function applyLayout(moveOnly = false) {
   const fpx = (layout.fpx ?? layout.px) * k;
   const fs = model?.fontScale ?? 1;
   setVar("--row-h", `${rowH}px`);
-  setVar("--row-font", `${rowH * 0.68}px`);
+  setVar("--row-font", `${rowH * 0.72}px`);
   setVar("--body-font", `${Math.max(11, fpx * 12.5 * fs)}px`);
   setVar("--small-font", `${Math.max(10, fpx * 10.5 * fs)}px`);
   // The addon fades its own backgrounds by the same amount (Options -> AddOns -> Familiar).
@@ -337,10 +337,11 @@ function renderDetail(d: DetailModel) {
   const focusState = routine ? "" : `<div class="qstate ${state.level}"><b>${state.label}</b><span>${state.hint}</span>
     ${!d.external && (d.status === "running" || d.status === "approval") ? `<span class="btn" data-act="${attr({ type: "stop", thread: d.id })}">Stop</span>` : ""}
     ${selectedPending ? `<span class="btn" data-act="${attr({ type: "local", what: "openUpdate", thread: d.id, entry: selectedPending.entry })}">Review request</span>` : ""}</div>`;
+  const hot = /^(Accept edits|Auto)/.test(d.mode);
   const fullHeader = `
     <div class="qtitle"><span class="ag ag-${d.agent}">${AGENT_ICON[d.agent]} ${agentLabel(d.agent)}</span> ${esc(d.title)}</div>
     <div class="qbar">
-      <span class="qmode${d.mode === "Ask first" ? "" : " hot"}">${esc(d.mode)}</span>
+      <span class="qmode${hot ? " hot" : ""}">${esc(d.mode)}</span>
       ${d.handOff ? `<div class="qapp">${handoff}</div>` : ""}
       ${routine ? "" : `<div class="qstate ${state.level}"><b>${state.label}</b><span>${state.hint}</span></div>`}
       ${detailControl}
@@ -374,7 +375,8 @@ function renderDetail(d: DetailModel) {
     seen.add(e.id);
     // Slice IDs can be reused for different desktop messages, including equal-length text.
     const { text, output, ...metadata } = e;
-    const sig = JSON.stringify(metadata);
+    // Agent and folder shape approval cards; Hide names blanks the folder, so a card must re-render.
+    const sig = JSON.stringify([d.agent, d.cwd, metadata]);
     let c = entryCache.get(e.id);
     if (!c) {
       const el = document.createElement("div");
@@ -384,7 +386,7 @@ function renderDetail(d: DetailModel) {
     if (c.sig !== sig || c.text !== text || c.output !== output) {
       c.identity = JSON.stringify([e.kind, e.name, text]);
       c.el.className = `entry ${e.kind}${e.streaming ? " streaming" : ""}${e.level ? " " + e.level : ""}`;
-      c.el.innerHTML = entryHtml(e, d.id);
+      c.el.innerHTML = entryHtml(e, d.id, d.agent, d.cwd);
       c.sig = sig;
     }
     // Retain this push's strings without allocating escaped copies on every update.
@@ -436,7 +438,7 @@ function renderDetail(d: DetailModel) {
   } else held?.remove();
 }
 
-function entryHtml(e: EntryView, threadId: string): string {
+function entryHtml(e: EntryView, threadId: string, agent: string, cwd: string): string {
   switch (e.kind) {
     case "user":
       return `<div class="who">You</div><div class="body">${esc(e.text).replace(/\n/g, "<br>")}</div>`;
@@ -452,16 +454,18 @@ function entryHtml(e: EntryView, threadId: string): string {
       const preview = approvalPreview(e.text, e.expanded, pending);
       const btn = (label: string, decision: string, cls = "") =>
         `<span class="btn ${cls}" data-act="${attr({ type: "decide", thread: threadId, requestId: e.requestId, decision })}">${label}</span>`;
+      const alwaysLabel = agent === "claude" || agent === "codex" ? "Always (this quest)" : "Always (agent decides how long)";
       const opts = e.options?.length
         ? e.options.map((o) => `<span class="btn" data-act="${attr({ type: "answer", thread: threadId, requestId: e.requestId, label: o })}">${esc(o)}</span>`).join("")
-        : btn("Approve", "allow", "ok") + btn("Deny", "deny", "no") + (e.canAlways ? btn("Always (this quest)", "allowAlways", "always") : "");
+        : btn("Approve", "allow", "ok") + btn("Deny", "deny", "no") + (e.canAlways ? btn(alwaysLabel, "allowAlways", "always") : "");
       return `<div class="card ${pending ? "pending" : e.approval}">
         <div class="card-h">${pending ? '<span class="bang">!</span> ' : ""}${esc(e.title ?? "Approval")}</div>
-        <div class="preview-note">The agent's own summary. If unsure, Deny and check in the agent's app.</div>
+        ${pending && cwd ? `<div class="card-where">in ${esc(cwd)}</div>` : ""}
+        <div class="preview-note">The agent's own summary. If unsure, Deny — nothing happens until you approve.</div>
         ${pending && e.text.includes("omitted from this preview") ? `<div class="preview-cut" role="alert">! Part of this request is not shown. Deny unless you already know what it does.</div>` : ""}
         ${preview.shortened ? `<span class="btn preview-toggle" aria-expanded="${!!e.expanded}" data-act="${attr({ type: "approvalPreview", thread: threadId, id: e.id })}"><span aria-hidden="${!!e.expanded}">Show more of preview</span><span aria-hidden="${!e.expanded}">Collapse preview</span></span>` : ""}
         <pre class="card-b approval-preview">${diffHtml(preview.text)}${preview.shortened && !e.expanded ? "\n… [More preview text hidden]" : ""}</pre>
-        ${pending ? `<div class="btns">${opts}</div>` : `<div class="card-s">${approvalText(e.approval)}</div>`}
+        ${pending ? `<div class="btns">${opts}</div>` : `<div class="card-s">${approvalText(e.approval, agent)}</div>`}
       </div>`;
     }
     case "notice":
@@ -493,10 +497,10 @@ function staticDetail(d: DetailModel): string {
       <div class="hint welcome-chat"><b>Ask a game question</b><br>
         Quests, talents, zones, or a quick lookup. Chat uses web search, without project files or commands.<br>
         ${esc(d.chat.label)}${d.chat.model ? ` · ${esc(d.chat.model)}` : ""} · ${esc(d.chat.status)}<br>
-        <span class="btn" data-act="${attr(d.chat.act)}">+ Chat</span> ${d.chat.ready ? "Opens a draft; nothing is sent yet. Model lists your chat choices." : "Chat uses Claude or Codex. Open a draft, then use Model to choose an enabled Chat provider or check setup in the control panel."}</div>
+        <span class="btn" data-act="${attr(d.chat.act)}">+ Chat</span> ${d.chat.ready ? "Opens a draft; nothing is sent yet. Model lists your chat choices." : "Chat uses Claude or Codex. Open a draft, then use Model to choose an enabled Chat provider or open Familiar from the tray icon on your PC to sign in."}</div>
       <div class="hint welcome-project"><b>Work on a project</b><br>
-        ${projectStarts.length ? `Use ${projectStarts.join(" or ")} to choose a project folder. The project picker also lists other familiars.` : "No provider is ready yet. Check setup and sign-in in the control panel before starting a project."}
-        Use Model to see the available models. Check readiness below before sending.</div>
+        ${projectStarts.length ? `Use ${projectStarts.join(" or ")} to choose a project folder. The project picker also lists other familiars.` : "No provider is ready yet. Open Familiar from the tray icon on your PC to sign in before starting a project."}
+        Use Model to see the available models. Check Your familiars below before sending.</div>
       <div class="hint welcome-continue"><b>Continue a conversation</b><br>
         Pick a quest or desktop conversation on the left. Familiar asks before sending your first message to a desktop conversation.</div>
       <div class="hint"><b>Your familiars</b></div>
@@ -507,7 +511,7 @@ function staticDetail(d: DetailModel): string {
   if (d.kind === "pick")
     return `<div class="welcome"><div class="big">New ${agentLabel(d.agent)} quest</div>
       <div class="sub">Choose a zone (project folder) on the left.</div>
-      <div class="hint">Not listed? Type a full folder path in the box below and press Enter.<br>Type <b>mkdir C:\\Users\\you\\Documents\\MyAddon</b> to create a new folder.<br>
+      <div class="hint">Not listed? Type a full folder path in the box below and press Enter.<br>Type <b>mkdir &lt;your WoW folder&gt;\\_forever_\\Interface\\AddOns\\MyAddon</b> to start a new addon folder.<br>
       Switch familiar: ${Object.keys(PROVIDERS).map((id) => `<span class="btn" data-act="${attr({ type: "agent", agent: id })}">${AGENT_ICON[id]} ${esc(agentLabel(id))}</span>`).join(" ")}</div></div>`;
   if (d.kind === "draft" && d.chat)
     return `<div class="welcome"><div class="big">${AGENT_ICON[d.agent]} New chat</div>
@@ -573,6 +577,9 @@ function render() {
   rememberReadingPlace();
 }
 
+// Long folders keep only their last two parts; a blank folder (Hide names) is left out.
+const pathTail = (p: string) => { const s = p.split(/[\\/]/).filter(Boolean); return s.length > 2 ? "…\\" + s.slice(-2).join("\\") : p; };
+
 function renderAttention() {
   if (!model) return;
   const items = model.attention ?? [];
@@ -584,7 +591,7 @@ function renderAttention() {
   notesPage = Math.min(notesPage, Math.max(0, Math.ceil(items.length / pageSize) - 1));
   const control = (label: string, action: unknown) => `<span class="btn" data-act="${attr(action)}">${label}</span>`;
   const html = `<div class="catch-head">${control(`<b>${notesOpen ? "▾" : "▸"} ${items.length} waiting</b>`, { type: "local", what: "notes" })}</div>` +
-    (notesOpen ? `<div class="catch-promise">Replies wait here until you choose Caught up or reply in that quest. Opening a quest alone doesn't count.</div>` + items.slice(notesPage * pageSize, notesPage * pageSize + pageSize).map(item => `<div class="catch-note"><div class="catch-copy"><div class="catch-title"><b>${esc(item.title)}</b><span class="${item.pending ? "warn" : ""}">${esc(item.label)}</span></div><div class="catch-meta">${esc(agentLabel(item.agent))} · ${esc(item.project)} · ${esc(item.mode)}</div><div class="catch-excerpt">${esc(item.excerpt)}</div></div><div class="catch-actions">${control("Open quest", { type: "local", what: "openUpdate", thread: item.thread, entry: item.entry })}${item.pending ? "" : control("Caught up", { type: "caughtUp", thread: item.thread, entry: item.entry, revision: item.revision })}</div></div>`).join("") +
+    (notesOpen ? `<div class="catch-promise">Replies wait here until you choose Caught up or reply in that quest. Opening a quest alone doesn't count.</div>` + items.slice(notesPage * pageSize, notesPage * pageSize + pageSize).map(item => `<div class="catch-note"><div class="catch-copy"><div class="catch-title"><b>${esc(item.title)}</b><span class="${item.pending ? "warn" : ""}">${esc(item.label)}</span></div><div class="catch-meta">${esc(agentLabel(item.agent))} · ${esc(item.project)} · ${esc(item.mode)}${item.cwd ? ` · ${esc(pathTail(item.cwd))}` : ""}</div><div class="catch-excerpt">${esc(item.excerpt)}</div></div><div class="catch-actions">${control("Open quest", { type: "local", what: "openUpdate", thread: item.thread, entry: item.entry })}${item.pending ? "" : control("Caught up", { type: "caughtUp", thread: item.thread, entry: item.entry, revision: item.revision })}</div></div>`).join("") +
       (items.length > pageSize ? `<div class="catch-pages">${notesPage ? control("Previous notes", { type: "local", what: "notesPage", page: notesPage - 1 }) : ""}<span>${notesPage * pageSize + 1}–${Math.min(items.length, notesPage * pageSize + pageSize)} of ${items.length}</span>${(notesPage + 1) * pageSize < items.length ? control("Next notes", { type: "local", what: "notesPage", page: notesPage + 1 }) : ""}</div>` : "") : "");
   if (els.attention.innerHTML !== html) els.attention.innerHTML = html;
 }
@@ -787,6 +794,7 @@ function escapeHtml(s: string) {
 function escapeAttr(s: string) {
   return escapeHtml(s);
 }
-function approvalText(a?: string) {
-  return { approved: "Approved", always: "Approved (always)", denied: "Denied", expired: "Request expired. The agent no longer waits for this; send a message to retry." }[a ?? ""] ?? "";
+function approvalText(a: string | undefined, agent: string) {
+  const always = agent === "claude" || agent === "codex" ? "Approved (always, this quest)" : "Approved (always)";
+  return { approved: "Approved", always, denied: "Denied", expired: "Request expired. The agent no longer waits for this; send a message to retry." }[a ?? ""] ?? "";
 }

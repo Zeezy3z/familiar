@@ -24,16 +24,18 @@ export function journey(s: JourneyStatus) {
   const readyLabels = enabled.filter(p => s.backends?.[p.id]?.ready).map(p => p.label).filter(Boolean);
   const readyText = readyLabels.length === 1 ? `An agent is ready (${readyLabels[0]})` : readyLabels.length > 1 ? `Agents are ready (${readyLabels.join(", ")})` : "An agent is ready";
   const chatReady = enabled.some(p => p.id === s.chat?.agent && (p.id === "claude" || p.id === "codex") && s.backends?.[p.id]?.ready);
+  const signedLabels = enabled.filter(p => p.signedIn).map(p => p.label).filter(Boolean);
+  const signInText = signedLabels.length ? `Sign-in found (${signedLabels.join(", ")}); agents start with WoW` : "Sign-in found; agents start with WoW";
   const steps = [
-    { label: "Choose a familiar", done: prepared || unknownSignIn, text: ready ? readyText : prepared ? "Sign-in found; agents start with WoW" : unknownSignIn ? "Installed; sign-in is not yet verified" : "Enable an agent and check its sign-in below" },
+    { label: "Choose a familiar", done: prepared || unknownSignIn, text: ready ? readyText : prepared ? signInText : unknownSignIn ? "Installed; sign-in is not yet verified" : "Enable an agent and check its sign-in below" },
     { label: "Open WoW", done: !!s.game, text: s.game ? "Game window found" : "Use Windowed or Windowed (Fullscreen)" },
-    { label: "Meet in game", done: !!s.linked, text: s.linked ? "Runestrip linked" : "Restart WoW, tick Familiar and Familiar Sync at character select (Load out of date AddOns), then press Enter and type /fam" },
+    { label: "Meet in game", done: !!s.linked, text: s.linked ? "Game link working" : "Restart WoW, tick Familiar and Familiar Sync at character select (Load out of date AddOns), then press Enter and type /fam" },
   ];
   const guide = (title: string, text: string, level: "ok" | "warn" | "muted", action?: "providers" | "config" | "pause") => ({ title, text, level, action, steps });
   if (s.overlay?.paused) return guide("The Glass is paused", "Resume the overlay to see live replies again. Your conversations are kept.", "warn", "pause");
   if (!enabled.length) return guide("Choose your familiar", "Use an installed agent below. You can add more familiars whenever you like.", "warn", "providers");
   if (!prepared && !ready && !unknownSignIn) return guide("Check your familiar’s sign-in", "Use Sign in below, or complete setup in the agent’s own tool. A saved sign-in is checked again when the agent starts.", "warn", "providers");
-  if (!s.install && !s.linked) return guide("Find your WoW installation", "Open config and check wowRoot and wowFlavor. Then Reload config and choose Reinstall addon in Link details below. Restart WoW once after first installation.", "warn", "config");
+  if (!s.install && !s.linked) return guide("Familiar couldn't find World of Warcraft", "Start WoW: Forever once so Familiar can see its folder, then choose Reinstall addon under Link details below. If it still isn't found, Open config and set wowRoot and wowFlavor to _forever_.", "warn", "config");
   if (!s.game) return guide("Your familiars are waiting for WoW", "Open WoW in Windowed or Windowed (Fullscreen). Familiar stays in the tray while you’re away; agents start when WoW opens.", "muted");
   if (s.game.minimized || s.game.foreground === false) return guide("Return to your WoW window", "The Glass waits while WoW is minimized or in the background. Return to the game when you’re ready.", "muted");
   if (s.capture?.error) return guide("The Runestrip needs attention", "Capture reported an error. Check the link details below, keep WoW visible, and make sure its coloured strip is uncovered.", "warn");
