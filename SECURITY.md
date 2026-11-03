@@ -29,9 +29,10 @@ server.
 
 ## Known and documented (not a vulnerability by itself)
 
-Other addons running in the same WoW client can send messages and answer approval cards exactly
-as the player can (README, "What can talk to your agents"). Reports that show this crossing the
-limits above (mode escalation, bypass modes, hidden card content) are in scope.
+Other addons running in the same WoW client can send messages and press Deny/Stop; they cannot
+approve, because Approve/Always are matched to a real mouse click or key press on the PC (README,
+"What can talk to your agents"). Reports that show this crossing the limits above (approving
+without a real click or key, mode escalation, bypass modes, hidden card content) are in scope.
 
 ## Out of scope
 
