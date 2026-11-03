@@ -265,9 +265,8 @@ the game *decide* anything on its own:
   didn't start, `/fam stop`, then find the addon.
 * **Quests start in Ask first.** Everything the agent wants to run or change comes to you as a
   card, shown as the agent reports it, until it is answered. Long edits are cut at 60 lines, plans
-  at 4,000 characters and permission lists at 600 characters, and the card says so in red; if you
-  cannot see the whole request (a red notice, or a line ending in "…"), Deny and check in the
-  agent's app.
+  and commands at 4,000 characters and permission lists at 600 characters, and the card then says
+  in red that part of the request is not shown; if it does, Deny and check in the agent's app.
 * **Riskier modes only from the desktop.** In game, Mode only switches between Ask first and Plan
   only. **Accept edits** (the agent changes files in its project without a card; Codex: also runs
   sandboxed commands there) and **Auto** (the agent approves routine actions itself) can only be

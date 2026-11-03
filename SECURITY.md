@@ -30,7 +30,7 @@ server.
 ## Known and documented (not a vulnerability by itself)
 
 Other addons running in the same WoW client can send messages and press Deny/Stop; they cannot
-approve, because Approve/Always are matched to a real mouse click or key press on the PC (README,
+approve without your real mouse click or key press on the PC, which Approve/Always are matched to (README,
 "What can talk to your agents"). Reports that show this crossing the limits above (approving
 without a real click or key, mode escalation, bypass modes, hidden card content) are in scope.
 
