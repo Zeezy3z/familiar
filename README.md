@@ -14,7 +14,7 @@ WoW addon (Lua)  ── Runestrip pixels ──►  Familiar companion (Electron
       └────────── Glass: click-through overlay ◄─────┘   (+ native snapshot on /reload)
 ```
 
-> **Beta.** This is version 0.1.0, a beta tested on a small number of PCs. Expect rough edges and
+> **Beta.** This is version 0.1.1, a beta tested on a small number of PCs. Expect rough edges and
 > please [report bugs](https://github.com/Zeezy3z/familiar/issues/new/choose).
 
 ## Is this for me?
@@ -53,7 +53,7 @@ window (see [Signing in](#signing-in)).
 ## Install
 
 1. Get the app: download **`FamiliarApp-v<version>-windows.zip`** (for example
-   `FamiliarApp-v0.1.0-windows.zip`) from the
+   `FamiliarApp-v0.1.1-windows.zip`) from the
    [Releases page](https://github.com/Zeezy3z/familiar/releases) and extract it so that
    `Run Familiar.cmd` ends up in `C:\Familiar`. That ZIP is the whole thing: companion and addon.
    Or `git clone https://github.com/Zeezy3z/familiar.git C:\Familiar`. Not inside OneDrive, a
@@ -64,7 +64,7 @@ window (see [Signing in](#signing-in)).
    `Familiar-v<version>-forever.zip` on the same page is the addon alone, for addon managers such
    as WowUp. It does nothing without the app, so most people want the `FamiliarApp` ZIP.
    To check a download, compare
-   `Get-FileHash .\FamiliarApp-v0.1.0-windows.zip -Algorithm SHA256` with the line for that file
+   `Get-FileHash .\FamiliarApp-v0.1.1-windows.zip -Algorithm SHA256` with the line for that file
    in `SHA256SUMS.txt` on the same release page.
 2. Double-click **`Run Familiar.cmd`**. Windows may show "Windows protected your PC". That is
    SmartScreen seeing a new file, not a malware verdict: **More info → Run anyway**. Leave the
