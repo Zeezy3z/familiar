@@ -53,7 +53,16 @@ describe("journey guidance for recoverable states", () => {
     expect(j.steps[0]).toMatchObject({ done: true, text: "An agent is ready (Codex)" });
     const both = journey({ ...linked, linked: false, providers: [{ ...prepared, id: "claude", label: "Claude" }, prepared], backends: { claude: { ready: true }, codex: { ready: true } } });
     expect(both.steps[0].text).toBe("Agents are ready (Claude, Codex)");
-    expect(journey({ ...linked, linked: false, backends: {} }).steps[0].text).toBe("Sign-in found; agents start with WoW");
+    expect(journey({ ...linked, linked: false, backends: {} }).steps[0].text).toBe("Sign-in found (Codex); agents start with WoW");
+    expect(journey({ ...linked, linked: false, backends: {}, providers: [{ ...prepared, label: "" }] }).steps[0].text).toBe("Sign-in found; agents start with WoW");
+  });
+  it("says the game link is working and explains a missing WoW install in plain words", () => {
+    expect(journey(linked).steps[2].text).toBe("Game link working");
+    const j = journey({ providers: [prepared], backends: { codex: { ready: true } } });
+    expect(j.title).toBe("Familiar couldn't find World of Warcraft");
+    expect(j.text).toContain("Start WoW: Forever once");
+    expect(j.text).toContain("Reinstall addon under Link details below");
+    expect(j.title).not.toContain("wowRoot");
   });
   it("lets an installed custom ACP provider verify unknown sign-in when WoW starts", () => {
     const j = journey({ install: {}, providers: [{ ...prepared, id: "custom", signedIn: undefined, canLogin: false }] });
