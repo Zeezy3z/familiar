@@ -7,6 +7,8 @@ import { Marked } from "marked";
 import type { DetailModel, EntryView, RenderModel, Row, TrackerLine } from "../hub/viewmodel";
 import { threadState } from "./thread-state";
 import { approvalPreview } from "./approval-preview";
+import type { OverlayBridge } from "../shared/bridge";
+const bridge = window.familiar as OverlayBridge;
 
 
 type Rect = [number, number, number, number];
@@ -622,7 +624,7 @@ let hovered: Element | null = null;
 function onInput(ev: any) {
   if (!visible && !devInput) {
     // Never act on clicks the player can't see (the Glass is hidden or not yet aligned).
-    if (ev.t === "click") window.familiar.log(`[glass] ignored ${ev.r} click while hidden`);
+    if (ev.t === "click") bridge.log(`[glass] ignored ${ev.r} click while hidden`);
     return;
   }
   if (ev.t === "wheel") {
@@ -662,7 +664,7 @@ function onInput(ev: any) {
       if (act.what === "openUpdate") {
         notesOpen = false;
         pendingJump = { thread: act.thread, entry: act.entry };
-        window.familiar.action({ type: "select", id: act.thread, entry: act.entry });
+        bridge.action({ type: "select", id: act.thread, entry: act.entry });
       }
       if (act.what === "bottom") {
         follow = true;
@@ -676,14 +678,14 @@ function onInput(ev: any) {
       follow = false;
       restorePlace = currentReadingPlace(); // Keep the text being read in place through expansion/recovery.
     }
-    window.familiar.action(act);
+    bridge.action(act);
   }
 }
 
 // ---- wiring -------------------------------------------------------------------------------------
 // Layouts can arrive ~120 times a second while a frame is dragged: apply the newest once per paint.
 let layoutFrame = 0;
-window.familiar.on("layout", (l: Layout) => {
+bridge.on("layout", (l: Layout) => {
   // Capture before changing header height or pane geometry. A layout must never turn a reader
   // into a follower or discard expanded entries/loaded history merely because focus toggled.
   const modeChanged = !!layout?.focus !== !!l.focus;
@@ -700,7 +702,7 @@ window.familiar.on("layout", (l: Layout) => {
       applyLayout(true);
     });
 });
-window.familiar.on("model", (m: RenderModel) => {
+bridge.on("model", (m: RenderModel) => {
   // Font size and where notices go are applied with the layout.
   const relayout = !model || model.fontScale !== m.fontScale || model.raidWarnings !== m.raidWarnings;
   model = m;
@@ -708,8 +710,8 @@ window.familiar.on("model", (m: RenderModel) => {
   render();
   if (relayout) applyLayout();
 });
-window.familiar.on("input", onInput);
-window.familiar.on("vis", (v: { visible: boolean; devInput?: boolean }) => {
+bridge.on("input", onInput);
+bridge.on("vis", (v: { visible: boolean; devInput?: boolean }) => {
   visible = v.visible;
   devInput = !!v.devInput;
   document.body.classList.toggle("hidden", !visible);
@@ -737,8 +739,8 @@ function chime(kind: "done" | "approval" | "error") {
     o.stop(t + 0.55);
   });
 }
-window.familiar.on("sound", (k: any) => chime(k));
-window.familiar.on("speak", (text: string) => {
+bridge.on("sound", (k: any) => chime(k));
+bridge.on("speak", (text: string) => {
   try {
     const u = new SpeechSynthesisUtterance(text);
     u.rate = 1.05;

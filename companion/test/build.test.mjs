@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildDefine, buildIdentity } from "../scripts/build-identity.mjs";
+import { PRELOADS, preloadBuilds } from "../scripts/bundles.mjs";
 
 const fixtures = [];
 afterEach(() => { for (const dir of fixtures.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -103,5 +104,25 @@ describe("boot.cjs, the start-with-Windows entry", () => {
     touch("src/main.ts");
     expect(boot(true)).toEqual(["start"]); // main.js then hands over to the running instance and quits
     expect(boot()).toEqual(["build", "start"]);
+  });
+});
+
+// The shipped preload options (inline sourcemap included), bundled into a temp folder, never dist/.
+describe("per-window preloads", () => {
+  it("bundle, and only the control panel's exposes invoke / the cmd channel", async () => {
+    const out = mkdtempSync(join(tmpdir(), "familiar-preload-"));
+    fixtures.push(out);
+    const root = fileURLToPath(new URL("..", import.meta.url));
+    const opts = preloadBuilds(root, out);
+    expect(opts.map((o) => o.outfile)).toEqual(PRELOADS.map((n) => join(out, `preload-${n}.js`)));
+    await Promise.all(opts.map((o) => build({ ...o, logLevel: "silent" })));
+    const text = Object.fromEntries(PRELOADS.map((n) => [n, readFileSync(join(out, `preload-${n}.js`), "utf8")]));
+    expect(text.control).toMatch(/\binvoke\b/);
+    expect(text.control).toMatch(/"cmd"/);
+    for (const n of ["overlay", "capture"]) {
+      expect(text[n]).toMatch(/exposeInMainWorld/);
+      expect(text[n]).not.toMatch(/invoke/);
+      expect(text[n]).not.toMatch(/cmd/);
+    }
   });
 });

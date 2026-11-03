@@ -1,6 +1,7 @@
 // Win32 via koffi (no native compile). Read-only window queries only: we never send messages,
 // input or focus to the game. Handles are opaque pointers (BigInt-backed in koffi 3.x).
 import koffi from "koffi";
+import { intersects } from "./capture-gate";
 
 const user32 = koffi.load("user32.dll");
 const kernel32 = koffi.load("kernel32.dll");
@@ -198,4 +199,48 @@ export function rightButtonDown(): boolean {
 /** Whether a virtual key is held right now (read-only global key state: no hook, nothing is sent). */
 export function keyDown(vk: number): boolean {
   return (GetAsyncKeyState(vk) & 0x8000) !== 0;
+}
+
+const DwmGetWindowAttributeU32 = dwmapi.func(
+  "int32_t __stdcall DwmGetWindowAttribute(HWND hwnd, uint32_t dwAttribute, _Out_ uint32_t *pvAttribute, uint32_t cbAttribute)",
+);
+const DWMWA_CLOAKED = 14;
+/** Cloaked windows (other virtual desktops, suspended UWP) are not drawn. */
+function isCloaked(h: Hwnd): boolean {
+  const v = [0];
+  return DwmGetWindowAttributeU32(h, DWMWA_CLOAKED, v, 4) === 0 && v[0] !== 0;
+}
+
+/**
+ * Visible, non-minimized, non-cloaked top-level windows above `target` in Z order whose extended
+ * frame overlaps `r` (screen px), skipping `ignore` (our Glass). EnumWindows walks top-level windows
+ * topmost first, so we stop at the target. Returns null when the target was never reached.
+ * Read-only: no messages, input or focus changes.
+ */
+export function windowsAbove(target: Hwnd, r: Rect, ignore: Hwnd[]): { hwnd: Hwnd; exe: string; cls: string }[] | null {
+  const out: { hwnd: Hwnd; exe: string; cls: string }[] = [];
+  let reached = false;
+  const cb = koffi.register((h: Hwnd) => {
+    if (h === target) {
+      reached = true;
+      return false;
+    }
+    try {
+      if (ignore.includes(h) || !IsWindowVisible(h) || IsIconic(h) || isCloaked(h)) return true;
+      const b = extendedFrameBounds(h);
+      if (b && b.width > 0 && b.height > 0 && intersects(b, r)) {
+        const img = processImagePath(windowPid(h));
+        out.push({ hwnd: h, exe: img ? img.split("\\").pop() ?? "" : "", cls: className(h) });
+      }
+    } catch {
+      /* window vanished */
+    }
+    return true;
+  }, koffi.pointer(EnumWindowsProc));
+  try {
+    EnumWindows(cb, 0);
+  } finally {
+    koffi.unregister(cb);
+  }
+  return reached ? out : null;
 }

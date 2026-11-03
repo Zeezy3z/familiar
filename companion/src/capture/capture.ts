@@ -1,7 +1,9 @@
 // Hidden capture renderer: reads the WoW window via Windows.Graphics.Capture (Electron
 // desktopCapturer), finds the Runestrip, decodes frames and reassembles messages.
 import { crc16, FLAG_IDLE, Reassembler } from "../link/codec";
-import { acquire, decodeAt, findStrip, Rgba, StripLock } from "../link/decoder";
+import { acquire, decodeAt, findStrip, MAX_COLS, MAX_ROWS, Rgba, StripLock } from "../link/decoder";
+import type { CaptureBridge } from "../shared/bridge";
+const bridge = window.familiar as CaptureBridge;
 
 
 interface StartCfg {
@@ -13,9 +15,6 @@ interface StartCfg {
   clientX: number;
   clientY: number;
 }
-
-const MAX_COLS = 128;
-const MAX_ROWS = 8;
 
 let session = 0;
 let stream: MediaStream | null = null;
@@ -41,18 +40,18 @@ const reasm = new Reassembler((_id, payload) => {
   try {
     const msg = JSON.parse(text);
     stats.msgs++;
-    window.familiar.send("msgs", [msg]);
+    bridge.send("msgs", [msg]);
   } catch {
     // Never the text itself: the log must not contain what the player typed.
-    window.familiar.send("log", `[capture] bad json: ${payload.length} bytes, crc16 ${crc16(payload).toString(16).padStart(4, "0")}`);
+    bridge.send("log", `[capture] bad json: ${payload.length} bytes, crc16 ${crc16(payload).toString(16).padStart(4, "0")}`);
   }
 });
 
-window.familiar.on("stop", () => stop());
-window.familiar.on("start", (cfg: StartCfg) => {
+bridge.on("stop", () => stop());
+bridge.on("start", (cfg: StartCfg) => {
   start(cfg).catch((e) => {
     stats.error = String(e?.message ?? e);
-    window.familiar.send("log", "[capture] start failed: " + stats.error);
+    bridge.send("log", "[capture] start failed: " + stats.error);
   });
 });
 
@@ -137,7 +136,7 @@ async function start(cfg: StartCfg) {
         fpsAt = now;
         stats.locked = !!lock && Date.now() - stats.lastOk < 2500;
         stats.lock = lock;
-        window.familiar.send("stats", { ...stats });
+        bridge.send("stats", { ...stats });
       }
       if (lock) {
         const img = await region(frame, lock.x - 6, lock.y - 6, MAX_COLS * lock.pitch + 12, MAX_ROWS * lock.pitch + 12);
@@ -175,14 +174,17 @@ async function start(cfg: StartCfg) {
           };
           const ys = [cfg.clientY - 1, cfg.clientY, cfg.clientY + 2];
           const xs = Array.from({ length: 36 }, (_, i) => i);
-          window.familiar.send("log", `[capture] no strip; frame ${img.width}x${img.height} client@${cfg.clientX},${cfg.clientY} samples ` + ys.map((y) => xs.map((x) => px(x, y)).join(" ")).join(" | "));
+          bridge.send("log", `[capture] no strip; frame ${img.width}x${img.height} client@${cfg.clientX},${cfg.clientY} samples ` + ys.map((y) => xs.map((x) => px(x, y)).join(" ")).join(" | "));
         }
         continue;
       }
       const r = acquire(img, found);
       if (r.ok) {
         lock = { x: r.lock.x + img.ox, y: r.lock.y + img.oy, pitch: r.lock.pitch };
-        window.familiar.send("log", `[capture] locked at ${lock.x.toFixed(1)},${lock.y.toFixed(1)} pitch ${lock.pitch.toFixed(2)}`);
+        bridge.send("log", `[capture] locked at ${lock.x.toFixed(1)},${lock.y.toFixed(1)} pitch ${lock.pitch.toFixed(2)}`);
+        // Main's screen-capture gate checks where the strip is: tell it before this lock's messages.
+        stats.lock = lock;
+        bridge.send("stats", { ...stats });
         handle(r.frame);
       }
     } catch (e: any) {

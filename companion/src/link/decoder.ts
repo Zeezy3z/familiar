@@ -2,6 +2,10 @@
 // unit-tested against synthetic images rendered by the reference encoder and the Lua addon code.
 import { FINDER_CELLS, Frame, frameCapacity, HEADER_BYTES, parseFrameBytes, symbolsToBytes } from "./codec";
 
+/** Largest strip the addon draws, in cells: the capture reads (and the screen gate guards) this box. */
+export const MAX_COLS = 128;
+export const MAX_ROWS = 8;
+
 export interface Rgba {
   width: number;
   height: number;

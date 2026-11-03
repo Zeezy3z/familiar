@@ -39,7 +39,9 @@ import {
   mouseButtonDown,
   keyDown,
   rightButtonDown,
+  windowsAbove,
 } from "./win32";
+import { RefusalLog, screenCaptureTrusted, stripScreenBox, type Verdict } from "./capture-gate";
 import { bindingToVk, corroborateClick, corroborateKey, NO_PROOF, PressLog, Proof, Rect as ClientRect, TRUSTED } from "./physical";
 import { Drag, dragLayout, dragZone, LogMemo, logLayout, rememberLog } from "./geometry";
 import { findWowInstall, installAddon, interfaceCheck, SnapshotWriter, tocInterfaces, uninstallAddon, WowInstall } from "./wow";
@@ -130,9 +132,10 @@ let nextScreenTryAt = 0;
 
 const linked = () => Date.now() - (captureStats.lastOk ?? 0) < 3000;
 
-function webPrefs() {
+/** Each window gets its own preload exposing only the IPC its page uses (only control gets cmd). */
+function webPrefs(page: "control" | "overlay" | "capture") {
   return {
-    preload: path.join(DIST, "preload.js"),
+    preload: path.join(DIST, `preload-${page}.js`),
     contextIsolation: true,
     nodeIntegration: false,
     sandbox: true,
@@ -163,7 +166,7 @@ function createOverlay() {
     fullscreenable: false,
     backgroundColor: "#00000000",
     title: "Familiar Glass",
-    webPreferences: webPrefs(),
+    webPreferences: webPrefs("overlay"),
   });
   harden(overlay);
   overlay.setAlwaysOnTop(true, "screen-saver");
@@ -180,7 +183,7 @@ function createOverlay() {
 }
 
 function createCapture() {
-  capture = new BrowserWindow({ show: false, width: 320, height: 200, title: "Familiar capture", webPreferences: webPrefs() });
+  capture = new BrowserWindow({ show: false, width: 320, height: 200, title: "Familiar capture", webPreferences: webPrefs("capture") });
   harden(capture);
   capture.loadFile(path.join(DIST, "capture.html"));
   capture.webContents.on("did-finish-load", () => {
@@ -200,7 +203,7 @@ function createControl() {
     title: "Familiar",
     backgroundColor: "#0b0a0d",
     autoHideMenuBar: true,
-    webPreferences: webPrefs(),
+    webPreferences: webPrefs("control"),
   });
   harden(control);
   control.loadFile(path.join(DIST, "control.html"));
@@ -345,9 +348,27 @@ async function startCapture() {
   capture.webContents.send("start", cfgMsg);
 }
 
+/** The monitor screen capture records for the game, and its top-left in physical px (frame origin). */
+const gameDisplay = (c: Rect) => screen.getDisplayMatching(screen.screenToDipRect(null, c));
+const displayOrigin = (d: Electron.Display) => ({ x: Math.round(d.bounds.x * d.scaleFactor), y: Math.round(d.bounds.y * d.scaleFactor) });
+
+/** In screen-capture mode the frame is the whole monitor: strip messages count only while the game
+ * (or our Glass) is in front and no other window sits over the strip (capture-gate.ts). */
+const screenRefusals = new RefusalLog(5000);
+function screenGate(): Verdict {
+  if (captureMode !== "screen") return { ok: true };
+  const lock = captureStats.lock as { x: number; y: number; pitch: number } | null | undefined;
+  const strip = lock && client ? stripScreenBox(lock, displayOrigin(gameDisplay(client))) : null;
+  const foreground = foregroundKey();
+  const inFront = !!game && (foreground === game.key || foreground === overlayKey);
+  const ours = overlay && !overlay.isDestroyed() ? [hwndFromBuffer(overlay.getNativeWindowHandle())] : [];
+  const covering = game && strip && inFront ? windowsAbove(game.hwnd, strip, ours) : null;
+  return screenCaptureTrusted({ captureMode, foreground, game: game?.key ?? null, overlay: overlayKey, strip, covering });
+}
+
 async function startScreenCapture() {
   if (!client || !capture) return;
-  const disp = screen.getDisplayMatching(screen.screenToDipRect(null, client));
+  const disp = gameDisplay(client);
   const sources = await desktopCapturer.getSources({ types: ["screen"], thumbnailSize: { width: 0, height: 0 } });
   const src = sources.find((x) => x.display_id === String(disp.id));
   if (!src) {
@@ -357,9 +378,8 @@ async function startScreenCapture() {
   }
   const w = Math.round(disp.size.width * disp.scaleFactor);
   const h = Math.round(disp.size.height * disp.scaleFactor);
-  const ox = Math.round(disp.bounds.x * disp.scaleFactor);
-  const oy = Math.round(disp.bounds.y * disp.scaleFactor);
-  const cfgMsg = { sourceId: src.id, w, h, fps: 30, clientX: client.x - ox, clientY: client.y - oy };
+  const o = displayOrigin(disp);
+  const cfgMsg = { sourceId: src.id, w, h, fps: 30, clientX: client.x - o.x, clientY: client.y - o.y };
   log(`[capture] start screen ${src.id} ${w}x${h} client@${cfgMsg.clientX},${cfgMsg.clientY}`);
   capture.webContents.send("start", cfgMsg);
 }
@@ -711,7 +731,7 @@ function diagnosticsReport(): string {
     wow: install
       ? `${install.flavor} product ${install.product ?? "?"} version ${install.version ?? "?"} iface ${install.iface ?? "?"} (${install.source}); ${check?.text ?? ""}`
       : `no install (${installError ?? "unknown"})${wrongClient ? `; another client running: ${wrongClient.exe}` : ""}`,
-    capture: `mode ${captureMode}, fps ${c.fps ?? 0}, lock ${c.lock ? "yes" : "no"}, linked ${linked() ? "yes" : "no"}, game ${game ? (minimized ? "minimized" : fg === game.key ? "foreground" : "background") : "not found"}, overlay ${paused ? "paused" : overlayShown ? "shown" : "hidden"}${c.error ? `, error: ${c.error}` : ""}`,
+    capture: `mode ${captureMode}${captureMode === "screen" ? " (messages accepted only while WoW is in front and uncovered)" : ""}, fps ${c.fps ?? 0}, lock ${c.lock ? "yes" : "no"}, linked ${linked() ? "yes" : "no"}, game ${game ? (minimized ? "minimized" : fg === game.key ? "foreground" : "background") : "not found"}, overlay ${paused ? "paused" : overlayShown ? "shown" : "hidden"}${c.error ? `, error: ${c.error}` : ""}`,
     providers: providersNow().map((p) => `${p.id} ${p.installed ? "installed" : "not installed"}${p.signedIn === undefined ? "" : p.signedIn ? ", signed in" : ", not signed in"}${p.enabled ? ", on" : ", off"}`),
     configKeys: changedConfigKeys(cfg as unknown as Record<string, unknown>, DEFAULT_CONFIG as unknown as Record<string, unknown>),
     log: logRing.slice(-80),
@@ -862,7 +882,13 @@ app.whenReady().then(async () => {
   if (!process.argv.includes("--background")) createControl();
 
   ipcMain.on("msgs", (e, msgs) => {
-    if (from(e, capture) && Array.isArray(msgs)) onAddonMessages(msgs);
+    if (!from(e, capture) || !Array.isArray(msgs)) return;
+    const gate = screenGate();
+    if (!gate.ok) {
+      if (screenRefusals.shouldLog(Date.now())) log(`[capture] screen mode: dropped ${msgs.length} message(s): ${gate.why}`);
+      return;
+    }
+    onAddonMessages(msgs);
   });
   ipcMain.on("stats", (e, s) => {
     if (!from(e, capture)) return;

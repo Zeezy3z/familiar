@@ -1,6 +1,8 @@
 // Desktop control panel: link health, game window, agents, addon install, logs.
 import { journey } from "./journey";
 import { buildPresentation, restartGuidance } from "./build";
+import type { ControlBridge } from "../shared/bridge";
+const bridge = window.familiar as ControlBridge;
 
 const $ = (id: string) => document.getElementById(id)!;
 const esc = (s: unknown) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
@@ -154,17 +156,17 @@ function renderChat(s: any) {
 }
 for (const [id, key] of [["chat-agent", "agent"], ["chat-model", "model"], ["chat-effort", "effort"]])
   $(id).addEventListener("change", (e) =>
-    act("Chat defaults updated", async () => { await window.familiar.invoke("chatSettings", { [key]: (e.target as HTMLSelectElement).value }); await refreshStatus(); }),
+    act("Chat defaults updated", async () => { await bridge.invoke("chatSettings", { [key]: (e.target as HTMLSelectElement).value }); await refreshStatus(); }),
   );
 
 $("providers").addEventListener("click", (e) => {
   const t = e.target as HTMLElement;
-  if (t.dataset.install) act("Installation page opened", () => window.familiar.invoke("providerInstall", t.dataset.install));
-  if (t.dataset.login) act("Sign-in window opened. Complete sign-in there; Familiar will check again.", () => window.familiar.invoke("providerLogin", t.dataset.login));
+  if (t.dataset.install) act("Installation page opened", () => bridge.invoke("providerInstall", t.dataset.install));
+  if (t.dataset.login) act("Sign-in window opened. Complete sign-in there; Familiar will check again.", () => bridge.invoke("providerLogin", t.dataset.login));
 });
 $("providers").addEventListener("change", (e) => {
   const t = e.target as HTMLInputElement;
-  if (t.dataset.enable) act("Familiar choices updated", async () => { await window.familiar.invoke("providerEnable", { id: t.dataset.enable, on: t.checked }); await refreshStatus(); });
+  if (t.dataset.enable) act("Familiar choices updated", async () => { await bridge.invoke("providerEnable", { id: t.dataset.enable, on: t.checked }); await refreshStatus(); });
 });
 
 function addLog(line: string) {
@@ -175,12 +177,12 @@ function addLog(line: string) {
   if (atBottom) el.scrollTop = el.scrollHeight;
 }
 
-window.familiar.on("status", render);
-window.familiar.on("log", addLog);
-window.familiar.invoke("status").then(render);
-window.familiar.invoke("logs").then((lines: string[]) => lines.forEach(addLog));
+bridge.on("status", render);
+bridge.on("log", addLog);
+bridge.invoke("status").then(render);
+bridge.invoke("logs").then((lines: string[]) => lines.forEach(addLog));
 
-const refreshStatus = () => window.familiar.invoke("status").then(render);
+const refreshStatus = () => bridge.invoke("status").then(render);
 const actionFeedback = new WeakMap<HTMLElement, HTMLElement>();
 function localFeedback(group: HTMLElement, message: string) {
   let el = actionFeedback.get(group);
@@ -219,20 +221,20 @@ const btn = (id: string, message: string, fn: () => unknown) => $(id).addEventLi
     else $("providers").querySelector<HTMLElement>("button:not(:disabled), input:not(:disabled)")?.focus();
   }
 });
-btn("b-install", "Addon install checked. See the installation notes in Link details.", async () => { await window.familiar.invoke("install"); await refreshStatus(); });
-btn("b-chosen", "Your familiar choices are saved", async () => { await window.familiar.invoke("providersChosen"); await refreshStatus(); });
-btn("b-toast", "Overlay test requested. Look for the notice over WoW while the Glass is visible.", () => window.familiar.invoke("testToast"));
+btn("b-install", "Addon install checked. See the installation notes in Link details.", async () => { await bridge.invoke("install"); await refreshStatus(); });
+btn("b-chosen", "Your familiar choices are saved", async () => { await bridge.invoke("providersChosen"); await refreshStatus(); });
+btn("b-toast", "Overlay test requested. Look for the notice over WoW while the Glass is visible.", () => bridge.invoke("testToast"));
 const openFile = async (cmd: string) => {
-  const error = await window.familiar.invoke(cmd);
+  const error = await bridge.invoke(cmd);
   // Electron shell.openPath resolves to an error string rather than rejecting.
   if (typeof error === "string" && error) throw new Error(error);
 };
 btn("b-config", "Config opened", () => openFile("openConfig"));
-btn("b-reload", "Config reloaded", async () => { await window.familiar.invoke("reloadConfig"); await refreshStatus(); });
+btn("b-reload", "Config reloaded", async () => { await bridge.invoke("reloadConfig"); await refreshStatus(); });
 btn("b-logs", "Log file opened", () => openFile("openLogs"));
-btn("b-diag", "Diagnostics copied to the clipboard (redacted). Review before posting.", () => window.familiar.invoke("diagnostics"));
-btn("b-refresh", "Desktop conversations rescanned", async () => { await window.familiar.invoke("refresh"); await refreshStatus(); });
-$("c-login").addEventListener("change", (e) => act("Windows startup preference updated", () => window.familiar.invoke("launchAtLogin", (e.target as HTMLInputElement).checked)));
+btn("b-diag", "Diagnostics copied to the clipboard (redacted). Review before posting.", () => bridge.invoke("diagnostics"));
+btn("b-refresh", "Desktop conversations rescanned", async () => { await bridge.invoke("refresh"); await refreshStatus(); });
+$("c-login").addEventListener("change", (e) => act("Windows startup preference updated", () => bridge.invoke("launchAtLogin", (e.target as HTMLInputElement).checked)));
 $("journey-action").addEventListener("click", (e) => {
   const action = $("journey-action").dataset.action;
   if (action === "providers") return;
@@ -254,7 +256,7 @@ function renderUi(ui?: { fontScale: number; sound: boolean; raidWarnings: boolea
   const key = $("ui-approve-key") as HTMLInputElement;
   if (document.activeElement !== key) key.value = ui.approveKey ?? "";
 }
-const setUi = (patch: object) => act("In-game display preferences updated", () => window.familiar.invoke("uiSettings", patch).then(renderUi));
+const setUi = (patch: object) => act("In-game display preferences updated", () => bridge.invoke("uiSettings", patch).then(renderUi));
 fontSel.addEventListener("change", () => setUi({ fontScale: Number(fontSel.value) }));
 $("ui-sound").addEventListener("change", (e) => setUi({ sound: (e.target as HTMLInputElement).checked }));
 $("ui-quiet").addEventListener("change", (e) => setUi({ quiet: (e.target as HTMLInputElement).checked }));
@@ -263,10 +265,10 @@ $("ui-mode").addEventListener("change", (e) => setUi({ defaultMode: (e.target as
 $("ui-approve-key").addEventListener("change", (e) => setUi({ approveKey: (e.target as HTMLInputElement).value }));
 $("ui-raid").addEventListener("change", (e) => setUi({ raidWarnings: (e.target as HTMLInputElement).checked }));
 btn("b-pause", "Overlay preference updated", async () => {
-  paused = await window.familiar.invoke("pause", !paused);
+  paused = await bridge.invoke("pause", !paused);
   await refreshStatus();
 });
 btn("b-suggest", "Opened a pre-filled GitHub issue in your browser. Nothing is sent until you submit it there.", () =>
-  window.familiar.invoke("suggest", ($("suggest-text") as HTMLTextAreaElement).value));
+  bridge.invoke("suggest", ($("suggest-text") as HTMLTextAreaElement).value));
 
 export {};
