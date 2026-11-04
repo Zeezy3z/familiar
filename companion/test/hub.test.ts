@@ -2378,10 +2378,11 @@ describe("game-side budgets and the start toast", () => {
   });
 });
 
-// The release download carries no Anthropic code until Run Familiar.cmd's first run fetches the
-// Claude Agent SDK and Claude Code (fetch-claude.cjs). The real Claude backend and Familiars card,
-// pointed at a prebuilt companion folder without them.
-const { CLAUDE_NOT_DOWNLOADED, companionDir } = await import("../src/agents/claude-download");
+// The release download (and the installed app) carries no Anthropic code until the first run
+// fetches the Claude Agent SDK and Claude Code (fetch-claude.cjs, from Run Familiar.cmd or the
+// companion itself). The real Claude backend and Familiars card, pointed at a prebuilt companion
+// folder without them.
+const { CLAUDE_NOT_DOWNLOADED, claudeStatus, companionDir, downloadClaude } = await import("../src/agents/claude-download");
 const { ClaudeBackend } = await import("../src/agents/claude");
 const { providerSetup } = await import("../src/agents/setup");
 describe("release download before Claude is downloaded", () => {
@@ -2400,11 +2401,11 @@ describe("release download before Claude is downloaded", () => {
     return { download, restore: () => (companionDir.root = before) };
   }
 
-  it("the Familiars card says to run Run Familiar.cmd again, with no Install… or Sign in, until both packages are there", () => {
+  it("the Familiars card says to click Retry in the control panel, with no Install… or Sign in, until both packages are there", () => {
     const p = prebuilt();
     try {
       const row = () => providerSetup(() => true).find((r) => r.id === "claude")!;
-      expect(CLAUDE_NOT_DOWNLOADED).toBe("Not downloaded yet — run Run Familiar.cmd again to download Claude Code (about 112 MB)");
+      expect(CLAUDE_NOT_DOWNLOADED).toBe("Not downloaded yet — click Retry in Familiar's control panel to download Claude Code (about 112 MB)");
       expect(row()).toMatchObject({ installed: false, enabled: false, signedIn: false, detail: CLAUDE_NOT_DOWNLOADED, installUrl: undefined, canLogin: false });
       p.download();
       expect(row()).toMatchObject({ installed: true, enabled: true, installUrl: "https://docs.claude.com/en/docs/claude-code/setup" });
@@ -2427,6 +2428,44 @@ describe("release download before Claude is downloaded", () => {
       expect(t.lastError).toBe(`${CLAUDE_NOT_DOWNLOADED}. Your message is saved: after that, use Ctrl+Up in the composer and send again.`);
       expect(t.lastError).not.toMatch(/Reinstall|optional|pathToClaudeCodeExecutable|couldn't start/);
       expect(t.entries).toMatchObject([{ kind: "user", text: "Fix the tooltip" }, { kind: "notice", level: "error", text: t.lastError }]);
+    } finally {
+      p.restore();
+    }
+  });
+
+  it("first run downloads Claude Code: missing, then downloading with progress, then present; a failure says why and Retry downloads again", async () => {
+    const p = prebuilt();
+    try {
+      const row = () => providerSetup(() => true).find((r) => r.id === "claude")!;
+      const seen: unknown[] = [];
+      expect(claudeStatus()).toEqual({ state: "missing" });
+      // A failed download (no network): the reason, scrubbed, and that the other agents still work.
+      const failed = await downloadClaude(async () => { throw new Error("no response from the npm registry for 60 s"); }, (s) => seen.push(s));
+      expect(seen).toEqual([{ state: "downloading" }, failed]);
+      expect(failed).toEqual({ state: "failed", error: "no response from the npm registry for 60 s" });
+      expect(row()).toMatchObject({ installed: false, enabled: false,
+        detail: "Claude Code couldn't be downloaded (no response from the npm registry for 60 s). Codex and the other agents work; click Retry in Familiar's control panel" });
+      const real = new ClaudeBackend({ log: () => {}, version: "test" });
+      expect(await real.init()).toMatchObject({ ready: false, setup: row().detail });
+      // Retry: downloading again, the card's line following each whole percent.
+      seen.length = 0;
+      let release!: () => void;
+      const gate = new Promise<void>((r) => (release = r));
+      const done = downloadClaude(async (progress) => {
+        progress(0, 117_440_512);
+        progress(50_000_000, 117_440_512);
+        progress(50_000_001, 117_440_512); // same percent: no extra update
+        await gate;
+        p.download();
+      }, (s) => seen.push(s));
+      expect(downloadClaude(async () => { throw new Error("a second download"); })).toBe(done); // one at a time
+      expect(claudeStatus()).toEqual({ state: "downloading", pct: 42, mb: 112 });
+      expect(row().detail).toBe("Downloading Claude Code · 42 % of 112 MB");
+      release();
+      expect(await done).toEqual({ state: "present" });
+      expect(seen).toEqual([{ state: "downloading" }, { state: "downloading", pct: 0, mb: 112 }, { state: "downloading", pct: 42, mb: 112 }, { state: "present" }]);
+      expect(row()).toMatchObject({ installed: true, enabled: true });
+      expect(row().detail).not.toMatch(/Download|Retry/);
     } finally {
       p.restore();
     }

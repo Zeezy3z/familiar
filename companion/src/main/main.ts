@@ -16,7 +16,7 @@ import { providerSetup, startLogin } from "../agents/setup";
 import type { AgentBackend, Mode } from "../agents/types";
 import { MODES } from "../agents/types";
 import { resolveCommand } from "../agents/which";
-import { claudeStatus, companionDir } from "../agents/claude-download";
+import { claudeDownloadError, claudeExePath, claudeHome, claudeRoute, claudeStatus, companionDir, downloadClaude, type ClaudeFetch } from "../agents/claude-download";
 import { appDataDir, DEFAULT_CONFIG, loadConfig, saveConfig } from "../hub/config";
 import { FONT_MAX, FONT_MIN, Hub, type Toast } from "../hub/hub";
 import { buildModel } from "../hub/viewmodel";
@@ -61,9 +61,6 @@ const PACKAGED = app.isPackaged;
 companionDir.packaged = PACKAGED; // where Claude lives (claude-download.ts claudeHome)
 /** The addon the companion installs: the repo's copy, or the installer's under resources\. */
 const REPO_ADDON = PACKAGED ? path.join(process.resourcesPath, "addon", "Familiar") : path.resolve(__dirname, "..", "..", "addon", "Familiar");
-/** The SDK resolves claude.exe inside app.asar, where spawn fails (ENOENT); asarUnpack puts the
- * real file in app.asar.unpacked. Source runs keep the SDK's own lookup. */
-const BUNDLED_CLAUDE = PACKAGED ? path.join(process.resourcesPath, "app.asar.unpacked", "node_modules", "@anthropic-ai", "claude-agent-sdk-win32-x64", "claude.exe") : undefined;
 if (PACKAGED) {
   delete process.env.FAMILIAR_DEV; // dev/test hooks never exist in an installed build
   // The source run's Chromium profile (%APPDATA%\<package.json name>), so both hold the same
@@ -82,7 +79,8 @@ function selfTestAndExit(): never {
   try {
     const appRoot = path.resolve(__dirname, "..");
     const { selfTest } = require(path.join(appRoot, "self-test.cjs"));
-    ({ ok, lines } = selfTest({ appRoot, addonDir: REPO_ADDON, claudeExe: BUNDLED_CLAUDE }));
+    // Claude Code is downloaded on first run (claudeHome()); the self-test skips it until then.
+    ({ ok, lines } = selfTest({ appRoot, addonDir: REPO_ADDON, claudeExe: claudeExePath(), claudeHome: claudeHome() }));
   } catch (e: any) {
     lines = ["FAIL self-test: " + (e?.stack ?? e)];
   }
@@ -955,10 +953,57 @@ async function uninstall() {
   app.quit();
 }
 
+// ---- Claude Code download (agents/claude-download.ts, fetch-claude.cjs) -------------------------
+// The installed app and the release zip carry no Anthropic code: at every start (the --background
+// login start too) the pinned packages are checked, and downloaded when missing or re-pinned, in
+// this process, without blocking anything else (Codex and the other agents start as usual). The
+// check alone makes no network request. A clone has them from npm ci and never downloads.
+type FetchClaudeModule = {
+  fetchClaude(o: { root: string; pins?: string; log?: (s: string) => void; onProgress?: (got: number, total: number, label?: string) => void }): Promise<"present" | "installed">;
+};
+/** dist/claude-pins.json (scripts/build.mjs): the pinned versions, URLs and sha512s. Without it
+ * fetchClaude reads package-lock.json (a clone, older zips). */
+const CLAUDE_PINS = path.join(DIST, "claude-pins.json");
+const fetchClaudeNow: ClaudeFetch = (onProgress) => {
+  const { fetchClaude } = require("../../fetch-claude.cjs") as FetchClaudeModule; // bundled into main.js
+  return fetchClaude({
+    root: claudeHome(),
+    pins: fs.existsSync(CLAUDE_PINS) ? CLAUDE_PINS : undefined,
+    log: (s) => {
+      for (const line of String(s).split(/[\r\n]+/)) if (line.trim()) log("[claude] " + line.trim());
+    },
+    onProgress,
+  });
+};
+
+/** Start (or join) the download; returns the state at once. `why`: "start" or "retry". */
+function startClaudeDownload(why: "start" | "retry") {
+  if (claudeRoute() === "clone") return claudeStatus();
+  const missing = claudeStatus().state !== "present";
+  if (missing) log(`[claude] Claude Code is not downloaded yet: downloading it (${why})`);
+  downloadClaude(fetchClaudeNow, () => {
+    providersCache = undefined; // the Familiars card's Claude row follows the download
+    sendStatus();
+  }).then((s) => {
+    const failed = claudeDownloadError();
+    if (failed) log(`[claude] download failed: ${failed}`);
+    if (s.state !== "present" || !missing) return;
+    log("[claude] Claude Code is downloaded");
+    hub.backends.claude
+      ?.init()
+      .then(() => {
+        hub.changed("providers");
+        if (game) return hub.refreshExternal(); // agents are awake: list Claude's desktop threads now
+      })
+      .catch((e) => log("[claude] init: " + e));
+  });
+  return claudeStatus();
+}
+
 // ---- boot ---------------------------------------------------------------------------------------
 app.whenReady().then(async () => {
   log(`[boot] Familiar companion ${VERSION} (Electron ${process.versions.electron})`);
-  const claude = new ClaudeBackend({ log, version: VERSION, executable: cfg.claudeExecutable || BUNDLED_CLAUDE, defaultModel: cfg.claudeModel });
+  const claude = new ClaudeBackend({ log, version: VERSION, executable: cfg.claudeExecutable || undefined, defaultModel: cfg.claudeModel });
   const codex = new CodexBackend({ log, version: VERSION, exe: cfg.codexExe });
   const backends: Record<string, AgentBackend> = { claude, codex };
   // Agent Client Protocol agents (Hermes, Grok Build, anything added under "providers" in
@@ -1145,7 +1190,7 @@ app.whenReady().then(async () => {
       }
       // Round 4 commands (interfaces; filled in by the following changes).
       case "claudeRetry":
-        return claudeStatus();
+        return startClaudeDownload("retry");
       case "captureSnapshot":
         return { ok: false, why: "Not available yet." };
       case "projectAdd":
@@ -1170,6 +1215,7 @@ app.whenReady().then(async () => {
 
   if (devEnabled()) startDevServer();
   await hub.start();
+  startClaudeDownload("start");
   setInterval(tick, 100);
   // Tells the addon (at login / reload) that the companion is alive, even when nothing changed.
   setInterval(() => snapshot.writeNow({ force: true }), 5 * 60_000);

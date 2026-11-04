@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { pathToFileURL } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import { CodexBackend, prettyCommand } from "../src/agents/codex";
 import { ClaudeBackend } from "../src/agents/claude";
@@ -183,6 +184,71 @@ describe("one owner per thread: the agent's own app or Familiar", () => {
     expect(backend.isOpen("q1")).toBe(true);
     expect(await backend.handOff("q1", id)).toBe(`claude://resume?session=${id}`);
     expect(backend.isOpen("q1")).toBe(false);
+  });
+});
+
+describe("where Claude Code lives (claude-download.ts)", () => {
+  const scope = (home: string) => path.join(home, "node_modules", "@anthropic-ai");
+  const exe = process.platform === "win32" ? "claude.exe" : "claude";
+  function install(home: string, parts: ("sdk" | "binary")[]) {
+    if (parts.includes("sdk")) {
+      fs.mkdirSync(path.join(scope(home), "claude-agent-sdk"), { recursive: true });
+      fs.writeFileSync(path.join(scope(home), "claude-agent-sdk", "package.json"), JSON.stringify({ name: "@anthropic-ai/claude-agent-sdk", exports: { ".": { types: "./sdk.d.ts", default: "./entry.mjs" } } }));
+    }
+    if (parts.includes("binary")) {
+      fs.mkdirSync(path.join(scope(home), `claude-agent-sdk-${process.platform}-${process.arch}`), { recursive: true });
+      fs.writeFileSync(path.join(scope(home), `claude-agent-sdk-${process.platform}-${process.arch}`, exe), "");
+    }
+  }
+  async function withRoute<T>(route: "clone" | "zip" | "installed", fn: (home: string, dl: typeof import("../src/agents/claude-download")) => T | Promise<T>) {
+    const dl = await import("../src/agents/claude-download");
+    const tmp = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "familiar-claude-")));
+    const before = { ...dl.companionDir };
+    const local = process.env.LOCALAPPDATA;
+    dl.companionDir.root = path.join(tmp, "app");
+    dl.companionDir.packaged = route === "installed";
+    process.env.LOCALAPPDATA = path.join(tmp, "local");
+    fs.mkdirSync(dl.companionDir.root, { recursive: true });
+    if (route === "zip") fs.writeFileSync(path.join(dl.companionDir.root, ".prebuilt"), "");
+    try {
+      return await fn(dl.claudeHome(), dl);
+    } finally {
+      Object.assign(dl.companionDir, before);
+      if (local === undefined) delete process.env.LOCALAPPDATA;
+      else process.env.LOCALAPPDATA = local;
+    }
+  }
+
+  it("claudeHome: the companion folder for a clone or the zip, %LOCALAPPDATA%\\Familiar\\claude for the installed app", async () => {
+    await withRoute("clone", (home, dl) => expect(home).toBe(dl.companionDir.root));
+    await withRoute("zip", (home, dl) => expect(home).toBe(dl.companionDir.root));
+    await withRoute("installed", (home) => expect(home).toBe(path.join(process.env.LOCALAPPDATA!, "Familiar", "claude")));
+  });
+
+  it("claudeNotDownloaded checks that folder for both packages; a clone (npm ci) never downloads", async () => {
+    for (const route of ["zip", "installed"] as const)
+      await withRoute(route, (home, dl) => {
+        expect(dl.claudeNotDownloaded(), route).toBe(dl.CLAUDE_NOT_DOWNLOADED);
+        install(home, ["sdk"]);
+        expect(dl.claudeNotDownloaded(), route).toBe(dl.CLAUDE_NOT_DOWNLOADED);
+        install(home, ["binary"]);
+        expect(dl.claudeNotDownloaded(), route).toBeUndefined();
+        expect(dl.claudeStatus()).toEqual({ state: "present" });
+        expect(dl.claudeExecutable()).toBe(path.join(scope(home), `claude-agent-sdk-${process.platform}-${process.arch}`, exe));
+      });
+    await withRoute("clone", (_home, dl) => {
+      expect(dl.claudeNotDownloaded()).toBeUndefined();
+      expect(dl.claudeExecutable()).toBeUndefined(); // the SDK's own lookup
+    });
+  });
+
+  it("the installed app imports the downloaded SDK by file URL from its package's exports; the others by name", async () => {
+    await withRoute("installed", (home, dl) => {
+      install(home, ["sdk", "binary"]);
+      expect(dl.claudeSdkSpecifier()).toBe(pathToFileURL(path.join(scope(home), "claude-agent-sdk", "entry.mjs")).href);
+      expect(dl.claudeExePath()).toBe(path.join(scope(home), `claude-agent-sdk-${process.platform}-${process.arch}`, exe));
+    });
+    for (const route of ["clone", "zip"] as const) await withRoute(route, (_home, dl) => expect(dl.claudeSdkSpecifier()).toBe("@anthropic-ai/claude-agent-sdk"));
   });
 });
 
