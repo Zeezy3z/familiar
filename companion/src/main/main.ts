@@ -1249,7 +1249,7 @@ app.whenReady().then(async () => {
         hub.openIssue(url);
         return true;
       }
-      // Round 4 commands (interfaces; filled in by the following changes).
+      // Claude download, Link Doctor snapshot, project folders, versions (round 4).
       case "claudeRetry":
         return startClaudeDownload("retry");
       case "captureSnapshot":
