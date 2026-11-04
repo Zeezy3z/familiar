@@ -49,7 +49,7 @@ import { RUNNING_BUILD } from "./build";
 import { devEnabled, serveDevHooks } from "./dev-hooks";
 import { changedConfigKeys, describeAddonMessage, describeOverlayAction, diagnosticsText, logLine, redact, rotateLog } from "./log-file";
 
-const VERSION = "0.1.1";
+const VERSION = "0.2.0";
 
 // ---- installed build (electron-builder) --------------------------------------------------------
 // Packaged-only: a source run (electron.exe <companion dir>, via boot.cjs) skips all of this.
