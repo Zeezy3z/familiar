@@ -186,7 +186,7 @@ const SCENES = {
     scenario: "quest-complete", top: 190, disabledKeys: ["approve", "stop"],
     patch: {
       list: { title: "Quest Log", rows: listRows("garden-water", { waterStatus: "idle" }) }, target, status, raidWarnings: true,
-      toasts: [{ kind: "done", text: "Quest Complete · Watering schedule", at: 1 }],
+      toasts: [{ kind: "done", text: "Quest Complete · Watering schedule", sub: "3/3 objectives · 2 edits · $0.21", at: 1 }], // what hub/rewards.ts says of the data below
       keys: { approve: false, stop: false, mode: "Ask first" },
       tracker: [
         { id: "garden-water", agent: "claude", title: "Watering schedule", project: "Garden planner", status: "idle", activity: "Finished — reply ready", progress: "3/3", cost: "$0.21" },
@@ -196,6 +196,7 @@ const SCENES = {
     detail: thread({ status: "idle", usage: "18.4k in · 5.2k out · $0.21",
       todos: [{ text: "Add a wateringDays field", status: "completed" }, { text: "Show what is due today in the list", status: "completed" }, { text: "Cover it with a test", status: "completed" }],
       entries: [READ,
+        { id: "t3", kind: "tool", name: "Edit", text: "src/plants.json", status: "ok" }, { id: "t4", kind: "tool", name: "Edit", text: "src/plants.test.ts", status: "ok" },
         { id: "a1", kind: "assistant", text: "Done. Every plant now has a `wateringDays` value, and the list shows a **Due today** badge. All 12 tests pass." }] }),
   },
 };
@@ -354,7 +355,7 @@ async function recordGif(browser) {
       p.model.keys = { approve: false, stop: false, mode: "Ask first" };
       p.model.detail.todos = p.model.detail.todos.map((t) => ({ ...t, status: "completed" }));
       p.model.detail.entries.push({ id: "a2", kind: "assistant", text: "Done. Every plant now has a `wateringDays` value, and the list shows a **Due today** badge." });
-      p.model.toasts = [{ kind: "done", text: "Quest Complete · Watering schedule", at: 3 }];
+      p.model.toasts = [{ kind: "done", text: "Quest Complete · Watering schedule", sub: "1 edit · $0.21", at: 3 }];
       p.model.tracker[0].status = "idle"; p.model.tracker[0].activity = "Finished — reply ready"; p.model.tracker[0].progress = "2/2"; p.model.tracker[0].cost = "$0.21";
     });
     await wait(3400);

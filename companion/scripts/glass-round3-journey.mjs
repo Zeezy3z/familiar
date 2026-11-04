@@ -88,19 +88,47 @@ export async function glassRound3Journey(page, origin) {
   await open('welcome');
   check('mode: welcome has no mode plate', !(await plate()).shown);
 
-  // ---- §6 Quest Complete / Quest Failed
+  // ---- §6 Quest Complete / Quest Failed: the painted seal replaces the ◆ / ✗ ornament (round 5), with the hub's rewards line under the title
   await open('quest-complete');
-  const toast = sel => page.evaluate(sel => { const el = document.querySelector(sel); return el && { text: el.textContent, before: getComputedStyle(el, '::before').content,
-    after: getComputedStyle(el, '::after').content, font: getComputedStyle(el).fontFamily }; }, sel);
+  const toast = sel => page.evaluate(sel => { const el = document.querySelector(sel), img = el?.querySelector('img.seal'), sub = el?.querySelector('.sub'); return el && {
+    text: el.textContent, before: getComputedStyle(el, '::before').content, after: getComputedStyle(el, '::after').content, afterDisplay: getComputedStyle(el, '::after').display, font: getComputedStyle(el).fontFamily, color: getComputedStyle(el).color,
+    src: img?.getAttribute('src'), alt: img?.getAttribute('alt'), loaded: !!img && img.complete && img.naturalWidth === 128, seals: el.querySelectorAll('img.seal').length,
+    sealW: img?.getBoundingClientRect().width, fontPx: parseFloat(getComputedStyle(el).fontSize), anim: img && getComputedStyle(img).animationName, bannerAnim: getComputedStyle(el).animationName,
+    title: el.querySelector('.t')?.textContent, sub: sub?.textContent, subDisplay: sub && getComputedStyle(sub).display, subBefore: sub && getComputedStyle(sub, '::before').content,
+    subFont: sub && getComputedStyle(sub).fontFamily, subSize: sub && parseFloat(getComputedStyle(sub).fontSize) / parseFloat(getComputedStyle(el).fontSize), subColor: sub && getComputedStyle(sub).color,
+    titleDisplay: el.querySelector('.t') && getComputedStyle(el.querySelector('.t')).display }; }, sel);
+  await page.waitForFunction(() => { const i = document.querySelector('.toast img.seal'); return !i || i.complete; });
   const done = await toast('.toast.done');
-  check('toast: Quest Complete banner with the ◆ ornament and rules', !!done && done.text.startsWith('Quest Complete') && done.before.includes('◆') && done.after !== 'none' && done.font.includes('Familiar Display'));
+  check('toast: Quest Complete banner with the seal, its rewards line and the closing rule', !!done && done.title === 'Quest Complete · Quest log' && done.src === 'assets/seal-128.png' && done.alt === '' && done.loaded
+    && done.seals === 1 && done.before === 'none' && done.after !== 'none' && done.font.includes('Familiar Display'));
+  check('toast: the rewards line is the hub sub, small, in the plain face and the dim text colour', done.sub === '3/3 objectives · 2 edits · $0.21' && done.subFont.includes('Segoe UI')
+    && Math.abs(done.subSize - 0.62) < 0.01 && done.subColor === 'rgb(191, 182, 164)');
+  check('toast: the seal is 2.2em of the banner text', Math.abs(done.sealW - 2.2 * done.fontPx) < 1);
   await open('quest-failed');
+  await page.waitForFunction(() => { const i = document.querySelector('.toast img.seal'); return !i || i.complete; });
   const failed = await toast('.toast.error');
-  check('toast: Quest Failed banner in the same shape', !!failed && failed.text.startsWith('Quest Failed') && failed.after !== 'none' && failed.before.includes('✗'));
+  check('toast: Quest Failed banner in the same shape, with the cracked seal and the red text', !!failed && failed.title === 'Quest Failed · Quest log' && failed.src === 'assets/seal-cracked-128.png' && failed.loaded
+    && failed.seals === 1 && failed.before === 'none' && failed.after !== 'none' && failed.color === 'rgb(255, 90, 79)' && failed.sub === undefined);
+  // Motion (the journey runs with reduced motion on): the Complete seal stamps in, the Failed one only settles with the banner, and reduced motion stills both.
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  const moving = { done: await (async () => { await open('quest-complete'); return toast('.toast.done'); })(), failed: await (async () => { await open('quest-failed'); return toast('.toast.error'); })() };
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await open('quest-complete');
+  const still = await toast('.toast.done');
+  check('toast: the Complete seal stamps in, the Failed seal makes no motion of its own, reduced motion stills the seal', moving.done.anim === 'stamp' && moving.done.bannerAnim === 'settle'
+    && moving.failed.anim === 'none' && moving.failed.bannerAnim === 'settle' && still.anim === 'none');
   await open('finished');
-  await push(() => { window.preview.model.toasts = [{ kind: 'done', text: 'Quest Complete · Quest log', at: 1 }]; });
+  await push(() => { window.preview.model.toasts = [{ kind: 'done', text: 'Quest Complete · Quest log', sub: '3/3 objectives · 2 edits · $0.21', at: 1 }, { kind: 'error', text: 'Quest Failed · Quest log', sub: '<b>1</b>/3 objectives', at: 2 },
+    { kind: 'done', text: 'Answer ready · A quick question', at: 3 }]; });
+  await page.waitForFunction(() => [...document.querySelectorAll('.toast img.seal')].every(i => i.complete));
   const inwin = await toast('#toasts.inwin .toast.done');
-  check('toast: in-window notice keeps the ornament on one line', !!inwin && inwin.text.startsWith('Quest Complete') && inwin.before.includes('◆'));
+  check('toast: in-window notice keeps the moment on one line: a 1em seal, the title, then the rewards after " · "', !!inwin && inwin.title === 'Quest Complete · Quest log' && inwin.src === 'assets/seal-128.png' && inwin.before === 'none'
+    && Math.abs(inwin.sealW - inwin.fontPx) < 1 && inwin.titleDisplay === 'inline' && inwin.subDisplay === 'inline' && inwin.subBefore === '" · "' && inwin.sub === '3/3 objectives · 2 edits · $0.21'
+    && inwin.afterDisplay === 'none');
+  const stacked = await page.evaluate(() => [...document.querySelectorAll('#toasts .toast')].map(t => ({ kind: t.className, sub: t.querySelector('.sub')?.textContent ?? null, html: t.querySelector('.sub b') !== null,
+    oneLine: t.getBoundingClientRect().height < 2.4 * parseFloat(getComputedStyle(t).fontSize) * 1.6, src: t.querySelector('img.seal')?.getAttribute('src') })));
+  check('toast: a chat answer has no rewards line, a failure carries its own, and a line is text, never markup', stacked.length === 3 && stacked[2].sub === null && stacked[1].sub === '<b>1</b>/3 objectives' && stacked.every(t => !t.html)
+    && stacked[1].src === 'assets/seal-cracked-128.png' && stacked[2].src === 'assets/seal-128.png' && stacked.every(t => t.oneLine));
 
   // ---- §5 cost and usage
   await open('running');

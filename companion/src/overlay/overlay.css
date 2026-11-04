@@ -275,29 +275,31 @@ body.short-detail .welcome .portrait { display: none; }
 .toast.approval::before { content: "! "; }
 .toast.approval { color: var(--warn); }
 .toast.info { color: var(--text); font-size: max(13px, 1.7vh); }
-/* Quest Complete / Quest Failed: the moment. A thin rule with a centred ornament above, a plain
-   rule below, gold (or red) glow; CSS only. */
+/* Quest Complete / Quest Failed: the moment. The painted seal (cracked on failure) above the title, a
+   rewards line under it, a plain rule below; gold (or red) glow. The seal is an <img> (overlay.ts). */
 .toast.done, .toast.error { font-size: max(18px, 2.6vh); letter-spacing: 0.04em; min-width: 14em; padding: var(--u) calc(var(--u) * 6);
   background: radial-gradient(ellipse at center, rgba(0, 0, 0, 0.7) 35%, rgba(0, 0, 0, 0.35) 58%, rgba(0, 0, 0, 0) 74%); border-bottom: 0; animation: settle 0.6s ease-out;
   text-shadow: 0 0 2px #000, 0 0 6px rgba(255, 209, 0, 0.55), 0 0 14px rgba(255, 170, 0, 0.3); }
 .toast.error { color: var(--err); text-shadow: 0 0 2px #000, 0 0 6px rgba(255, 90, 79, 0.55), 0 0 14px rgba(255, 60, 40, 0.3); }
-.toast.done::before, .toast.error::before { content: "◆"; display: block; font-size: 0.6em; line-height: 1; margin-bottom: calc(var(--u) * 0.75); color: var(--gold);
-  background: linear-gradient(90deg, transparent, var(--gold-dim)) left center / calc(50% - 1.2em) 1px no-repeat, linear-gradient(90deg, var(--gold-dim), transparent) right center / calc(50% - 1.2em) 1px no-repeat; }
+.toast .seal { display: block; width: 2.2em; height: 2.2em; margin: 0 auto calc(var(--u) * 0.75); }
+.toast.done .seal { animation: stamp 350ms ease-out; }
+.toast .sub { margin-top: calc(var(--u) * 0.5); font-family: var(--sans); font-size: 0.62em; letter-spacing: normal; color: var(--text-dim); text-shadow: 0 0 2px #000, 0 0 5px #000, 0 0 9px #000; }
 .toast.done::after, .toast.error::after { content: ""; display: block; height: 1px; margin-top: var(--u); background: linear-gradient(90deg, transparent, var(--gold-dim) 22%, var(--gold-dim) 78%, transparent); }
-.toast.error::before { content: "✗"; color: var(--err);
-  background: linear-gradient(90deg, transparent, var(--err)) left center / calc(50% - 1.2em) 1px no-repeat, linear-gradient(90deg, var(--err), transparent) right center / calc(50% - 1.2em) 1px no-repeat; }
 .toast.error::after { background: linear-gradient(90deg, transparent, var(--err) 22%, var(--err) 78%, transparent); }
 
 @keyframes pulse { 50% { opacity: 0.45; } }
 @keyframes blink { 50% { opacity: 0; } }
 #toasts.inwin { align-items: stretch; gap: calc(var(--u) * 0.5); }
 #toasts.inwin .toast { font-family: inherit; font-size: var(--fs-sm); letter-spacing: normal; min-width: 0; max-width: none; background: rgba(0, 0, 0, 0.78); border: 1px solid var(--line); border-radius: var(--r); padding: calc(var(--u) * 0.5) calc(var(--u) * 1.5); text-shadow: var(--shadow); animation: none; }
-/* Inside the window the moment stays one line: the ornament leads the text, no rules. */
-#toasts.inwin .toast.done::before, #toasts.inwin .toast.error::before { display: inline; content: "◆ "; font-size: 1em; margin: 0; background: none; }
-#toasts.inwin .toast.error::before { content: "✗ "; }
+/* Inside the window the moment stays one line: a small seal leads the title, the rewards follow after " · ", no rules. */
 #toasts.inwin .toast.done::after, #toasts.inwin .toast.error::after { display: none; }
+#toasts.inwin .toast .seal { display: inline-block; width: 1em; height: 1em; margin: 0 0.4em 0 0; vertical-align: -0.15em; animation: none; }
+#toasts.inwin .toast .t, #toasts.inwin .toast .sub { display: inline; }
+#toasts.inwin .toast .sub { margin: 0; font-size: inherit; text-shadow: var(--shadow); }
+#toasts.inwin .toast .sub::before { content: " · "; }
 @keyframes toastIn { from { opacity: 0; transform: translateY(-8px) scale(1.05); } to { opacity: 1; transform: none; } }
 @keyframes settle { from { opacity: 0; transform: scale(1.06); } to { opacity: 1; transform: none; } }
+@keyframes stamp { from { transform: scale(1.35); filter: brightness(1.9); } 30% { filter: brightness(1); } to { transform: none; } }
 
 /* ---- Stream-safe: blur what was said, never what you approve ---- */
 body.blur .entry.user .body, body.blur .entry.assistant .body, body.blur .entry.reasoning, body.blur .tool-line .tsum, body.blur .tout,

@@ -114,7 +114,8 @@
   }
   if (moment) {
     model.raidWarnings = true;
-    model.toasts = [scenario === "quest-complete" ? { kind: "done", text: "Quest Complete · Quest log", at: 1 } : { kind: "error", text: "Quest Failed · Quest log", at: 1 }];
+    // The hub's rewards line (hub/rewards.ts) rides on the done toast; a failure here has none.
+    model.toasts = [scenario === "quest-complete" ? { kind: "done", text: "Quest Complete · Quest log", sub: "3/3 objectives · 2 edits · $0.21", at: 1 } : { kind: "error", text: "Quest Failed · Quest log", at: 1 }];
   }
   if (welcome) {
     const unready = scenario === "welcome-unready";

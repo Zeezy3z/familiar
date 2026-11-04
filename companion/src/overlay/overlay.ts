@@ -606,7 +606,13 @@ function renderTracker(lines: TrackerLine[]) {
 function renderToasts(m: RenderModel) {
   const html = m.toasts
     .slice(-3)
-    .map((t) => `<div class="toast ${t.kind}">${esc(t.text)}</div>`)
+    .map((t) => {
+      // The moment: the painted seal (cracked on a failure) over the title, and the hub's rewards line when it sent one
+      // (`sub`: counts and cost only, never a name; read defensively, a hub without it draws no line).
+      if (t.kind !== "done" && t.kind !== "error") return `<div class="toast ${t.kind}">${esc(t.text)}</div>`;
+      const sub = (t as { sub?: string }).sub;
+      return `<div class="toast ${t.kind}"><img class="seal" src="assets/${t.kind === "done" ? "seal-128" : "seal-cracked-128"}.png" alt=""><div class="t">${esc(t.text)}</div>${sub ? `<div class="sub">${esc(sub)}</div>` : ""}</div>`;
+    })
     .join("");
   if (els.toasts.innerHTML !== html) els.toasts.innerHTML = html;
 }
