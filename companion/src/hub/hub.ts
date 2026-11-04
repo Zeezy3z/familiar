@@ -29,6 +29,7 @@ import { providerAvailable } from "../agents/setup";
 import { CHAT_INSTRUCTIONS, withGameContext } from "./chat";
 import { CHATS_KEY, Project, ProjectRegistry, projectRootOf } from "./projects";
 import { SUGGEST_TOAST, suggestionUrl, type SuggestVersions } from "./suggest";
+import { TUTORIAL_AGENT, TUTORIAL_NO_MODE, tutorialDecide, tutorialReply, tutorialSetOut, tutorialThread } from "./tutorial";
 
 export type EntryKind = "user" | "assistant" | "reasoning" | "tool" | "approval" | "notice";
 
@@ -48,8 +49,19 @@ export interface Entry {
   approval?: "pending" | "approved" | "denied" | "always" | "expired";
   canAlways?: boolean;
   options?: string[];
+  /** approval: the card's text is a cut preview; `full` is the whole request, approved only on the PC. */
+  cut?: boolean;
+  full?: string;
+  /** approval: why the last approving click or key was refused (shown on the card until a decision). */
+  refused?: { why: Refusal; at: number };
   level?: "info" | "error";
 }
+
+/** Why the hub refused an approving decision: no proof of real input, a card too fresh to have
+ * been read, a cut request (approved only in the control panel), or an unknown view context. */
+export type Refusal = "proof" | "fresh" | "cut" | "view";
+/** Where a decision came from: the game (Glass card, keys) or the desktop control panel. */
+export type DecisionOrigin = "game" | "panel";
 
 export type ThreadStatus = "idle" | "running" | "approval" | "error" | "new";
 
@@ -72,8 +84,9 @@ export interface Thread {
   /** Revision of the last saved attention event explicitly acknowledged in catch-up notes. */
   attentionSeen?: string | null;
   origin: "familiar" | "external";
-  /** "chat": no repo, web search only (the Chats zone). */
-  kind?: "chat";
+  /** "chat": no repo, web search only (the Chats zone). "tutorial": A Familiar Face, answered by
+   * the hub itself (hub/tutorial.ts), no backend. */
+  kind?: "chat" | "tutorial";
   /** The quest log this chat's model last saw (it is only re-sent when it changed). */
   questsSent?: string;
   /** The desktop/CLI session this quest continues (a fork has its own id): that session's entry
@@ -183,6 +196,9 @@ export function setFontScale(cur: number, arg = ""): number | undefined {
   return Math.round(Math.min(FONT_MAX, Math.max(FONT_MIN, s)) * 10) / 10;
 }
 
+/** Where a cut request is approved, said on its approval toast. */
+export const CUT_TOAST = "Open Familiar on your PC to approve";
+
 const FORK_NOTE = "This conversation is open in another app (the desktop app or a terminal), which owns writing to it, so Familiar continues a copy (fork). Close it there to keep working in the same conversation.";
 
 export class Hub {
@@ -204,6 +220,11 @@ export class Hub {
    * drop them from its outbox; also makes a resend of something that did arrive a no-op. */
   acked: string[] = [];
   toasts: Toast[] = [];
+  /** In combat (setCombat): quests' notices and the last speech, released when the fight ends. */
+  private combat = false;
+  private held: Toast[] = [];
+  private heldSpeech?: string;
+  private heldPcAlert = false;
   addon: AddonInfo = {};
   private viewKeys = false; // monotonic for this Hub lifetime; old hellos cannot downgrade safety
   projects: ProjectRegistry;
@@ -226,6 +247,8 @@ export class Hub {
   onSound: (kind: "done" | "approval" | "error") => void = () => {};
   onConfigChanged: (c: Config) => void = () => {};
   onSpeak: (text: string) => void = () => {};
+  /** A request too long for the in-game card is waiting (main: flash the panel / a tray notice). */
+  onCutRequest: () => void = () => {};
 
   constructor(
     public cfg: () => Config,
@@ -289,9 +312,36 @@ export class Hub {
   async start() {
     this.projects.scanRoots();
     this.load();
-    for (const t of this.threads.values()) this.projects.add(t.cwd, t.updatedAt);
+    for (const t of this.threads.values()) if (t.kind !== "tutorial") this.projects.add(t.cwd, t.updatedAt);
+    // A Familiar Face, once, on a first run (no saved quests yet); /fam tutorial brings it back.
+    const c = this.cfg();
+    if (!c.tutorialSeen && this.threadStore.firstRun) {
+      this.addTutorial();
+      c.tutorialSeen = true;
+      this.onConfigChanged(c);
+    }
     setInterval(() => this.pruneToasts(), 1000);
     this.changed("start");
+  }
+
+  // ---- A Familiar Face (hub/tutorial.ts) -------------------------------------------------------
+  private addTutorial(): Thread {
+    const t = tutorialThread(uid("q"), appDataDir(), this.addon.char || "adventurer", uid);
+    this.threads.set(t.id, t);
+    return t;
+  }
+
+  /** /fam tutorial, or the welcome page's link: the tutorial quest, a fresh one if it was archived. */
+  private openTutorial() {
+    const t = [...this.threads.values()].find((x) => x.kind === "tutorial") ?? this.addTutorial();
+    this.select(t.id);
+  }
+
+  /** The tutorial's lines take the same path as an agent's events (toasts, chimes, markers). */
+  private play(t: Thread, events: AgentEvent[]) {
+    for (const e of events) this.onAgent(TUTORIAL_AGENT, e);
+    this.refreshStatus(t); // a practice card still waiting keeps its "!"
+    if (t.status === "running") t.status = "idle";
   }
 
   private waking?: Promise<void>;
@@ -451,7 +501,7 @@ export class Hub {
         t.status = t.status === "new" ? "new" : t.lastError ? "error" : "idle";
         for (const e of t.entries) {
           e.streaming = false;
-          if (e.kind === "approval" && e.approval === "pending") e.approval = "expired";
+          if (e.kind === "approval" && e.approval === "pending") settle(e, "expired");
           if (e.kind === "tool" && e.status === "running") e.status = "unknown";
         }
         if (cut)
@@ -488,7 +538,13 @@ export class Hub {
   saveNow(): boolean {
     const threads = [...this.threads.values()].map((t) => ({
       ...t,
-      entries: t.entries.slice(-MAX_ENTRIES).map((e) => (e.output && e.output.length > 2000 ? { ...e, output: e.output.slice(-2000) } : e)),
+      // A cut request's whole text is only needed while it can still be approved (pending requests
+      // expire on the next start anyway); a quest full of large file writes must not bloat the file.
+      entries: t.entries.slice(-MAX_ENTRIES).map((e) => {
+        if (e.output && e.output.length > 2000) e = { ...e, output: e.output.slice(-2000) };
+        if (e.full !== undefined && e.approval !== "pending") e = { ...e, full: undefined };
+        return e;
+      }),
     }));
     const data = {
       version: 1,
@@ -618,6 +674,14 @@ export class Hub {
         this.setPrivate(a === "on" ? true : a === "off" ? false : !this.cfg().privateMode);
         break;
       }
+      case "stream": {
+        const a = (arg ?? "").toLowerCase();
+        this.setStream(a === "on" ? true : a === "off" ? false : !this.cfg().blurTranscript);
+        break;
+      }
+      case "tutorial":
+        this.openTutorial();
+        break;
       case "caughtup": {
         const t = this.selectedThread();
         const e = t && attentionEntry(t);
@@ -671,11 +735,18 @@ export class Hub {
       case "approve":
       case "deny":
       case "always": {
-        if (view !== "legacy" && view !== "full" && view !== "focus")
+        if (view !== "legacy" && view !== "full" && view !== "focus") {
+          const shown = this.pendingApproval(true);
+          if (typeof shown === "object") refuse(shown.entry, "view");
           return this.toast("Unknown view context. Use Full view and review the request before deciding.", "info");
+        }
         // Approving needs a real click on the button or the registered Approve key; denying never does.
         if (k !== "deny" && !proof.ok) {
           this.log(`[hub] ${k} refused: ${proof.why ?? "no proof"}`);
+          // The card the key would have acted on (not a desktop-thread or held-message prompt).
+          const prompting = (this.view.confirm && this.view.selected === this.view.confirm.extId) || (this.view.held && this.view.selected === this.view.held.threadId);
+          const target = prompting ? undefined : this.pendingApproval(view === "focus");
+          if (typeof target === "object") refuse(target.entry, "proof");
           return this.toast("Not approved. Click the request on the Glass, or press the Approve key set in Familiar's control panel.", "info");
         }
         // Debounce: a double-press must not approve the next queued request unseen.
@@ -698,7 +769,7 @@ export class Hub {
         return;
       }
       case "stop":
-        if (t && (t.status === "running" || t.status === "approval")) {
+        if (t && t.kind !== "tutorial" && (t.status === "running" || t.status === "approval")) {
           // Before the provider has opened the quest, interrupt has nothing to stop: sendTo sees this.
           this.stops.set(t.id, (this.stops.get(t.id) ?? 0) + 1);
           await this.backends[t.agent].interrupt(t.id);
@@ -708,6 +779,7 @@ export class Hub {
       case "mode": {
         if (this.view.draft?.chat || (!this.view.draft && t?.kind === "chat"))
           return this.toast("Chats have no permission modes: they can only search the web.", "info");
+        if (!this.view.draft && t?.kind === "tutorial") return this.toast(TUTORIAL_NO_MODE, "info");
         // The game only cycles Ask first <-> Plan only; from Accept edits or Auto the key goes to Ask.
         const target = this.view.draft ?? t;
         if (!target) return this.toast("Select a quest first.", "info");
@@ -725,6 +797,7 @@ export class Hub {
       case "model":
         // Opens (or closes) the model list in the details pane; a click there picks one.
         if (!this.view.draft && !t) return this.toast("Select a quest or chat first.", "info");
+        if (!this.view.draft && t?.kind === "tutorial") return this.toast(TUTORIAL_NO_MODE, "info");
         this.view.picker = !this.view.picker;
         break;
       case "native":
@@ -755,6 +828,7 @@ export class Hub {
     const denying = a.type === "decide" && (a.decision === "deny" || a.decision === "denyAndStop");
     if (Hub.CORROBORATED_ACTIONS.has(a.type) && !denying && !proof.ok) {
       this.log(`[hub] action ${a.type} refused: ${proof.why ?? "no proof"}`);
+      if (typeof a.requestId === "string") refuse(this.threads.get(String(a.thread))?.entries.find((x) => x.requestId === a.requestId && x.approval === "pending"), "proof");
       return this.toast("That click could not be matched to your mouse. Click it again.", "info");
     }
     switch (a.type) {
@@ -839,10 +913,13 @@ export class Hub {
         if (!t) return;
         // Mark it answered first, so the backend's approvalResolved doesn't call it "expired".
         const q = t.entries.find((x) => x.requestId === a.requestId && x.approval === "pending");
-        if (q) q.approval = "approved";
-        this.backends[t.agent].answerQuestion?.(t.id, a.requestId, a.label);
+        if (q) settle(q, "approved");
+        this.backends[t.agent]?.answerQuestion?.(t.id, a.requestId, a.label);
         return;
       }
+      case "tutorial": // the welcome page's "Replay A Familiar Face"
+        this.openTutorial();
+        break;
       case "agent":
         this.view.pickAgent = a.agent;
         if (this.view.draft) this.view.draft.agent = a.agent;
@@ -996,13 +1073,20 @@ export class Hub {
     const x = this.external.get(id);
     const own = this.threads.get(id);
     if (!x && !own) return this.toast("Select a quest or desktop thread to archive.", "info");
+    if (own?.kind === "tutorial") {
+      // Nothing runs in it and no app holds it: gone at once, and a fresh one is a /fam tutorial away.
+      this.threads.delete(own.id);
+      if (this.view.selected === id) this.view.selected = undefined;
+      this.toast(`Archived: ${own.title} (/fam tutorial brings it back)`, "info", undefined, "Archived (/fam tutorial brings it back).");
+      return this.changed("archive");
+    }
     if (own && (own.status === "running" || own.status === "approval")) return this.toast("Stop the quest before archiving it.", "info");
     const agent = (x ?? own)!.agent;
     const nativeId = x?.nativeId ?? own?.nativeId;
     const title = (x ?? own)!.title;
     if (own) {
       this.threads.delete(own.id);
-      await this.backends[agent].close(own.id).catch(() => {});
+      await this.backends[agent]?.close(own.id).catch(() => {});
     } else this.external.delete(id);
     if (this.view.selected === id) this.view.selected = undefined;
     let inSource = false;
@@ -1062,7 +1146,7 @@ export class Hub {
       return;
     }
     const target = d ?? t;
-    if (!target) return;
+    if (!target || (!d && t?.kind === "tutorial")) return;
     target.model = model;
     if (t && target === t) this.backends[t.agent].setModel(t.id, model).catch((e) => this.fail(e));
     this.toast(`Model: ${label}`, "info");
@@ -1079,7 +1163,7 @@ export class Hub {
     if (t) t.unread = false;
     if (id.startsWith("ext:") && (!this.extHistory.has(id) || this.extHistoryState.get(id)?.loading))
       this.loadExtHistory(id, this.extHistoryState.get(id)?.entries ?? this.view.window[id] ?? 150);
-    this.toasts = this.toasts.filter((x) => x.threadId !== id);
+    this.dropToasts((x) => x.threadId === id);
   }
 
   /** Fetch (more of) a desktop thread's history; `entries` is roughly how many we want to show. */
@@ -1151,19 +1235,44 @@ export class Hub {
 
   private lastDecisionAt = 0;
 
-  decide(threadId: string, requestId: string, d: Decision) {
+  /** One decision per request id. `origin` "panel" is only ever passed by main for a click in the
+   * desktop control panel (physical input on the PC, showing the whole request); every game path
+   * (Glass card, keys, keybinds, dev hooks) is "game", which can never approve a cut request. */
+  decide(threadId: string, requestId: string, d: Decision, origin: DecisionOrigin = "game"): { ok: boolean; why?: string } {
     const t = this.threads.get(threadId);
-    if (!t) return;
-    const e = t.entries.find((x) => x.requestId === requestId && x.approval === "pending");
-    if (!e) return; // one decision per request id
-    if (d !== "deny" && d !== "denyAndStop" && Date.now() - e.at < this.minCardAgeMs)
-      return this.toast("That request just appeared. Read it, then decide.", "info");
-    e.approval = d === "allow" ? "approved" : d === "allowAlways" ? "always" : "denied";
+    const e = t?.entries.find((x) => x.requestId === requestId && x.approval === "pending");
+    if (!t || !e) return { ok: false, why: "no longer pending" };
+    const grants = d !== "deny" && d !== "denyAndStop";
+    if (grants && e.cut && origin !== "panel") {
+      this.log("[hub] approve refused: cut request");
+      refuse(e, "cut");
+      this.toast("Open it in full on your PC to approve.", "info");
+      return { ok: false, why: "cut" };
+    }
+    if (grants && Date.now() - e.at < this.minCardAgeMs) {
+      refuse(e, "fresh");
+      this.toast("That request just appeared. Read it, then decide.", "info");
+      return { ok: false, why: "fresh" };
+    }
+    settle(e, d === "allow" ? "approved" : d === "allowAlways" ? "always" : "denied");
     this.lastDecisionAt = Date.now();
-    this.backends[t.agent].respondApproval(t.id, requestId, d);
-    this.toasts = this.toasts.filter((x) => !(x.kind === "approval" && x.threadId === t.id));
+    if (t.kind === "tutorial") this.play(t, tutorialDecide(t, grants, uid)); // the practice card: nothing runs
+    else this.backends[t.agent].respondApproval(t.id, requestId, d);
+    this.dropToasts((x) => x.kind === "approval" && x.threadId === t.id);
     this.refreshStatus(t);
     this.changed("decide");
+    return { ok: true };
+  }
+
+  /** Pending requests too long for the in-game card, whole, for the control panel's "Requests
+   * waiting on your PC". Real names: the panel is on the PC, not on stream. */
+  cutRequests() {
+    return [...this.threads.values()].flatMap((t) =>
+      t.entries
+        .filter((e) => e.kind === "approval" && e.approval === "pending" && e.cut && e.requestId)
+        .map((e) => ({ thread: t.id, questTitle: t.title, project: this.projectName(t), agent: agentName(t.agent), requestId: e.requestId!,
+          title: e.title ?? "", full: e.full ?? e.text, canAlways: !!e.canAlways, at: e.at })),
+    );
   }
 
   // ---- sending --------------------------------------------------------------------------------
@@ -1279,7 +1388,9 @@ export class Hub {
       await this.sendTo(t, at[2].trim());
       return;
     }
-    const base = this.selectedThread()?.cwd ?? (this.view.selected ? this.external.get(this.view.selected)?.cwd : undefined) ?? this.projects.list()[0]?.path;
+    // Never the tutorial's folder (Familiar's own data): it is not a zone.
+    const sel = this.selectedThread();
+    const base = (sel?.kind === "tutorial" ? undefined : sel?.cwd) ?? (this.view.selected ? this.external.get(this.view.selected)?.cwd : undefined) ?? this.projects.list()[0]?.path;
     if (!text || !base) {
       this.view.list = "pick";
       this.view.pickAgent = agent;
@@ -1326,6 +1437,7 @@ export class Hub {
     this.view.collapsed.delete(t.projectKey);
     // Every start is visible on the Glass, so one another addon makes can't pass unnoticed.
     this.toast(`Started: ${t.title} (${this.projectName(t)})`, "info", t.id, `${agentName(t.agent)} quest started`);
+    for (const x of this.threads.values()) if (x.kind === "tutorial") this.play(x, tutorialSetOut(x));
     return t;
   }
 
@@ -1415,6 +1527,7 @@ export class Hub {
       this.note(t, t.lastError, "error");
       throw new Error(t.lastError); // Outside provider-init handling: never claim this message is saved.
     }
+    if (t.kind === "tutorial") return this.play(t, tutorialReply(t, uid)); // answered by the hub, no backend
     const stopsBefore = this.stops.get(t.id) ?? 0;
     const stopped = () => {
       if ((this.stops.get(t.id) ?? 0) === stopsBefore) return false;
@@ -1540,17 +1653,23 @@ export class Hub {
           text: e.detail,
           canAlways: e.canAlways,
           options: e.options,
+          ...(e.cut ? { cut: true, full: e.full ?? e.detail } : {}),
           approval: "pending",
           at: Date.now(),
         });
         t.status = "approval";
         t.unread = this.view.selected !== t.id;
-        this.toast(`Needs approval · ${agentName(t.agent)} · ${this.projectName(t)} · ${e.title}`, "approval", t.id, `Needs approval · ${agentName(t.agent)}`);
-        this.onSound("approval");
+        {
+          // A cut request is approved only on the PC: the toast says where, and main makes the panel easy to reach.
+          const onPc = e.cut ? ` · ${CUT_TOAST}` : "";
+          this.toast(`Needs approval · ${agentName(t.agent)} · ${this.projectName(t)} · ${e.title}${onPc}`, "approval", t.id, `Needs approval · ${agentName(t.agent)}${onPc}`);
+        }
+        this.sound("approval");
+        if (e.cut) this.alertPc();
         break;
       case "approvalResolved": {
         const entry = t.entries.find((x) => x.requestId === e.requestId && x.approval === "pending");
-        if (entry && entry.approval === "pending") entry.approval = "expired";
+        if (entry && entry.approval === "pending") settle(entry, "expired");
         this.refreshStatus(t);
         break;
       }
@@ -1567,7 +1686,7 @@ export class Hub {
         for (const x of t.entries) {
           x.streaming = false;
           if (x.kind === "tool" && x.status === "running") x.status = "unknown";
-          if (x.kind === "approval" && x.approval === "pending") x.approval = "expired";
+          if (x.kind === "approval" && x.approval === "pending") settle(x, "expired");
         }
         t.entries = t.entries.filter((x) => x.kind !== "reasoning");
         if (e.status === "failed" && isUsageLimit(e.error)) {
@@ -1580,8 +1699,8 @@ export class Hub {
           t.status = "error";
           t.lastError = e.error ?? "failed";
           this.note(t, `Turn failed: ${t.lastError}`, "error");
-          this.toast(`Failed · ${agentName(t.agent)} · ${this.projectName(t)} · ${t.title}`, "error", t.id, `Failed · ${agentName(t.agent)}`);
-          this.onSound("error");
+          this.toast(`Quest Failed · ${t.title}`, "error", t.id, "Quest Failed");
+          this.sound("error");
         } else {
           t.status = "idle";
           if (e.status === "interrupted") {
@@ -1590,9 +1709,11 @@ export class Hub {
           } else {
             const last = [...t.entries].reverse().find((x) => x.kind === "assistant");
             if (this.view.selected !== t.id) t.unread = true;
-            this.toast(`Finished · ${agentName(t.agent)} · ${this.projectName(t)} · ${t.title}`, "done", t.id, `Finished · ${agentName(t.agent)}`);
-            if (!this.cfg().quiet) this.onSound("done");
-            if (!this.cfg().quiet && !this.cfg().privateMode && this.cfg().speak && last) this.onSpeak(`${agentName(t.agent)} finished in ${this.projectName(t)}. ${firstSentence(last.text, 200)}`);
+            // The moment, not a receipt: no agent, zone or cost ("Answer ready" for a chat).
+            const moment = t.kind === "chat" ? "Answer ready" : "Quest Complete";
+            this.toast(`${moment} · ${t.title}`, "done", t.id, moment);
+            if (!this.cfg().quiet) this.sound("done");
+            if (!this.cfg().quiet && !this.cfg().privateMode && this.cfg().speak && last) this.speak(`${agentName(t.agent)} finished in ${this.projectName(t)}. ${firstSentence(last.text, 200)}`);
           }
         }
         break;
@@ -1611,7 +1732,7 @@ export class Hub {
   private refreshStatus(t: Thread) {
     const pending = t.entries.some((x) => x.kind === "approval" && x.approval === "pending");
     if (pending) t.status = "approval";
-    else if (t.status === "approval") t.status = "running";
+    else if (t.status === "approval") t.status = t.kind === "tutorial" ? "idle" : "running"; // the tutorial never has a turn running
   }
 
   private note(t: Thread, text: string, level: "info" | "error" = "info") {
@@ -1621,8 +1742,72 @@ export class Hub {
 
   toast(text: string, kind: Toast["kind"], threadId?: string, generic?: string) {
     if (kind === "done" && this.cfg().quiet) return;
-    this.toasts.push({ id: this.toastSeq++, text, kind, at: Date.now(), threadId, ...(generic ? { generic } : {}) });
+    const x: Toast = { id: this.toastSeq++, text, kind, at: Date.now(), threadId, ...(generic ? { generic } : {}) };
+    // In a fight, a quest's own notices wait (see setCombat); info toasts answer the player and show.
+    if (this.combat && kind !== "info" && threadId) return void this.held.push(x);
+    this.show(x);
+    this.changed("toast");
+  }
+
+  private show(x: Toast) {
+    this.toasts.push(x);
     if (this.toasts.length > 4) this.toasts.shift();
+  }
+
+  /** Drop toasts, shown or held for after a fight (the player opened the quest, decided it...). */
+  private dropToasts(drop: (x: Toast) => boolean) {
+    this.toasts = this.toasts.filter((x) => !drop(x));
+    this.held = this.held.filter((x) => !drop(x));
+  }
+
+  private sound(kind: "done" | "approval" | "error") {
+    if (!this.combat) this.onSound(kind); // in a fight: one chime for what was held, when it ends
+  }
+
+  private speak(text: string) {
+    if (this.combat) this.heldSpeech = text;
+    else this.onSpeak(text);
+  }
+
+  /** A cut request arrived: main surfaces the control panel on the PC (after a fight, like the rest). */
+  private alertPc() {
+    if (this.combat) this.heldPcAlert = true;
+    else this.onCutRequest();
+  }
+
+  /** The player's character is in combat (the addon's layout.combat): quests' finish, approval and
+   * failure notices, chimes and speech wait until it ends, then come back once (several as one
+   * summary line plus each approval). Cards, the tracker, markers and the Approve glow keep
+   * updating; nothing but a layout saying combat ended releases them. */
+  setCombat(on: boolean) {
+    if (on === this.combat) return;
+    this.combat = on;
+    if (on) return;
+    const held = this.held.map((x) => ({ ...x, at: Date.now() }));
+    const speech = this.heldSpeech;
+    const pc = this.heldPcAlert;
+    this.held = [];
+    this.heldSpeech = undefined;
+    this.heldPcAlert = false;
+    if (pc && this.cutRequests().length) this.onCutRequest();
+    if (!held.length) return;
+    const count = (k: Toast["kind"]) => held.filter((x) => x.kind === k).length;
+    const kind = count("approval") ? "approval" : count("error") ? "error" : "done";
+    if (held.length === 1) {
+      this.show(held[0]);
+      if (speech) this.onSpeak(speech);
+    } else {
+      const [done, asks, failed] = [count("done"), count("approval"), count("error")];
+      const text = "While you fought: " + [
+        done && `${done} quest${done > 1 ? "s" : ""} finished`,
+        asks && `${asks} need${asks > 1 ? "" : "s"} approval`,
+        failed && `${failed} failed`,
+      ].filter(Boolean).join(" · ");
+      for (const x of held) if (x.kind === "approval") this.show(x); // each keeps its 60 s
+      this.show({ id: this.toastSeq++, text, kind, at: Date.now(), generic: text }); // names nothing
+      if (speech) this.onSpeak(text.replace(/ · /g, ", "));
+    }
+    this.onSound(kind);
     this.changed("toast");
   }
 
@@ -1630,7 +1815,7 @@ export class Hub {
     const cfg = this.cfg();
     if (cfg.quiet === on) return;
     cfg.quiet = on;
-    if (on) this.toasts = this.toasts.filter(t => t.kind !== "done");
+    if (on) this.dropToasts((t) => t.kind === "done");
     this.onConfigChanged(cfg);
     this.changed("quiet");
   }
@@ -1641,8 +1826,22 @@ export class Hub {
     const cfg = this.cfg();
     if (!!cfg.privateMode === on) return;
     cfg.privateMode = on;
+    if (!on) cfg.blurTranscript = false; // names shown again: no longer Stream-safe
     this.onConfigChanged(cfg);
     this.toast(on ? "Hide names on: project and quest names are hidden. Replies, approval cards and what you type stay visible." : "Hide names off.", "info");
+    this.changed("config");
+  }
+
+  /** Stream-safe: Hide names, plus replies blurred on the Glass until clicked, plus no speech. Off
+   * shows names and text again; speech stays off (turning it on is the player's own choice). */
+  setStream(on: boolean) {
+    const cfg = this.cfg();
+    if (!!cfg.privateMode === on && !!cfg.blurTranscript === on && !(on && cfg.speak)) return;
+    cfg.privateMode = on;
+    cfg.blurTranscript = on;
+    if (on) cfg.speak = false;
+    this.onConfigChanged(cfg);
+    this.toast(on ? "Stream-safe on: names hidden, replies blurred. Click a blurred reply to read it for 8 seconds." : "Stream-safe off.", "info");
     this.changed("config");
   }
 
@@ -1696,6 +1895,18 @@ export function firstSentence(text: string, max = 90) {
   const m = clean.match(/^(.{10,}?[.!?])(\s|$)/);
   const s = m ? m[1] : clean;
   return s.length > max ? s.slice(0, max - 1) + "…" : s;
+}
+
+/** A request leaves "pending" (decided, answered or expired); a refusal written on it goes too. */
+function settle(e: Entry, approval: NonNullable<Entry["approval"]>) {
+  e.approval = approval;
+  delete e.refused;
+}
+
+/** Write a refusal on the pending card it was about, where it stays until a decision (toasts expire).
+ * A cut card always says why it matters most: it can only be approved on the PC. */
+function refuse(e: Entry | undefined, why: Refusal) {
+  if (e?.kind === "approval" && e.approval === "pending") e.refused = { why: e.cut ? "cut" : why, at: Date.now() };
 }
 
 function stripUndef(o: any) {

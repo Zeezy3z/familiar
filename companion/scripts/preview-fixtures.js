@@ -7,9 +7,14 @@
   const approval = scenario.startsWith("approval");
   const history = scenario.startsWith("history-");
   const welcome = scenario === "welcome" || scenario === "welcome-unready";
+  // Round 3: a cut request (Deny only here), a refused click, the practice quest, Stream-safe, and
+  // the Quest Complete / Quest Failed moments (raid-warning toasts).
+  const tutorial = scenario === "tutorial";
+  const streamSafe = scenario === "stream-safe";
+  const moment = scenario === "quest-complete" || scenario === "quest-failed";
   const handlers = {};
   const calls = [];
-  const linked = ["welcome", "linked", "paused", "running", "approval", "finished", "interrupted", "desktop"].includes(scenario);
+  const linked = ["welcome", "linked", "paused", "running", "approval", "finished", "interrupted", "desktop", "tutorial", "stream-safe", "quest-complete", "quest-failed"].includes(scenario);
   const state = {
     build: scenario === "build-unavailable" ? { commit: null, dirty: null } : scenario === "build-dirty" ? { ...window.previewBuild, dirty: true } : window.previewBuild,
     work: { working: scenario === "running" || scenario === "build-running" ? 1 : 0,
@@ -37,8 +42,10 @@
     { id: "a1", kind: "assistant", text: "I checked the spacing and the message target.\n\n- Keep the current quest visible.\n- Give approvals a clear label.\n- Preserve the conversation when you return.", streaming: scenario === "running" },
   ];
   // approval-always: the same short request from a provider that offers a per-quest Always.
-  const shortApproval = scenario === "approval" || scenario === "approval-always";
-  if (approval) entries.push({ id: "p1", kind: "approval", title: "Edit the synthetic quest log", text: "+ Clearer spacing for the preview", approval: "pending", requestId: "preview", canAlways: scenario === "approval-always" });
+  // approval-refused: the hub refused a click on it (written on the card until the next decision).
+  const shortApproval = scenario === "approval" || scenario === "approval-always" || scenario === "approval-refused";
+  if (approval) entries.push({ id: "p1", kind: "approval", title: "Edit the synthetic quest log", text: "+ Clearer spacing for the preview", approval: "pending", requestId: "preview", canAlways: scenario === "approval-always",
+    refused: scenario === "approval-refused" ? "That click wasn't confirmed as yours. Click Approve again." : undefined });
   if (scenario === "interrupted") entries.push({ id: "t1", kind: "tool", name: "+ 2 steps", text: "Read, Bash (1 outcome unknown)", status: "unknown" }, { id: "n1", kind: "notice", text: "Interrupted: Familiar was closed or restarted during this turn. Send a message to continue.", level: "error" });
   const model = {
     seq: 1, target: { text: "Claude · Quest log · Preview project" },
@@ -49,9 +56,49 @@
       { kind: "thread", key: "preview", text: "Quest log", agent: "claude", status: approval ? "approval" : scenario === "running" ? "running" : "idle", selected: true },
     ] },
     detail: { kind: "thread", id: "preview", external: scenario === "desktop", source: scenario === "desktop" ? "from desktop app · recent" : undefined, title: "Quest log", agent: "claude", project: "Preview project", cwd: "C:\\preview", status: approval ? "approval" : scenario === "running" ? "running" : "idle", mode: "Ask first", todos: [], entries },
-    status: { text: "Linked · Claude ready · Codex ready", level: "ok" }, keys: { approve: approval, stop: scenario === "running" || approval }, tracker: [], toasts: [], native: false, fontScale: 1, raidWarnings: false,
+    status: { text: "Linked · Claude ready · Codex ready", level: "ok" }, keys: { approve: approval, stop: scenario === "running" || approval, mode: "Ask first" }, tracker: [], toasts: [], native: false, fontScale: 1, raidWarnings: false,
     providers: { claude: { label: "Claude", glyph: "✦" }, codex: { label: "Codex", glyph: "◇" } },
   };
+  if (scenario === "running") {
+    model.detail.usage = "12.3k in · 4.1k out · $0.12";
+    model.tracker = [{ id: "preview", agent: "claude", title: "Quest log", project: "Preview project", status: "running", activity: "Reading overlay.css", progress: "3/5", cost: "$0.12" },
+      { id: "chat", agent: "codex", title: "A quick question", project: "Chats", status: "idle", activity: "Finished — reply ready", cost: "8.2k tokens" }];
+  }
+  if (tutorial) {
+    // Mirrors the hub-scripted practice quest at its practice card (no backend; nothing runs).
+    model.providers.familiar = { label: "Familiar", glyph: "◆" };
+    model.list.rows = [{ kind: "zone", key: "tutorial", text: "Familiar", count: 1 },
+      { kind: "thread", key: "tutorial", text: "A Familiar Face", agent: "familiar", status: "approval", selected: true },
+      ...model.list.rows];
+    model.list.rows.find(r => r.key === "preview").selected = false;
+    model.target = { text: "Familiar · A Familiar Face" };
+    model.keys = { approve: true, stop: false, mode: "Ask first" };
+    model.detail = { kind: "thread", id: "tutorial", external: false, title: "A Familiar Face", agent: "familiar", project: "Familiar", cwd: "", status: "approval", mode: "Ask first",
+      todos: [{ text: "Speak to your familiar", status: "completed" }, { text: "Answer a practice request", status: "in_progress" }, { text: "Set out on a real quest", status: "pending" }],
+      entries: [
+        { id: "t0", kind: "assistant", text: "Well met, Preview Rogue. I'm your familiar — the imp on your minimap. Work you give me shows up here as a quest.\n\nMarks to know in the Quest Log:\n**?** a reply is waiting for you, like a turn-in.\n**!** I need your say-so before I go on.\n**◌** I'm working.\n\nType anything in the box below and press Enter. (Shift+Enter adds a line. `/fam` opens and closes this window.)" },
+        { id: "t1", kind: "user", text: "hi" },
+        { id: "t2", kind: "assistant", text: "Heard. Now the part that matters. Before I change a file or run a command, I stop and ask with a card like the one below. Nothing happens until you click **Approve** — and Familiar checks that it was your mouse that clicked, not an addon. **Deny** is always free. This one is practice: nothing runs." },
+        { id: "t3", kind: "approval", title: "Practice: light the hearth", text: "echo \"The hearth is lit\"\n\n(practice — this command will not run)", approval: "pending", requestId: "practice", canAlways: false },
+      ] };
+  }
+  if (streamSafe) {
+    // What the hub sends with Stream-safe on: aliased names, blur on, the pending card readable.
+    model.private = true;
+    model.blur = true;
+    model.list.rows = [{ kind: "zone", key: "p1", text: "Project 1", count: 1 }, { kind: "thread", key: "preview", text: "Quest #1", agent: "claude", status: "approval", selected: true }];
+    model.target = { text: "Claude · Quest #1 · Project 1" };
+    model.keys = { approve: true, stop: true, mode: "Ask first" };
+    Object.assign(model.detail, { title: "Quest #1", project: "Project 1", cwd: "", status: "approval",
+      todos: [{ text: "Read the raid notes", status: "completed" }, { text: "Draft the pull timer macro", status: "in_progress" }] });
+    entries.push({ id: "tool-s", kind: "tool", name: "Read", text: "notes/raid-night.md", status: "ok" },
+      { id: "p-s", kind: "approval", title: "Edit Macros.lua", text: "+ /pull 10\n- /pull 8", approval: "pending", requestId: "stream", canAlways: true });
+    model.tracker = [{ id: "preview", agent: "claude", title: "Quest #1", project: "Project 1", status: "approval", activity: "Waiting: Edit Macros.lua", progress: "1/2", cost: "$0.03" }];
+  }
+  if (moment) {
+    model.raidWarnings = true;
+    model.toasts = [scenario === "quest-complete" ? { kind: "done", text: "Quest Complete · Quest log", at: 1 } : { kind: "error", text: "Quest Failed · Quest log", at: 1 }];
+  }
   if (welcome) {
     const unready = scenario === "welcome-unready";
     state.chat = { agent: unready ? "claude" : "codex", model: unready ? "haiku" : "m2", effort: "medium" };
@@ -71,6 +118,7 @@
       chat: { ...backends.find(b => b.id === state.chat.agent), model: state.chat.model, act: { type: "newIn", key: "chats" } },
       counts: { total: 0, running: 0, approval: 0 } };
     model.target = { text: "Nothing selected - choose Chat, a project quest, or a conversation on the left", warn: true };
+    model.keys.mode = undefined;
     model.list.rows = [{ kind: "zone", key: "chats", text: "Chats" },
       { kind: "hint", key: "chat-hint", text: "Ask anything: + Chat or /fam ask", act: { type: "newIn", key: "chats" } }];
     model.status = { text: unready ? "Searching for the Runestrip… · Claude off · Codex ✗ · Hermes ✓" : "Linked · Claude ✓ · Codex ✓", level: linked ? "ok" : "off" };
@@ -94,13 +142,13 @@
     model.target.text = `Claude · ${model.detail.title} · Preview project`;
     model.list.rows.at(-1).text = model.detail.title;
   }
-  if (approval && !shortApproval) {
+  if (approval && !shortApproval) { // approval-long, approval-permissions, approval-cut, approval-expired, approval-resolved
     const status = scenario === "approval-expired" ? "expired" : scenario === "approval-resolved" ? "denied" : "pending";
     const text = scenario === "approval-permissions"
       ? "Synthetic permission scope: " + "read fixture directory; ".repeat(40)
       : Array.from({ length: 85 }, (_, i) => `Step ${i + 1}: Review the synthetic change and its effect before approving.`).join("\n");
     const cap = scenario === "approval-permissions" ? 600 : 4000;
-    entries.splice(0, entries.length, { id: "p-long", kind: "approval", title: "Review synthetic approval preview", text: text.slice(0, cap) + `\n… (${text.length - cap} characters omitted from this preview)`, approval: status, requestId: "preview-long", canAlways: false });
+    entries.splice(0, entries.length, { id: "p-long", kind: "approval", title: "Review synthetic approval preview", text: text.slice(0, cap) + `\n… (${text.length - cap} characters omitted from this preview)`, approval: status, requestId: "preview-long", canAlways: false, cut: true });
     model.detail.status = status === "pending" ? "approval" : "idle";
     model.keys.approve = model.keys.stop = status === "pending";
   }
@@ -144,7 +192,9 @@
       }
       if (a.type === "decide" && a.thread === model.detail.id) {
         const entry = model.detail.entries.find(e => e.requestId === a.requestId && e.approval === "pending");
-        if (entry) {
+        if (entry?.cut && a.decision !== "deny") entry.refused = "Part of this request is hidden here. Approve it in full from Familiar's control panel on your PC, or Deny.";
+        else if (entry) {
+          entry.refused = undefined;
           entry.approval = a.decision === "deny" ? "denied" : a.decision === "allowAlways" ? "always" : "approved";
           model.detail.status = "idle";
           model.keys.approve = model.keys.stop = false;
@@ -208,7 +258,8 @@
   // Synthetic status ticks exercise keyboard focus during asynchronous updates.
   if (!glass) setInterval(() => { window.preview.emit("status", state); }, 1000);
   if (glass) window.addEventListener("DOMContentLoaded", () => {
-    const fixtureLayout = { scr: [1280, 800], px: 1.25, panel: true, native: false, drag: false, combat: false, ui: true, rowH: 24, list: [30, 100, 280, 500], detail: [320, 100, 650, 500], status: [30, 610, 940, 28] };
+    const fixtureLayout = { scr: [1280, 800], px: 1.25, panel: true, native: false, drag: false, combat: false, ui: true, rowH: 24, list: [30, 100, 280, 500], detail: [320, 100, 650, 500], status: [30, 610, 940, 28],
+      keys: { mode: [828, 74, 64, 22] }, tracker: [990, 100, 270, 140] };
     document.body.style.background = "#201c24";
     const label = document.createElement("p");
     label.textContent = "Synthetic Glass preview · no WoW process or agent calls";

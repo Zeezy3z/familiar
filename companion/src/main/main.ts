@@ -279,6 +279,7 @@ function createTray() {
     ]);
   tray.setContextMenu(menu());
   tray.on("click", () => createControl());
+  tray.on("balloon-click", () => createControl()); // the player's own click on the notice
 }
 
 // ---- game tracking ------------------------------------------------------------------------------
@@ -476,6 +477,8 @@ function onAddonMessages(msgs: any[]) {
   for (const m of msgs) {
     switch (m.t) {
       case "layout":
+        // Every layout says whether the character is in combat (PLAYER_REGEN_*): notices wait for it.
+        hub.setCombat(!!m.combat);
         if (client && m.scr && (Math.abs(m.scr[0] - client.width) > client.width * 0.02 || Math.abs(m.scr[1] - client.height) > client.height * 0.02)) {
           if (!layout || layout.scr?.[0] !== m.scr[0]) log(`[layout] WoW reports ${m.scr[0]}x${m.scr[1]} but the window client is ${client.width}x${client.height}; Glass scales to fit`);
         }
@@ -704,8 +707,28 @@ function schedulePush() {
   }, 40);
 }
 
+/** A request too long for the in-game card waits on the PC: make the control panel easy to reach
+ * without moving focus (never from the game, never a forced foreground): its taskbar button
+ * flashes, or, while it is closed to the tray, a quiet tray notice opens it when clicked. */
+let requestsWaiting = false;
+function surfaceRequests() {
+  requestsWaiting = true;
+  tray?.setToolTip("Familiar: a request is waiting on your PC");
+  if (control && !control.isDestroyed()) control.flashFrame(true);
+  else tray?.displayBalloon({ title: "A request is waiting on your PC", content: "Too long for the in-game card. Open Familiar to read it in full and approve it, or Deny it in game.", noSound: true, respectQuietTime: true });
+}
+
+/** Nothing waits any more (decided, expired): stop asking for attention. */
+function settleRequests() {
+  if (!requestsWaiting || hub.cutRequests().length) return;
+  requestsWaiting = false;
+  tray?.setToolTip("Familiar");
+  if (control && !control.isDestroyed()) control.flashFrame(false);
+}
+
 function pushAll() {
   if (!hub) return;
+  settleRequests();
   lastModel = buildModel(hub, { linked: linked(), fps: captureStats.fps ?? 0 });
   overlay?.webContents.send("model", lastModel);
   if (layout) overlay?.webContents.send("layout", layout);
@@ -714,7 +737,8 @@ function pushAll() {
 }
 
 function uiSettings() {
-  return { fontScale: cfg.fontScale, sound: cfg.sound, raidWarnings: cfg.raidWarnings !== false, quiet: !!cfg.quiet, privateMode: !!cfg.privateMode, defaultMode: cfg.defaultMode, approveKey: cfg.approveKey ?? "" };
+  return { fontScale: cfg.fontScale, sound: cfg.sound, raidWarnings: cfg.raidWarnings !== false, quiet: !!cfg.quiet, privateMode: !!cfg.privateMode,
+    streamSafe: !!cfg.privateMode && !!cfg.blurTranscript, defaultMode: cfg.defaultMode, approveKey: cfg.approveKey ?? "" };
 }
 
 function statusSnapshot() {
@@ -742,6 +766,8 @@ function statusSnapshot() {
     configPath: path.join(appDataDir(), "config.json"),
     launchAtLogin: cfg.launchAtLogin,
     ui: uiSettings(),
+    // "Requests waiting on your PC": cut requests in full (approved only here, via "decide").
+    requests: hub ? hub.cutRequests() : [],
     providers: providersNow(),
     providersChosen: cfg.providersChosen,
     chat: { agent: cfg.chatAgent, model: cfg.chatModel, effort: cfg.chatEffort },
@@ -903,6 +929,7 @@ app.whenReady().then(async () => {
   hub.suggestVersions = suggestVersions;
   hub.onSound = (k) => cfg.sound && overlay?.webContents.send("sound", k);
   hub.onSpeak = (t) => overlay?.webContents.send("speak", t);
+  hub.onCutRequest = surfaceRequests;
   hub.onConfigChanged = (c) => {
     saveConfig(c);
     applyLoginItem();
@@ -1018,18 +1045,32 @@ app.whenReady().then(async () => {
         sendStatus();
         return true;
       case "uiSettings": {
-        const a = (args ?? {}) as { fontScale?: number; sound?: boolean; raidWarnings?: boolean; quiet?: boolean; privateMode?: boolean; defaultMode?: string; approveKey?: string };
+        const a = (args ?? {}) as { fontScale?: number; sound?: boolean; raidWarnings?: boolean; quiet?: boolean; privateMode?: boolean; streamSafe?: boolean; defaultMode?: string; approveKey?: string };
         if (typeof a.fontScale === "number" && isFinite(a.fontScale)) cfg.fontScale = Math.min(FONT_MAX, Math.max(FONT_MIN, a.fontScale));
         if (typeof a.sound === "boolean") cfg.sound = a.sound;
         if (typeof a.raidWarnings === "boolean") cfg.raidWarnings = a.raidWarnings;
         if (typeof a.quiet === "boolean") hub.setQuiet(a.quiet);
         if (typeof a.privateMode === "boolean") hub.setPrivate(a.privateMode);
+        if (typeof a.streamSafe === "boolean") hub.setStream(a.streamSafe);
         if (MODES.includes(a.defaultMode as Mode)) cfg.defaultMode = a.defaultMode as Mode; // never a bypass mode: MODES has none
         // Only keys Familiar can check on the keyboard; anything else clears it (keybind approvals refused).
         if (typeof a.approveKey === "string") cfg.approveKey = bindingToVk(a.approveKey) ? a.approveKey.trim().toUpperCase() : "";
         saveConfig(cfg);
         hub.changed("config");
         return uiSettings();
+      }
+      case "decide": {
+        // A click in the focused control panel, which shows the whole request: physical input on the
+        // PC, not a path from the game. The only caller of hub.decide(..., "panel"); `cmd` answers
+        // only the control panel's own window (from(e, control) above), never the Glass, the
+        // capture page, the addon link or the dev hooks.
+        const { thread, requestId, decision } = (args ?? {}) as { thread?: unknown; requestId?: unknown; decision?: unknown };
+        if (typeof thread !== "string" || typeof requestId !== "string" || (decision !== "allow" && decision !== "allowAlways" && decision !== "deny"))
+          return { ok: false, why: "bad request" };
+        log(`[control] decide ${decision}`);
+        const r = hub.decide(thread, requestId, decision, "panel");
+        sendStatus();
+        return r;
       }
       case "launchAtLogin":
         cfg.launchAtLogin = !!args;

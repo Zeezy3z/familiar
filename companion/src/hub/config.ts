@@ -38,6 +38,12 @@ export interface Config {
    * instead of real names, hide desktop threads and transcripts in the snapshot, and never speak.
    * Pending approval cards still show the full request. */
   privateMode: boolean;
+  /** Stream-safe (with privateMode): replies, tool lines and objectives are blurred on the Glass
+   * until clicked. Approval cards never are: you must see what you approve. */
+  blurTranscript: boolean;
+  /** "A Familiar Face" (the tutorial quest) has been offered once; afterwards only /fam tutorial
+   * or the welcome page's link bring it back. */
+  tutorialSeen: boolean;
   /** Overlay font scale multiplier (0.8 - 1.6). */
   fontScale: number;
   /** Notices (done, approval needed, failed, settings) big in the middle of the screen like raid
@@ -85,6 +91,8 @@ export const DEFAULT_CONFIG: Config = {
   speak: false,
   quiet: false,
   privateMode: false,
+  blurTranscript: false,
+  tutorialSeen: false,
   fontScale: 1,
   raidWarnings: true,
   launchAtLogin: false,

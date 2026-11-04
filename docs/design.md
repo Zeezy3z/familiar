@@ -98,6 +98,19 @@ synthesized chime (optional speech).
 **Keybindings** (Options → Keybindings → AddOns → Familiar): toggle, focus composer, approve,
 deny, stop, next/previous quest, tracker. Also: minimap button and the AddOn compartment.
 
+**Desktop control panel** (tray → Open Familiar) — everything that must not be reachable from the
+game, as three steps and one fold. Top to bottom: **Requests waiting on your PC** (only while an
+approval is pending that the in-game card cannot show whole; see §5); the **step strip**
+*Agents · WoW · Link*, each with ✓ and one line, and under it the first undone step's content (the
+Familiars card for step 1 and while the first-run choice is open, the guidance text for steps 2–3,
+a single "All set" line when everything is done); the **essentials** — Text size, Stream-safe,
+Sounds; and one collapsed **Advanced** section: Familiars (once step 1 is done), Chat defaults,
+New quests start in (Accept edits and Auto are chosen only here; a risky default opens Advanced so
+its warning box is not hidden), Approve key (what is registered, and a warning for keys also used
+for playing), Quiet play, Notices, Hide names, link details and logs, Suggest a change. The header's
+mode badge stays outside Advanced as the always-visible safety cue. Journey wording and step
+state come from `control/journey.ts`; nothing there changes a setting.
+
 ## 4. Agent integration
 
 | | Claude | Codex |
@@ -133,6 +146,11 @@ empty `.nofamiliar` file are never offered. Editable in `%APPDATA%\Familiar\conf
   `NOACTIVATE` and never takes focus.
 * Agents run under the user's normal permissions; default mode **Ask first**; every edit/command
   the agent wants is an in-game approval. Bypass-permissions modes are not reachable from the game.
+* A request too long for the in-game card (`cut`) can be denied from the game but never approved
+  there, even with proof of input. Approve and Always for it happen in the control panel, which
+  shows the whole text first. Only a real click or key press in the focused panel window decides
+  (`event.isTrusted`; a script-made click does nothing, and nothing is sent automatically); that is
+  physical input on the PC by construction, not a path from the game and not a bypass mode.
 * Transcripts stay on the PC (`%APPDATA%\Familiar`, the WoW `FamiliarSync` file). Nothing goes
   through Blizzard's servers. Dev test hooks bind to 127.0.0.1, only exist with `FAMILIAR_DEV=1`, and
   only answer requests carrying the run's token; requests with an Origin header or another Host are

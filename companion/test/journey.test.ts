@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { journey } from "../src/control/journey";
+import { approveKeyStatus, journey } from "../src/control/journey";
 import { threadState } from "../src/overlay/thread-state";
 import { approvalPreview } from "../src/overlay/approval-preview";
 import { buildPresentation, restartGuidance } from "../src/control/build";
@@ -50,18 +50,28 @@ describe("journey guidance for recoverable states", () => {
   });
   it("names the ready agent in step 1 before the game link exists", () => {
     const j = journey({ ...linked, linked: false, layout: null });
-    expect(j.steps[0]).toMatchObject({ done: true, text: "An agent is ready (Codex)" });
+    expect(j.steps[0]).toMatchObject({ done: true, text: "Codex ready · change under Advanced" });
     const both = journey({ ...linked, linked: false, providers: [{ ...prepared, id: "claude", label: "Claude" }, prepared], backends: { claude: { ready: true }, codex: { ready: true } } });
-    expect(both.steps[0].text).toBe("Agents are ready (Claude, Codex)");
+    expect(both.steps[0].text).toBe("Claude, Codex ready · change under Advanced");
     expect(journey({ ...linked, linked: false, backends: {} }).steps[0].text).toBe("Sign-in found (Codex); agents start with WoW");
     expect(journey({ ...linked, linked: false, backends: {}, providers: [{ ...prepared, label: "" }] }).steps[0].text).toBe("Sign-in found; agents start with WoW");
+  });
+  it("shows setup as three steps, Agents, WoW and Link, and points at the first undone one", () => {
+    const done = journey(linked);
+    expect(done.steps.map(s => s.label)).toEqual(["Agents", "WoW", "Link"]);
+    expect(done.steps.map(s => s.done)).toEqual([true, true, true]);
+    expect(done.current).toBe(-1);
+    expect(journey({ ...linked, linked: false, layout: null }).current).toBe(2);
+    expect(journey({ ...linked, linked: false, game: null, layout: null }).current).toBe(1);
+    expect(journey({ ...linked, providers: [], backends: {} }).current).toBe(0);
+    expect(journey({ ...linked, providers: [{ ...prepared, signedIn: false }], backends: {} }).steps.map(s => s.done)).toEqual([false, true, true]);
   });
   it("says the game link is working and explains a missing WoW install in plain words", () => {
     expect(journey(linked).steps[2].text).toBe("Game link working");
     const j = journey({ providers: [prepared], backends: { codex: { ready: true } } });
     expect(j.title).toBe("Familiar couldn't find World of Warcraft");
     expect(j.text).toContain("Start WoW: Forever once");
-    expect(j.text).toContain("Reinstall addon under Link details below");
+    expect(j.text).toContain("Reinstall addon under Advanced → Link details");
     expect(j.title).not.toContain("wowRoot");
   });
   it("lets an installed custom ACP provider verify unknown sign-in when WoW starts", () => {
@@ -76,6 +86,24 @@ describe("journey guidance for recoverable states", () => {
       expect(j.text).toContain("/fam hermes <message>");
       expect(j.text).not.toMatch(/\+ Claude|\+ Codex|\+ Chat/);
     }
+  });
+});
+
+describe("Approve key status line", () => {
+  const playing = "That key is used for playing; pick an F-key or a Ctrl/Shift combination.";
+  it("shows what is registered and that Familiar checks the real keyboard for it", () => {
+    expect(approveKeyStatus("F9")).toEqual({ level: "ok", text: "Registered: F9 — Familiar checks the real keyboard for it", warning: "" });
+    expect(approveKeyStatus("ctrl-f9").text).toBe("Registered: CTRL-F9 — Familiar checks the real keyboard for it");
+    expect(approveKeyStatus("")).toEqual({ level: "muted", text: "None registered — click the card or Approve button instead", warning: "" });
+  });
+  it("warns, but still registers, a key that is also used for playing", () => {
+    for (const key of ["W", "5", "SPACE", "UP", "LEFT"]) expect(approveKeyStatus(key)).toMatchObject({ level: "ok", warning: playing });
+    for (const key of ["CTRL-W", "SHIFT-5", "ALT-SPACE", "F9", "NUMPAD5", "PAGEDOWN"]) expect(approveKeyStatus(key).warning).toBe("");
+  });
+  it("says so while the field holds something that is not saved or not a key", () => {
+    expect(approveKeyStatus("F9", "F10")).toMatchObject({ level: "muted", text: expect.stringContaining("Not saved yet"), warning: "" });
+    expect(approveKeyStatus("", "W")).toMatchObject({ text: expect.stringContaining("Not saved yet"), warning: playing });
+    expect(approveKeyStatus("F9", "banana")).toMatchObject({ level: "warn", text: expect.stringContaining("isn't a key Familiar can check") });
   });
 });
 

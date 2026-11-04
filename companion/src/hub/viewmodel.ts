@@ -3,7 +3,7 @@ import * as path from "node:path";
 import { attentionItems, type AttentionItem } from "./attention";
 import { providerInfo } from "../agents/providers";
 import { AgentKind, MODE_LABEL, TodoItem } from "../agents/types";
-import { agentName, Entry, Hub, mustFork, Thread, ThreadStatus, Toast } from "./hub";
+import { agentName, Entry, Hub, mustFork, Refusal, Thread, ThreadStatus, Toast } from "./hub";
 import { CHATS_KEY } from "./projects";
 
 export type Act = Record<string, unknown> & { type: string };
@@ -38,6 +38,10 @@ export interface EntryView {
   options?: string[];
   requestId?: string;
   level?: string;
+  /** approval: the text is a cut preview, so the card offers Deny only (approve on the PC). */
+  cut?: boolean;
+  /** approval: why the last approving click was refused, as the line the card shows. */
+  refused?: string;
 }
 
 export interface ProviderView {
@@ -104,6 +108,8 @@ export interface TrackerLine {
   status: ThreadStatus;
   activity: string;
   progress?: string;
+  /** The agent's own reported spend ("$0.14", "<$0.01") or tokens ("8.2k tokens"). Display only. */
+  cost?: string;
 }
 
 export interface RenderModel {
@@ -118,7 +124,11 @@ export interface RenderModel {
   list: { title: string; rows: Row[] };
   detail: DetailModel;
   status: { text: string; level: "ok" | "warn" | "off" };
-  keys: { approve: boolean; stop: boolean };
+  /** `mode`: what the Mode button acts on now (the selected quest's or draft's mode label, "Chat"
+   * for chats; absent when nothing it acts on is selected); `modeHot`: Accept edits or Auto. */
+  keys: { approve: boolean; stop: boolean; mode?: string; modeHot?: boolean };
+  /** Stream-safe: the Glass blurs replies (never approval cards) until clicked. */
+  blur?: boolean;
   tracker: TrackerLine[];
   toasts: Toast[];
   native: boolean;
@@ -146,13 +156,14 @@ export function buildModel(hub: Hub, link: { linked: boolean; fps: number }): Re
     list: v.list === "pick" ? pickList(hub) : questList(hub),
     detail: detail(hub, link.linked),
     status: statusLine(hub, link),
-    keys: { approve: anyPending, stop: !!sel && (sel.status === "running" || sel.status === "approval") },
+    keys: { approve: anyPending, stop: !!sel && (sel.status === "running" || sel.status === "approval"), ...modeKey(hub) },
     tracker: trackerLines(hub),
     toasts: hub.toasts,
     native: v.native,
     fontScale: hub.cfg().fontScale,
     raidWarnings: hub.cfg().raidWarnings !== false,
-    providers: Object.fromEntries(Object.keys(hub.backends).map((id) => [id, { label: providerInfo(id).label, glyph: providerInfo(id).glyph }])),
+    // The tutorial's "familiar" is not a backend but has quest rows of its own.
+    providers: Object.fromEntries([...Object.keys(hub.backends), "familiar"].map((id) => [id, { label: providerInfo(id).label, glyph: providerInfo(id).glyph }])),
   };
   if (hub.cfg().privateMode) privateModel(hub, m, link.linked);
   if (hub.cfg().quiet && m.attention?.length) m.tracker.unshift({ id: m.attention[0].thread, agent: m.attention[0].agent,
@@ -160,6 +171,24 @@ export function buildModel(hub: Hub, link: { linked: boolean; fps: number }): Re
   m.tracker = m.tracker.slice(0, 8);
   return m;
 }
+
+/** What the Glass paints over the native Mode button: the mode of what the Mode key acts on (the
+ * draft, else the selected quest; see Hub.key "mode"). Nothing it acts on: the native "Mode" shows. */
+function modeKey(hub: Hub): Pick<RenderModel["keys"], "mode" | "modeHot"> {
+  const target = hub.view.draft ?? hub.selectedThread();
+  if (!target) return {};
+  if (hub.view.draft ? hub.view.draft.chat : hub.selectedThread()?.kind === "chat") return { mode: "Chat", modeHot: false };
+  return { mode: MODE_LABEL[target.mode], modeHot: target.mode === "edits" || target.mode === "auto" };
+}
+
+/** A quest's spend as its agent reported it (displayed, never sent anywhere): dollars, else tokens. */
+export function costLabel(u: Thread["usage"]): string | undefined {
+  if (u?.costUsd) return dollars(u.costUsd);
+  const tokens = (u?.inputTokens ?? 0) + (u?.outputTokens ?? 0);
+  return tokens ? `${fmtK(tokens)} tokens` : undefined;
+}
+
+const dollars = (usd: number) => (usd < 0.01 ? "<$0.01" : `$${usd.toFixed(2)}`);
 
 // ---- private (streamer) mode --------------------------------------------------------------------
 // The one place real names leave the render model: zones become "Project n", quests "Quest #n" and
@@ -184,7 +213,7 @@ function privateNames(hub: Hub) {
 
 /** Generic toast text: never a project, title, command or reply excerpt. */
 function privateToast(x: Toast): Toast {
-  const text = x.generic ?? (x.kind === "approval" ? "Approval needed" : x.kind === "done" ? "Quest finished" : x.kind === "error" && x.threadId ? "Quest failed" : x.text);
+  const text = x.generic ?? (x.kind === "approval" ? "Approval needed" : x.kind === "done" ? "Quest Complete" : x.kind === "error" && x.threadId ? "Quest Failed" : x.text);
   return { ...x, text };
 }
 
@@ -192,6 +221,7 @@ function privateModel(hub: Hub, m: RenderModel, linked: boolean) {
   const { zone, thread } = privateNames(hub);
   const v = hub.view;
   m.private = true;
+  if (hub.cfg().blurTranscript) m.blur = true; // Stream-safe
   // Quest Log first, so numbering follows the order the player sees.
   const shown = (agent: AgentKind) => !v.show.length || v.show.includes(agent);
   const quests = (key: string) => [...hub.threads.values()].filter((t) => t.projectKey === key && shown(t.agent)).length;
@@ -437,7 +467,7 @@ function welcome(hub: Hub, linked: boolean): DetailModel {
 function threadDetail(hub: Hub, t: Thread): DetailModel {
   const u = t.usage;
   const usage = u
-    ? [u.inputTokens ? `${fmtK(u.inputTokens)} in` : "", u.outputTokens ? `${fmtK(u.outputTokens)} out` : "", u.costUsd ? `$${u.costUsd.toFixed(2)}` : ""]
+    ? [u.inputTokens ? `${fmtK(u.inputTokens)} in` : "", u.outputTokens ? `${fmtK(u.outputTokens)} out` : "", u.costUsd ? dollars(u.costUsd) : ""]
         .filter(Boolean)
         .join(" · ")
     : undefined;
@@ -473,9 +503,19 @@ function threadDetail(hub: Hub, t: Thread): DetailModel {
       options: e.options,
       requestId: e.requestId,
       level: e.level,
+      cut: e.cut,
+      refused: e.refused && e.approval === "pending" ? REFUSED[e.refused.why] : undefined,
     })),
   };
 }
+
+/** The red line a refused card shows until the next decision (the toast says it too, but expires). */
+const REFUSED: Record<Refusal, string> = {
+  proof: "That click wasn't confirmed as yours. Click Approve again.",
+  fresh: "This request just appeared. Read it, then click again.",
+  cut: "Part of this request is hidden here. Approve it in full from Familiar's control panel on your PC, or Deny.",
+  view: "Use Full view and review the request before deciding.",
+};
 
 /**
  * Tool-call display per config: "full" = every call; "hidden" = none (running calls still show as
@@ -569,6 +609,7 @@ function trackerLines(hub: Hub): TrackerLine[] {
         status: t.status,
         activity,
         progress: t.todos.length ? `${done}/${t.todos.length}` : undefined,
+        cost: costLabel(t.usage),
       };
     });
 }

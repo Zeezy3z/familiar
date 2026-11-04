@@ -25,6 +25,8 @@ const BUILTIN: Record<string, ProviderInfo> = {
   codex: { id: "codex", label: "Codex", glyph: "◈" },
   hermes: { id: "hermes", label: "Hermes", glyph: "☿" },
   grok: { id: "grok", label: "Grok", glyph: "✶" },
+  // The tutorial quest's speaker (hub/tutorial.ts): not a backend, never started or listed as one.
+  familiar: { id: "familiar", label: "Familiar", glyph: "◆" },
 };
 
 /** ACP agents Familiar knows how to start. User entries in config.json `providers` override or add. */

