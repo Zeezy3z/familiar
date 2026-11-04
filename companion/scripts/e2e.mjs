@@ -4,6 +4,7 @@
 import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { inflateSync } from "node:zlib";
 const C = "http://127.0.0.1:47810";
 const F = "http://127.0.0.1:47811/eval";
 // Each dev run writes a fresh token for its hooks (src/main/dev-hooks.ts); read it per request.
@@ -36,6 +37,38 @@ async function until(fn, ms = 8000, step = 250) {
   }
 }
 const model = () => get("/model");
+
+/** A minimal PNG reader for the snapshot check: 8-bit RGB/RGBA, not interlaced (what Electron writes). */
+function readPng(buf) {
+  let p = 8, width = 0, height = 0, type = 0;
+  const idat = [];
+  while (p < buf.length) {
+    const len = buf.readUInt32BE(p), kind = buf.toString("ascii", p + 4, p + 8), body = buf.subarray(p + 8, p + 8 + len);
+    if (kind === "IHDR") {
+      width = body.readUInt32BE(0);
+      height = body.readUInt32BE(4);
+      type = body[9];
+      assert(body[8] === 8 && (type === 2 || type === 6) && body[12] === 0, `unsupported PNG (depth ${body[8]}, type ${type})`);
+    } else if (kind === "IDAT") idat.push(body);
+    p += 12 + len;
+  }
+  const bpp = type === 6 ? 4 : 3, stride = width * bpp, raw = inflateSync(Buffer.concat(idat)), out = Buffer.alloc(stride * height);
+  for (let y = 0; y < height; y++) {
+    const f = raw[y * (stride + 1)], row = raw.subarray(y * (stride + 1) + 1, (y + 1) * (stride + 1));
+    for (let x = 0; x < stride; x++) {
+      const a = x >= bpp ? out[y * stride + x - bpp] : 0, b = y ? out[(y - 1) * stride + x] : 0, c = x >= bpp && y ? out[(y - 1) * stride + x - bpp] : 0;
+      const pa = Math.abs(b - c), pb = Math.abs(a - c), pc = Math.abs(a + b - 2 * c);
+      const pred = [0, a, b, (a + b) >> 1, pa <= pb && pa <= pc ? a : pb <= pc ? b : c][f];
+      out[y * stride + x] = (row[x] + pred) & 255;
+    }
+  }
+  const rgba = Buffer.alloc(width * height * 4);
+  for (let i = 0; i < width * height; i++) {
+    out.copy(rgba, i * 4, i * bpp, i * bpp + 3);
+    rgba[i * 4 + 3] = bpp === 4 ? out[i * 4 + 3] : 255;
+  }
+  return { width, height, rgba };
+}
 async function clickRow(index, b = "L") {
   // Row `index` of the list (the pane title occupies the first row height).
   const r = (await fake("JSON.stringify(fake.regions().list)")).out;
@@ -149,6 +182,17 @@ await check("a request shown whole in game is listed for the control panel too (
   } finally {
     await post("/inject", { agent: "familiar", type: "approvalResolved", threadId: quest.id, requestId });
   }
+});
+
+await check("Save what Familiar sees: a PNG of at most 320x32 px with the strip's magenta finder in it", async () => {
+  const r = await post("/capture-snapshot", "");
+  assert(r?.ok && r.file, `not saved: ${JSON.stringify(r)}`);
+  const png = readPng(readFileSync(r.file));
+  assert(png.width <= 320 && png.height <= 32, `${png.width}x${png.height}`);
+  // The decoder's own test for the first finder cell (decoder.ts magentaish).
+  let magenta = false;
+  for (let o = 0; o < png.rgba.length && !magenta; o += 4) magenta = png.rgba[o] > 150 && png.rgba[o + 1] < 100 && png.rgba[o + 2] > 150;
+  assert(magenta, "no magenta finder pixel in the picture");
 });
 
 if (process.argv.includes("--agents")) {

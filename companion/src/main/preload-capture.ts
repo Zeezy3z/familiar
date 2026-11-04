@@ -1,9 +1,10 @@
-// Capture preload: start/stop in, decoded strip messages, stats and log lines out. Nothing else.
+// Capture preload: start/stop/snapshot in, decoded strip messages, stats, the snapshot crop and log
+// lines out. Nothing else.
 import { contextBridge, ipcRenderer } from "electron";
 import type { CaptureBridge } from "../shared/bridge";
 
-const IN = new Set(["start", "stop"]);
-const OUT = new Set(["msgs", "stats", "log"]);
+const IN = new Set(["start", "stop", "snapshot"]);
+const OUT = new Set(["msgs", "stats", "log", "snapshot"]);
 
 contextBridge.exposeInMainWorld("familiar", {
   on(channel: string, cb: (data: any) => void) {

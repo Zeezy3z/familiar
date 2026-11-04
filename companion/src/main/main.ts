@@ -169,6 +169,12 @@ let lastGeomChange = 0;
 let captureMode: "window" | "screen" = process.env.FAMILIAR_CAPTURE === "screen" ? "screen" : "window";
 let captureStartedAt = 0;
 let nextScreenTryAt = 0;
+/** When frame statistics last arrived (the capture page sends them about once a second while
+ * frames flow), and since when the game has been on screen for this link attempt (Link Doctor). */
+let statsAt = 0;
+let searchSince = 0;
+/** Screen capture: the last window seen covering the strip (Link Doctor). */
+let lastCover: { exe: string; at: number } | undefined;
 
 const linked = () => Date.now() - (captureStats.lastOk ?? 0) < 3000;
 
@@ -313,12 +319,15 @@ function tick() {
       return;
     }
     wrongClient = null;
+    searchSince = now;
     log(`[wow] found ${game.exe} "${game.title}" class=${game.cls}`);
     hub.wake().catch((e) => log("[hub] wake: " + e));
     // No install known yet: the running game's own folder is the install (doInstall probes with its exe path).
     if (!install) doInstall(false);
   }
+  const wasMinimized = minimized;
   minimized = isMinimized(game.hwnd);
+  if (wasMinimized && !minimized) searchSince = now;
   fg = foregroundKey();
   const c = clientRectOnScreen(game.hwnd);
   const f = extendedFrameBounds(game.hwnd);
@@ -404,6 +413,7 @@ function screenGate(): Verdict {
   const inFront = !!game && (foreground === game.key || foreground === overlayKey);
   const ours = overlay && !overlay.isDestroyed() ? [hwndFromBuffer(overlay.getNativeWindowHandle())] : [];
   const covering = game && strip && inFront ? windowsAbove(game.hwnd, strip, ours) : null;
+  if (covering?.length) lastCover = { exe: covering[0].exe, at: Date.now() };
   return screenCaptureTrusted({ captureMode, foreground, game: game?.key ?? null, overlay: overlayKey, strip, covering });
 }
 
@@ -808,11 +818,54 @@ function statusSnapshot() {
   };
 }
 
-/** The Link Doctor's line for the status and Copy diagnostics (doctor.ts). */
+/** The Link Doctor's line for the status and Copy diagnostics (doctor.ts). Frame statistics older
+ * than 2.5 s mean no frames arrive (the capture page only reports while they do). */
 function doctorNow() {
   const c = captureStats ?? {};
+  const now = Date.now();
   return linkDoctor({ game: !!game, minimized, foreground: !!game && (fg === game.key || fg === overlayKey), captureMode,
-    stats: { fps: c.fps ?? 0, crc: c.crc ?? 0, lock: c.lock, lastOk: c.lastOk ?? 0 }, startedAt: captureStartedAt, now: Date.now() });
+    stats: { fps: now - statsAt < 2500 ? c.fps ?? 0 : 0, crc: c.crc ?? 0, lock: c.lock, lastOk: c.lastOk ?? 0 },
+    startedAt: searchSince, now, refusedExe: lastCover && now - lastCover.at < 5000 ? lastCover.exe : undefined });
+}
+
+// ---- "Save what Familiar sees" ----------------------------------------------------------------
+// The capture page crops the top-left 320x32 px of the game frame (around the strip when it is
+// locked) from the next frame; main checks the size and writes a PNG into %APPDATA%\Familiar.
+// Never the whole frame: the player looks at it before attaching it to a bug report.
+const SNAPSHOT_W = 320;
+const SNAPSHOT_H = 32;
+let snapSeq = 0;
+const snapWaits = new Map<number, (r: any) => void>();
+let lastSnapshot: string | undefined;
+const stamp = (d = new Date()) => {
+  const two = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}${two(d.getMonth() + 1)}${two(d.getDate())}-${two(d.getHours())}${two(d.getMinutes())}${two(d.getSeconds())}`;
+};
+
+async function captureSnapshot(): Promise<{ ok: boolean; file?: string; why?: string }> {
+  if (!capture || capture.isDestroyed() || !game || !captureStarted || minimized)
+    return { ok: false, why: "Familiar isn't reading the WoW window right now. Open WoW in Windowed or Windowed (Fullscreen) and keep it on screen." };
+  const id = ++snapSeq;
+  const r = await new Promise<any>((resolve) => {
+    snapWaits.set(id, resolve);
+    setTimeout(() => snapWaits.delete(id) && resolve({ error: "no picture of the game arrived within 3 s" }), 3000);
+    capture!.webContents.send("snapshot", { id, width: SNAPSHOT_W, height: SNAPSHOT_H });
+  });
+  if (r?.error) return { ok: false, why: `Nothing saved: ${String(r.error).slice(0, 200)}.` };
+  const w = r?.width, h = r?.height;
+  const data = r?.data instanceof Uint8Array ? Buffer.from(r.data) : null;
+  if (!Number.isInteger(w) || !Number.isInteger(h) || w < 1 || h < 1 || w > SNAPSHOT_W || h > SNAPSHOT_H || !data || data.length !== w * h * 4)
+    return { ok: false, why: "Nothing saved: the picture had an unexpected size." };
+  for (let o = 0; o < data.length; o += 4) [data[o], data[o + 2]] = [data[o + 2], data[o]]; // RGBA -> BGRA (createFromBitmap)
+  const file = path.join(appDataDir(), `strip-${stamp()}.png`);
+  try {
+    fs.writeFileSync(file, nativeImage.createFromBitmap(data, { width: w, height: h }).toPNG());
+  } catch (e: any) {
+    return { ok: false, why: `Nothing saved: ${e?.message ?? e}` };
+  }
+  lastSnapshot = file;
+  log(`[capture] saved what Familiar sees (${w}x${h} px) as ${path.basename(file)}`);
+  return { ok: true, file };
 }
 
 /** Zones for the control panel's Projects card: the folders you added, and how many came from history. */
@@ -842,6 +895,7 @@ function diagnosticsReport(): string {
     wow: install
       ? `${install.flavor} product ${install.product ?? "?"} version ${install.version ?? "?"} iface ${install.iface ?? "?"} (${install.source}); ${check?.text ?? ""}`
       : `no install (${installError ?? "unknown"})${wrongClient ? `; another client running: ${wrongClient.exe}` : ""}`,
+    link: (({ step, text }) => `${step}: ${text}`)(doctorNow()),
     capture: `mode ${captureMode}${captureMode === "screen" ? " (messages accepted only while WoW is in front and uncovered)" : ""}, fps ${c.fps ?? 0}, lock ${c.lock ? "yes" : "no"}, linked ${linked() ? "yes" : "no"}, game ${game ? (minimized ? "minimized" : fg === game.key ? "foreground" : "background") : "not found"}, overlay ${paused ? "paused" : overlayShown ? "shown" : "hidden"}${c.error ? `, error: ${c.error}` : ""}`,
     providers: providersNow().map((p) => `${p.id} ${p.installed ? "installed" : "not installed"}${p.signedIn === undefined ? "" : p.signedIn ? ", signed in" : ", not signed in"}${p.enabled ? ", on" : ", off"}`),
     configKeys: changedConfigKeys(cfg as unknown as Record<string, unknown>, DEFAULT_CONFIG as unknown as Record<string, unknown>),
@@ -1061,11 +1115,17 @@ app.whenReady().then(async () => {
     if (!from(e, capture)) return;
     const wasLinked = linked();
     captureStats = s;
+    statsAt = Date.now();
     if (linked() !== wasLinked) {
       log(`[link] ${linked() ? "linked" : "lost"} (fps ${s.fps}, decoded ${s.decoded}, crc ${s.crc}, missed ${s.missed})`);
       pushAll();
     }
     sendStatus();
+  });
+  ipcMain.on("snapshot", (e, r) => {
+    if (!from(e, capture) || !r || typeof r.id !== "number") return;
+    const done = snapWaits.get(r.id);
+    if (done && snapWaits.delete(r.id)) done(r);
   });
   ipcMain.on("log", (e, s) => {
     if (from(e, capture) || from(e, overlay) || from(e, control)) log(String(s));
@@ -1192,7 +1252,12 @@ app.whenReady().then(async () => {
       case "claudeRetry":
         return startClaudeDownload("retry");
       case "captureSnapshot":
-        return { ok: false, why: "Not available yet." };
+        return captureSnapshot();
+      case "openSnapshot":
+        // Shows the last saved picture in Explorer (or the Familiar folder); no path from the page.
+        if (lastSnapshot && fs.existsSync(lastSnapshot)) shell.showItemInFolder(lastSnapshot);
+        else await shell.openPath(appDataDir());
+        return true;
       case "projectAdd":
         return { ok: false, why: "Not available yet." };
       case "projectRemove":
@@ -1269,6 +1334,7 @@ function startDevServer() {
       if (url === "/simulate") return onAddonMessages([JSON.parse(body)]) ?? true;
       if (url === "/action") return hub.action(JSON.parse(body), TRUSTED) ?? true; // token-gated dev hook stands in for a real click
       if (url === "/snap") return await snap(body || path.join(appDataDir(), "snap.png"));
+      if (url === "/capture-snapshot") return await captureSnapshot(); // e2e: the panel's "Save what Familiar sees"
       if (url === "/inject") {
         const ev = JSON.parse(body);
         return hub.injectAgentEvent(ev.agent ?? "claude", ev) ?? true;
