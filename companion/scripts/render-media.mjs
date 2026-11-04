@@ -38,6 +38,8 @@ const U = (v) => Math.round(v * PX);
 const MARGIN = 30, WIN_W = 720, WIN_H = 440, TRACKER_W = 240, TRACKER_H = 150, GAP = 22;
 const W = MARGIN + U(WIN_W) + GAP + U(TRACKER_W) + MARGIN; // stage width in CSS px
 const LABEL_H = 44;
+// Room above the window for the raid-warning banner (14% down the stage): the seal, title and rewards line (round 5) stand clear of the title plate.
+const COMPLETE_TOP = 290;
 
 function geometry(top) {
   const fx = MARGIN, fy = top;
@@ -183,7 +185,7 @@ const SCENES = {
           text: "  { \"name\": \"Basil\", \"lastWatered\": \"2026-10-30\",\n-   \"sun\": \"full\" }\n+   \"sun\": \"full\", \"wateringDays\": 2 }" }] }),
   },
   complete: {
-    scenario: "quest-complete", top: 190, disabledKeys: ["approve", "stop"],
+    scenario: "quest-complete", top: COMPLETE_TOP, disabledKeys: ["approve", "stop"],
     patch: {
       list: { title: "Quest Log", rows: listRows("garden-water", { waterStatus: "idle" }) }, target, status, raidWarnings: true,
       toasts: [{ kind: "done", text: "Quest Complete · Watering schedule", sub: "3/3 objectives · 2 edits · $0.21", at: 1 }], // what hub/rewards.ts says of the data below
@@ -265,7 +267,7 @@ async function recordGif(browser) {
   const ff = spawnSync("ffmpeg", ["-version"], { encoding: "utf8" });
   if (ff.error || ff.status !== 0) { console.log("familiar.gif skipped: ffmpeg not found on PATH."); return; }
   const dir = mkdtempSync(join(tmpdir(), "familiar-media-"));
-  const top = 190, g = geometry(top);
+  const top = COMPLETE_TOP, g = geometry(top);
   const context = await browser.newContext({ viewport: { width: W, height: g.H }, deviceScaleFactor: 1, reducedMotion: "reduce", bypassCSP: true,
     recordVideo: { dir, size: { width: W, height: g.H } } });
   const t0 = Date.now();
