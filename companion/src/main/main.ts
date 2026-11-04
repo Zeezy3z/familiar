@@ -476,6 +476,8 @@ function onAddonMessages(msgs: any[]) {
   for (const m of msgs) {
     switch (m.t) {
       case "layout":
+        // Every layout says whether the character is in combat (PLAYER_REGEN_*): notices wait for it.
+        hub.setCombat(!!m.combat);
         if (client && m.scr && (Math.abs(m.scr[0] - client.width) > client.width * 0.02 || Math.abs(m.scr[1] - client.height) > client.height * 0.02)) {
           if (!layout || layout.scr?.[0] !== m.scr[0]) log(`[layout] WoW reports ${m.scr[0]}x${m.scr[1]} but the window client is ${client.width}x${client.height}; Glass scales to fit`);
         }

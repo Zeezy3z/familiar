@@ -216,6 +216,10 @@ export class Hub {
    * drop them from its outbox; also makes a resend of something that did arrive a no-op. */
   acked: string[] = [];
   toasts: Toast[] = [];
+  /** In combat (setCombat): quests' notices and the last speech, released when the fight ends. */
+  private combat = false;
+  private held: Toast[] = [];
+  private heldSpeech?: string;
   addon: AddonInfo = {};
   private viewKeys = false; // monotonic for this Hub lifetime; old hellos cannot downgrade safety
   projects: ProjectRegistry;
@@ -1105,7 +1109,7 @@ export class Hub {
     if (t) t.unread = false;
     if (id.startsWith("ext:") && (!this.extHistory.has(id) || this.extHistoryState.get(id)?.loading))
       this.loadExtHistory(id, this.extHistoryState.get(id)?.entries ?? this.view.window[id] ?? 150);
-    this.toasts = this.toasts.filter((x) => x.threadId !== id);
+    this.dropToasts((x) => x.threadId === id);
   }
 
   /** Fetch (more of) a desktop thread's history; `entries` is roughly how many we want to show. */
@@ -1199,7 +1203,7 @@ export class Hub {
     settle(e, d === "allow" ? "approved" : d === "allowAlways" ? "always" : "denied");
     this.lastDecisionAt = Date.now();
     this.backends[t.agent].respondApproval(t.id, requestId, d);
-    this.toasts = this.toasts.filter((x) => !(x.kind === "approval" && x.threadId === t.id));
+    this.dropToasts((x) => x.kind === "approval" && x.threadId === t.id);
     this.refreshStatus(t);
     this.changed("decide");
     return { ok: true };
@@ -1597,7 +1601,7 @@ export class Hub {
         t.status = "approval";
         t.unread = this.view.selected !== t.id;
         this.toast(`Needs approval · ${agentName(t.agent)} · ${this.projectName(t)} · ${e.title}`, "approval", t.id, `Needs approval · ${agentName(t.agent)}`);
-        this.onSound("approval");
+        this.sound("approval");
         break;
       case "approvalResolved": {
         const entry = t.entries.find((x) => x.requestId === e.requestId && x.approval === "pending");
@@ -1632,7 +1636,7 @@ export class Hub {
           t.lastError = e.error ?? "failed";
           this.note(t, `Turn failed: ${t.lastError}`, "error");
           this.toast(`Quest Failed · ${t.title}`, "error", t.id, "Quest Failed");
-          this.onSound("error");
+          this.sound("error");
         } else {
           t.status = "idle";
           if (e.status === "interrupted") {
@@ -1644,8 +1648,8 @@ export class Hub {
             // The moment, not a receipt: no agent, zone or cost ("Answer ready" for a chat).
             const moment = t.kind === "chat" ? "Answer ready" : "Quest Complete";
             this.toast(`${moment} · ${t.title}`, "done", t.id, moment);
-            if (!this.cfg().quiet) this.onSound("done");
-            if (!this.cfg().quiet && !this.cfg().privateMode && this.cfg().speak && last) this.onSpeak(`${agentName(t.agent)} finished in ${this.projectName(t)}. ${firstSentence(last.text, 200)}`);
+            if (!this.cfg().quiet) this.sound("done");
+            if (!this.cfg().quiet && !this.cfg().privateMode && this.cfg().speak && last) this.speak(`${agentName(t.agent)} finished in ${this.projectName(t)}. ${firstSentence(last.text, 200)}`);
           }
         }
         break;
@@ -1674,8 +1678,63 @@ export class Hub {
 
   toast(text: string, kind: Toast["kind"], threadId?: string, generic?: string) {
     if (kind === "done" && this.cfg().quiet) return;
-    this.toasts.push({ id: this.toastSeq++, text, kind, at: Date.now(), threadId, ...(generic ? { generic } : {}) });
+    const x: Toast = { id: this.toastSeq++, text, kind, at: Date.now(), threadId, ...(generic ? { generic } : {}) };
+    // In a fight, a quest's own notices wait (see setCombat); info toasts answer the player and show.
+    if (this.combat && kind !== "info" && threadId) return void this.held.push(x);
+    this.show(x);
+    this.changed("toast");
+  }
+
+  private show(x: Toast) {
+    this.toasts.push(x);
     if (this.toasts.length > 4) this.toasts.shift();
+  }
+
+  /** Drop toasts, shown or held for after a fight (the player opened the quest, decided it...). */
+  private dropToasts(drop: (x: Toast) => boolean) {
+    this.toasts = this.toasts.filter((x) => !drop(x));
+    this.held = this.held.filter((x) => !drop(x));
+  }
+
+  private sound(kind: "done" | "approval" | "error") {
+    if (!this.combat) this.onSound(kind); // in a fight: one chime for what was held, when it ends
+  }
+
+  private speak(text: string) {
+    if (this.combat) this.heldSpeech = text;
+    else this.onSpeak(text);
+  }
+
+  /** The player's character is in combat (the addon's layout.combat): quests' finish, approval and
+   * failure notices, chimes and speech wait until it ends, then come back once (several as one
+   * summary line plus each approval). Cards, the tracker, markers and the Approve glow keep
+   * updating; nothing but a layout saying combat ended releases them. */
+  setCombat(on: boolean) {
+    if (on === this.combat) return;
+    this.combat = on;
+    if (on) return;
+    const held = this.held.map((x) => ({ ...x, at: Date.now() }));
+    const speech = this.heldSpeech;
+    this.held = [];
+    this.heldSpeech = undefined;
+    if (!held.length) return;
+    const count = (k: Toast["kind"]) => held.filter((x) => x.kind === k).length;
+    const kind = count("approval") ? "approval" : count("error") ? "error" : "done";
+    if (held.length === 1) {
+      this.show(held[0]);
+      if (speech) this.onSpeak(speech);
+    } else {
+      const [done, asks, failed] = [count("done"), count("approval"), count("error")];
+      const text = "While you fought: " + [
+        done && `${done} quest${done > 1 ? "s" : ""} finished`,
+        asks && `${asks} need${asks > 1 ? "" : "s"} approval`,
+        failed && `${failed} failed`,
+      ].filter(Boolean).join(" · ");
+      for (const x of held) if (x.kind === "approval") this.show(x); // each keeps its 60 s
+      this.show({ id: this.toastSeq++, text, kind, at: Date.now(), generic: text }); // names nothing
+      if (speech) this.onSpeak(text.replace(/ · /g, ", "));
+    }
+    this.onSound(kind);
     this.changed("toast");
   }
 
@@ -1683,7 +1742,7 @@ export class Hub {
     const cfg = this.cfg();
     if (cfg.quiet === on) return;
     cfg.quiet = on;
-    if (on) this.toasts = this.toasts.filter(t => t.kind !== "done");
+    if (on) this.dropToasts((t) => t.kind === "done");
     this.onConfigChanged(cfg);
     this.changed("quiet");
   }

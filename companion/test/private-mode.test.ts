@@ -130,6 +130,16 @@ describe("private mode", () => {
     expect(buildSnapshot(hub)).toContain("The vault key moved");
   });
 
+  it("the after-the-fight summary names nothing, so private mode shows it unchanged", async () => {
+    await hub.key("private", "on");
+    hub.setCombat(true);
+    await scene();
+    hub.setCombat(false);
+    const toasts = model().toasts;
+    expect(toasts.map((t) => t.text)).toContain("While you fought: 1 quest finished · 1 needs approval");
+    expect(JSON.stringify(toasts)).not.toMatch(SECRETS);
+  });
+
   it("chats are titled Chats / Chat #n", async () => {
     cfg.privateMode = true;
     hub.threads.set("c1", { id: "c1", kind: "chat", agent: "claude", cwd: path.join(tmp, "chats"), projectKey: "chats", title: "Is the Onyxia key worth it",

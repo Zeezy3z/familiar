@@ -1462,6 +1462,50 @@ describe("always-on companion and offline honesty", () => {
     cfg.speak = beforeSpeak;
   });
 
+  it("notices wait for the fight to end", async () => {
+    const sounds: string[] = [], spoken: string[] = [];
+    const beforeSpeak = cfg.speak;
+    cfg.speak = true;
+    hub.onSound = (k) => sounds.push(k);
+    hub.onSpeak = (text) => spoken.push(text);
+    try {
+      await hub.quick("claude", "@familiar first");
+      const first = hub.view.selected!;
+      await hub.quick("codex", "@beta second");
+      const second = hub.view.selected!;
+      hub.toasts = []; // the Started toasts
+      hub.setCombat(true);
+      claude.emit({ type: "message", threadId: first, itemId: "m", text: "Done with the first one." });
+      claude.emit({ type: "done", threadId: first, status: "completed" });
+      codex.emit({ type: "approval", threadId: second, requestId: "r1", kind: "command", title: "Run?", detail: "npm test", canAlways: false });
+      expect(hub.toasts).toEqual([]);
+      expect(sounds).toEqual([]);
+      expect(spoken).toEqual([]);
+      // The card, the marker and the Approve glow are the model's, and keep updating.
+      const m = buildModel(hub, { linked: true, fps: 30 });
+      expect(m.keys.approve).toBe(true);
+      expect(m.list.rows.find((r) => r.key === first)).toMatchObject({ unread: true });
+      await hub.key("archived"); // a reply to the player's own command still shows
+      expect(hub.toasts.map((t) => t.text)).toEqual(["Nothing is archived."]);
+      hub.setCombat(false);
+      expect(hub.toasts.at(-1)!.text).toBe("While you fought: 1 quest finished · 1 needs approval");
+      expect(hub.toasts.some((t) => t.kind === "approval" && t.threadId === second)).toBe(true);
+      expect(sounds).toEqual(["approval"]);
+      expect(spoken).toEqual(["While you fought: 1 quest finished, 1 needs approval"]);
+      // One held notice comes back as it was; one decided during the fight doesn't come back.
+      hub.setCombat(true);
+      claude.emit({ type: "done", threadId: first, status: "failed", error: "boom" });
+      codex.emit({ type: "approval", threadId: second, requestId: "r2", kind: "command", title: "Again?", detail: "npm test", canAlways: false });
+      for (const requestId of ["r1", "r2"]) hub.action({ type: "decide", thread: second, requestId, decision: "deny" });
+      hub.setCombat(false);
+      expect(hub.toasts.at(-1)).toMatchObject({ kind: "error", text: "Quest Failed · first" });
+      expect(hub.toasts.filter((t) => t.kind === "approval" && t.threadId === second)).toEqual([]);
+      expect(sounds).toEqual(["approval", "error"]);
+    } finally {
+      cfg.speak = beforeSpeak;
+    }
+  });
+
   it("catch-up acknowledgments are bound to final content, including corrections under the same item ID", async () => {
     await hub.quick("claude", "@familiar synthetic revision");
     const id = hub.view.selected!;
