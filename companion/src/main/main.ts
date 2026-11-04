@@ -257,6 +257,9 @@ function createControl() {
 }
 
 function trayIcon() {
+  // The familiar's face (dist/assets/tray.png + tray@2x.png); the drawn orb only if the art is missing.
+  const art = nativeImage.createFromPath(path.join(DIST, "assets", "tray.png"));
+  if (!art.isEmpty()) return art;
   const s = 16;
   const buf = Buffer.alloc(s * s * 4);
   for (let y = 0; y < s; y++)

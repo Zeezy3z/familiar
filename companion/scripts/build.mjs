@@ -28,6 +28,9 @@ for (const f of ["overlay/overlay.html", "overlay/overlay.css", "capture/capture
   cpSync(join(root, "src", f), join(dist, f.split("/")[1]));
 }
 cpSync(join(root, "node_modules/@fontsource/marcellus/files/marcellus-latin-400-normal.woff2"), join(dist, "assets/marcellus-latin-400-normal.woff2"));
+// Tray icon: hand-tuned 16 px art plus a 32 px @2x that Electron picks on high-DPI displays.
+cpSync(join(root, "..", "docs/media/icon-tray-16.png"), join(dist, "assets/tray.png"));
+cpSync(join(root, "..", "docs/media/icon-tray-32.png"), join(dist, "assets/tray@2x.png"));
 // For offline inspection / safe previews. The running main process uses its embedded literal,
 // never this file, which may be replaced by a later build while that process is still running.
 writeFileSync(join(dist, "build-info.json"), JSON.stringify(identity));
