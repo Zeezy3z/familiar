@@ -2,6 +2,11 @@
 import type { ProviderSetup } from "../agents/setup";
 import { bindingToVk } from "../main/physical";
 
+/** status.doctor: the Link Doctor's one line (main/doctor.ts). */
+export interface DoctorStatus { step?: string; level?: string; text?: string }
+/** status.claude: the in-app Claude Code download (agents/claude-download.ts). `pct` is 0-100, `mb` the whole download. */
+export interface ClaudeStatus { state?: string; pct?: number; mb?: number; error?: string }
+
 export interface JourneyStatus {
   linked?: boolean;
   install?: unknown;
@@ -12,6 +17,25 @@ export interface JourneyStatus {
   providers?: ProviderSetup[];
   backends?: Record<string, { ready?: boolean; error?: string }>;
   chat?: { agent?: string };
+  doctor?: DoctorStatus | null;
+  claude?: ClaudeStatus | null;
+}
+
+/** The Claude row of the Familiars card (and step 1) while Claude Code is not on disk; null once it is there. */
+export function claudeLine(c?: ClaudeStatus | null): { state: "missing" | "downloading" | "failed"; level: "warn" | "muted"; text: string; pct?: number; retry: string } | null {
+  const num = (n: unknown) => (typeof n === "number" && Number.isFinite(n) && n >= 0 ? n : undefined);
+  if (c?.state === "downloading") {
+    const pct = num(c.pct) == null ? undefined : Math.min(100, num(c.pct)!);
+    const mb = num(c.mb);
+    const bits = [pct != null ? `${Math.round(pct)} %` : "", mb != null ? `${pct != null ? "of " : ""}${Math.round(mb)} MB` : ""].filter(Boolean).join(" ");
+    return { state: "downloading", level: "muted", text: `Downloading Claude Code${bits ? ` · ${bits}` : "…"}`, pct, retry: "" };
+  }
+  if (c?.state === "failed") {
+    const why = typeof c.error === "string" && c.error.trim() ? ` (${c.error.trim()})` : "";
+    return { state: "failed", level: "warn", text: `Claude Code couldn't be downloaded${why}. Other agents still work.`, retry: "Retry" };
+  }
+  if (c?.state === "missing") return { state: "missing", level: "muted", text: "Claude Code isn't downloaded yet. Click Retry to download it (about 112 MB).", retry: "Retry" };
+  return null;
 }
 
 export function journey(s: JourneyStatus) {
@@ -27,15 +51,22 @@ export function journey(s: JourneyStatus) {
   const chatReady = enabled.some(p => p.id === s.chat?.agent && (p.id === "claude" || p.id === "codex") && s.backends?.[p.id]?.ready);
   const signedLabels = enabled.filter(p => p.signedIn).map(p => p.label).filter(Boolean);
   const signInText = signedLabels.length ? `Sign-in found (${signedLabels.join(", ")}); agents start with WoW` : "Sign-in found; agents start with WoW";
-  const steps = [
-    { label: "Agents", done: prepared || unknownSignIn, text: ready ? readyText : prepared ? signInText : unknownSignIn ? "Installed; sign-in is not yet verified" : "Enable an agent and check its sign-in below" },
+  const download = claudeLine(s.claude);
+  // The Link Doctor's sentence says why the link is not up; an ok-level line never overrides a link that is not.
+  const doctorText = typeof s.doctor?.text === "string" && s.doctor.level !== "ok" ? s.doctor.text.trim() : "";
+  const steps: { label: string; done: boolean; text: string; level?: "ok" | "warn" | "muted" }[] = [
+    { label: "Agents", done: prepared || unknownSignIn, text: ready ? readyText : prepared ? signInText : unknownSignIn ? "Installed; sign-in is not yet verified" : download ? (download.state === "downloading" ? download.text : `Claude Code isn't downloaded; use ${download.retry} below`) : "Enable an agent and check its sign-in below" },
     { label: "WoW", done: !!s.game, text: s.game ? "Game window found" : "Use Windowed or Windowed (Fullscreen)" },
-    { label: "Link", done: !!s.linked, text: s.linked ? "Game link working" : "Restart WoW, tick Familiar and Familiar Sync at character select (Load out of date AddOns), then press Enter and type /fam" },
+    { label: "Link", done: !!s.linked, ...(s.linked ? { text: "Game link working" }
+      : doctorText ? { text: doctorText, level: s.doctor?.level === "warn" ? "warn" as const : "muted" as const }
+      : { text: "Restart WoW, tick Familiar and Familiar Sync at character select (Load out of date AddOns), then press Enter and type /fam" }) },
   ];
   // The panel shows content for the first undone step (-1: all three are done).
   const current = steps.findIndex(step => !step.done);
   const guide = (title: string, text: string, level: "ok" | "warn" | "muted", action?: "providers" | "config" | "pause") => ({ title, text, level, action, steps, current });
   if (s.overlay?.paused) return guide("The Glass is paused", "Resume the overlay to see live replies again. Your conversations are kept.", "warn", "pause");
+  if (!enabled.length && download?.state === "downloading") return guide("Downloading Claude Code", "This happens once and takes a few minutes. Progress is on the Familiars card below.", "muted");
+  if (!enabled.length && download) return guide(download.state === "failed" ? "Claude Code couldn't be downloaded" : "Claude Code isn't downloaded yet", `Use ${download.retry} on the Familiars card below. Codex and other agents do not need it.`, "warn", "providers");
   if (!enabled.length) return guide("Choose your familiar", "Use an installed agent below. You can add more familiars whenever you like.", "warn", "providers");
   if (!prepared && !ready && !unknownSignIn) return guide("Check your familiar’s sign-in", "Use Sign in below, or complete setup in the agent’s own tool. A saved sign-in is checked again when the agent starts.", "warn", "providers");
   if (!s.install && !s.linked) return guide("Familiar couldn't find World of Warcraft", "Start WoW: Forever once so Familiar can see its folder, then choose Reinstall addon under Advanced → Link details. If it still isn't found, Open config and set wowRoot and wowFlavor to _forever_.", "warn", "config");

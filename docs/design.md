@@ -99,17 +99,26 @@ synthesized chime (optional speech).
 deny, stop, next/previous quest, tracker. Also: minimap button and the AddOn compartment.
 
 **Desktop control panel** (tray → Open Familiar) — everything that must not be reachable from the
-game, as three steps and one fold. Top to bottom: **Requests waiting on your PC** (only while an
-approval is pending that the in-game card cannot show whole; see §5); the **step strip**
-*Agents · WoW · Link*, each with ✓ and one line, and under it the first undone step's content (the
-Familiars card for step 1 and while the first-run choice is open, the guidance text for steps 2–3,
-a single "All set" line when everything is done); the **essentials** — Text size, Stream-safe,
-Sounds; and one collapsed **Advanced** section: Familiars (once step 1 is done), Chat defaults,
-New quests start in (Accept edits and Auto are chosen only here; a risky default opens Advanced so
-its warning box is not hidden), Approve key (what is registered, and a warning for keys also used
-for playing), Quiet play, Notices, Hide names, link details and logs, Suggest a change. The header's
-mode badge stays outside Advanced as the always-visible safety cue. Journey wording and step
-state come from `control/journey.ts`; nothing there changes a setting.
+game, as three steps and one fold. Top to bottom: **Requests waiting** (every pending approval,
+while there is one; the ones the in-game card cannot show whole carry a badge; see §5); the **step
+strip** *Agents · WoW · Link*, each with ✓ and one line (the Link line is the Link Doctor's
+sentence, from `main/doctor.ts`, while the link is not up), and under it the first undone step's
+content (the Familiars card for step 1 and while the first-run choice is open, the guidance text
+for steps 2–3, a single "All set" line when everything is done); the **Projects** card (folders
+added by hand or as folders of projects; it sits here until a folder has been added, then moves
+under Advanced); the **essentials** — Text size, Stream-safe, Sounds; and one collapsed
+**Advanced** section: Familiars (once step 1 is done; it stays above Advanced while Claude Code is
+downloading, failed or missing, with its progress and **Retry**), Chat defaults, New quests start
+in (Accept edits and Auto are chosen only here; a risky default opens Advanced so its warning box
+is not hidden), Approve key (what is registered, and a warning for keys also used for playing),
+Quiet play, Notices (raid warnings; the Windows notice for a waiting request), Hide names, Companion
+controls (including **Check for updates**, a user click that makes one request to GitHub), link
+details and logs (including **Save what Familiar sees**, a 320×32 px crop of the strip corner), and
+Suggest a change. The header's mode badge stays outside Advanced as the always-visible safety cue;
+a line beside the version says when the addon and the app are different versions. Journey wording
+and step state come from `control/journey.ts` (version and update wording from `control/build.ts`);
+nothing there changes a setting. Everything that came from an agent, the game or the network is set
+as text, never as markup.
 
 ## 4. Agent integration
 
@@ -137,7 +146,8 @@ sessions; sessions ACP can't resume continue as a new session seeded with a dige
 Projects come from the subfolders of your configured project roots (`projectRoots`, empty by
 default), Codex desktop projects and recent session folders, merged by path. Paths matching
 `exclude` in `config.json` (defaults: `node_modules`, `.git`, temp dirs) and folders containing an
-empty `.nofamiliar` file are never offered. Editable in `%APPDATA%\Familiar\config.json`.
+empty `.nofamiliar` file are never offered. Editable in `%APPDATA%\Familiar\config.json`, or from
+the control panel's Projects card (a folder dialog; an excluded folder is refused with the reason).
 
 ## 5. Safety
 
@@ -146,11 +156,19 @@ empty `.nofamiliar` file are never offered. Editable in `%APPDATA%\Familiar\conf
   `NOACTIVATE` and never takes focus.
 * Agents run under the user's normal permissions; default mode **Ask first**; every edit/command
   the agent wants is an in-game approval. Bypass-permissions modes are not reachable from the game.
-* A request too long for the in-game card (`cut`) can be denied from the game but never approved
-  there, even with proof of input. Approve and Always for it happen in the control panel, which
-  shows the whole text first. Only a real click or key press in the focused panel window decides
+* The control panel lists every pending approval (multiple-choice questions stay in the game) and
+  shows the whole text before the buttons. A request too long for the in-game card (`cut`) can be
+  denied from the game but never approved there, even with proof of input; Approve and Always for
+  it happen only in the panel. Only a real click or key press in the focused panel window decides
   (`event.isTrusted`; a script-made click does nothing, and nothing is sent automatically); that is
   physical input on the PC by construction, not a path from the game and not a bypass mode.
+  Panel decisions are `origin: "panel"`, reachable only from main's control-window IPC.
+* A Windows notice (tray balloon) appears for an approval raised while WoW is not in front. It
+  carries no request text (project and quest names only, generic with Hide names) and its click
+  only opens the panel.
+* The companion's own network use is two requests: the Claude Code download from the npm registry
+  (pinned versions, sha512-checked) and the user-clicked update check (one GET to GitHub). See the
+  README's Privacy & data.
 * Transcripts stay on the PC (`%APPDATA%\Familiar`, the WoW `FamiliarSync` file). Nothing goes
   through Blizzard's servers. Dev test hooks bind to 127.0.0.1, only exist with `FAMILIAR_DEV=1`, and
   only answer requests carrying the run's token; requests with an Origin header or another Host are

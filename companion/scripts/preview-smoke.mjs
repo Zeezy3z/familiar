@@ -8,6 +8,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { rendererUpdateJourney } from './renderer-update-journey.mjs';
 import { glassRound3Journey } from './glass-round3-journey.mjs';
+import { controlRound4Journey } from './control-round4-journey.mjs';
 
 if (process.env.GITHUB_ACTIONS !== 'true') throw new Error('Run this browser smoke on GitHub Actions only.');
 if (!process.env.FAMILIAR_QA_MODULE) throw new Error('FAMILIAR_QA_MODULE must point to the pinned Playwright installation.');
@@ -313,7 +314,7 @@ async function controlRequestsJourney(width) {
   await page.setViewportSize({ width, height: 640 });
   await page.goto(`${origin}/control.html?scenario=linked`);
   await page.waitForFunction(() => document.getElementById('chat-agent')?.value === 'claude');
-  check(`${size}: no card without a cut request`, !await page.locator('#requests').isVisible());
+  check(`${size}: no card without a pending request`, !await page.locator('#requests').isVisible());
   const full = Array.from({ length: 90 }, (_, i) => `echo "step ${i}: far too long for the in-game card"`).join('\n') + '\nrm -rf D:\\vault\\private';
   await page.evaluate(full => {
     const p = window.preview, api = window.familiar, real = api.invoke;
@@ -321,9 +322,12 @@ async function controlRequestsJourney(width) {
     p.answer = { ok: true };
     // Preview infrastructure only: stand in for main's "decide" command and record what the panel sends.
     api.invoke = async (cmd, args) => cmd === 'decide' ? (p.decisions.push(args), p.answer) : real(cmd, args);
+    // Round 4: every pending request is listed (status.requests[], the hub's PendingRequest): a cut one carries its whole text in `full`,
+    // a short one only the card's own `detail`. A cut request that arrives without `full` is not listed: the panel never approves a preview.
     p.state.requests = [
-      { thread: 't1', questTitle: 'Tidy the logs', project: 'Preview project', agent: 'Claude', requestId: 'r1', title: 'Run a long shell command', full, canAlways: true, at: Date.now() - 65000 },
-      { thread: 't2', questTitle: 'Chat about fonts', project: 'Other project', agent: 'Codex', requestId: 'r2', title: 'Edit 3 files', full: 'diff --git a/x b/x\n+ small change', canAlways: false, at: Date.now() - 20000 },
+      { thread: 't1', questTitle: 'Tidy the logs', project: 'Preview project', agent: 'Claude', requestId: 'r1', title: 'Run a long shell command', detail: full.slice(0, 600) + '\n… (omitted)', full, cut: true, canAlways: true, at: Date.now() - 65000 },
+      { thread: 't2', questTitle: 'Chat about fonts', project: 'Other project', agent: 'Codex', requestId: 'r2', title: 'Edit 3 files', detail: 'diff --git a/x b/x\n+ small change', cut: false, canAlways: false, at: Date.now() - 20000 },
+      { thread: 't3', questTitle: 'No whole text', project: 'Other project', agent: 'Codex', requestId: 'r3', title: 'Cut, but without its full text', detail: 'only a preview', cut: true, canAlways: false, at: Date.now() - 10000 },
     ];
     p.emit('status', p.state);
   }, full);
@@ -331,11 +335,18 @@ async function controlRequestsJourney(width) {
     const rows = [...document.querySelectorAll('#requests .req')];
     return { rows: rows.length, textFirst: rows.every(r => !!(r.querySelector('pre').compareDocumentPosition(r.querySelector('button')) & Node.DOCUMENT_POSITION_FOLLOWING)),
       above: !!(document.getElementById('requests').compareDocumentPosition(document.getElementById('journey')) & Node.DOCUMENT_POSITION_FOLLOWING),
-      text: rows[0].querySelector('pre').textContent, labels: rows.map(r => [...r.querySelectorAll('button')].filter(b => !b.hidden).map(b => b.textContent)),
-      title: document.getElementById('requests-title').textContent };
+      text: rows[0].querySelector('pre').textContent, shortText: rows[1].querySelector('pre').textContent,
+      badges: rows.map(r => { const b = r.querySelector('.badge'); return !b.hidden && getComputedStyle(b).display !== 'none' ? b.textContent : null; }),
+      labels: rows.map(r => [...r.querySelectorAll('button')].filter(b => !b.hidden).map(b => b.textContent)),
+      title: document.getElementById('requests-title').textContent, live: document.getElementById('requests-live').textContent,
+      hint: document.querySelector('#requests > .hint').textContent };
   });
   check(`${size}: the card sits above everything, shows each request whole and puts the text before its buttons`, card.rows === 2 && card.above && card.textFirst
-    && card.text === full && card.title === 'Requests waiting on your PC');
+    && card.text === full && card.shortText === 'diff --git a/x b/x\n+ small change' && card.title === 'Requests waiting' && card.live === '2 requests waiting');
+  check(`${size}: a cut request carries the badge, a short one does not, and a cut one with no full text is not listed`,
+    JSON.stringify(card.badges) === JSON.stringify(['Too long for the in-game card', null]));
+  check(`${size}: the hint says everything is listed here, only whole requests are approved in the game, and nothing happens until a click`,
+    card.hint.includes('Everything your familiars are waiting on') && card.hint.includes('in the game only a request shown in full can be approved') && card.hint.includes('Nothing happens until you click'));
   check(`${size}: Approve and Deny always, Always (this quest) only when the request allows it`,
     JSON.stringify(card.labels) === JSON.stringify([['Approve', 'Deny', 'Always (this quest)'], ['Approve', 'Deny']]));
   await snapshot(`control-${width}-requests`);
@@ -771,6 +782,7 @@ try {
   for (const width of [760, 520]) {
     await controlChatJourney(width); await controlFailureJourney(width); await controlStorageJourney(width);
     await controlLayoutJourney(width); await controlRequestsJourney(width); await controlEssentialsJourney(width);
+    for (const [name, passed] of Object.entries(await controlRound4Journey(page, origin, width, snapshot))) check(name, passed);
   }
   await page.setViewportSize({ width: 1280, height: 800 });
   for (const narrow of [false, true]) await compactHeaderJourney(narrow);
