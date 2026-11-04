@@ -221,6 +221,7 @@ function privateModel(hub: Hub, m: RenderModel, linked: boolean) {
   const { zone, thread } = privateNames(hub);
   const v = hub.view;
   m.private = true;
+  if (hub.cfg().blurTranscript) m.blur = true; // Stream-safe
   // Quest Log first, so numbering follows the order the player sees.
   const shown = (agent: AgentKind) => !v.show.length || v.show.includes(agent);
   const quests = (key: string) => [...hub.threads.values()].filter((t) => t.projectKey === key && shown(t.agent)).length;

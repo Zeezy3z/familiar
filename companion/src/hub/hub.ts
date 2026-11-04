@@ -668,6 +668,11 @@ export class Hub {
         this.setPrivate(a === "on" ? true : a === "off" ? false : !this.cfg().privateMode);
         break;
       }
+      case "stream": {
+        const a = (arg ?? "").toLowerCase();
+        this.setStream(a === "on" ? true : a === "off" ? false : !this.cfg().blurTranscript);
+        break;
+      }
       case "tutorial":
         this.openTutorial();
         break;
@@ -1799,8 +1804,22 @@ export class Hub {
     const cfg = this.cfg();
     if (!!cfg.privateMode === on) return;
     cfg.privateMode = on;
+    if (!on) cfg.blurTranscript = false; // names shown again: no longer Stream-safe
     this.onConfigChanged(cfg);
     this.toast(on ? "Hide names on: project and quest names are hidden. Replies, approval cards and what you type stay visible." : "Hide names off.", "info");
+    this.changed("config");
+  }
+
+  /** Stream-safe: Hide names, plus replies blurred on the Glass until clicked, plus no speech. Off
+   * shows names and text again; speech stays off (turning it on is the player's own choice). */
+  setStream(on: boolean) {
+    const cfg = this.cfg();
+    if (!!cfg.privateMode === on && !!cfg.blurTranscript === on && !(on && cfg.speak)) return;
+    cfg.privateMode = on;
+    cfg.blurTranscript = on;
+    if (on) cfg.speak = false;
+    this.onConfigChanged(cfg);
+    this.toast(on ? "Stream-safe on: names hidden, replies blurred. Click a blurred reply to read it for 8 seconds." : "Stream-safe off.", "info");
     this.changed("config");
   }
 
