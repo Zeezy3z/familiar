@@ -88,11 +88,17 @@ async function sameAnchor(before, name, contentUnchanged = true) {
   if (!ok) console.log(`ANCHOR ${name}: before ${JSON.stringify(before && { text: before.text.slice(0, 40), offset: before.offset })} after ${JSON.stringify(after && { text: after.text.slice(0, 40), offset: after.offset })}`);
   check(name, ok);
 }
+// Everything but the three steps and the essentials lives in <details id="advanced">, collapsed by default;
+// Playwright refuses to act inside a closed <details>, so open it the way a person would.
+async function openAdvanced() {
+  if (!await page.locator('#advanced').evaluate(el => el.open)) await page.locator('#advanced > summary').click();
+}
 async function controlChatJourney(width) {
   const size = `control-${width}`;
   await page.setViewportSize({ width, height: 640 });
   await page.goto(`${origin}/control.html?scenario=linked`);
   await page.waitForFunction(() => document.getElementById('chat-agent')?.value === 'claude');
+  await openAdvanced();
   const values = () => page.evaluate(() => ({
     agent: document.getElementById('chat-agent').value,
     model: document.getElementById('chat-model').value,
@@ -202,6 +208,7 @@ async function controlChatJourney(width) {
 async function controlFailureJourney(width) {
   await page.setViewportSize({ width, height: 640 });
   await page.goto(`${origin}/control.html?scenario=action-error`);
+  await openAdvanced();
   await page.locator('#b-config').click();
   const local = page.locator('[data-action-feedback]');
   await page.waitForFunction(() => document.querySelector('[data-action-feedback]')?.textContent.includes('Synthetic file-open failure'));
@@ -247,6 +254,135 @@ async function controlStorageJourney(width) {
   }
   await page.evaluate(() => { const p = window.preview; delete p.state.storage; p.emit('status', p.state); });
   check(`control-${width}/storage: healthy status restores normal setup guidance`, await page.locator('#journey-title').textContent() !== 'Saved quests need attention');
+}
+// Three steps, the current step's content, essentials, and everything else under Advanced.
+async function controlLayoutJourney(width) {
+  const size = `control-${width}/layout`;
+  const layout = () => page.evaluate(() => {
+    const adv = document.getElementById('advanced'), fam = document.getElementById('familiars');
+    return { steps: [...document.querySelectorAll('.steps b')].map(b => b.textContent), done: document.querySelectorAll('.steps b.ok').length,
+      current: document.querySelector('.steps li.cur b')?.textContent ?? null, advancedOpen: adv.open, familiarsInAdvanced: adv.contains(fam),
+      familiarsBeforeAdvanced: !!(fam.compareDocumentPosition(adv) & Node.DOCUMENT_POSITION_FOLLOWING),
+      allSet: !document.getElementById('all-set').hidden && getComputedStyle(document.getElementById('all-set')).display !== 'none' };
+  });
+  await page.setViewportSize({ width, height: 640 });
+  // First run: nothing is signed in yet (the fixture's own setup scenario has one agent signed in).
+  await page.goto(`${origin}/control.html?scenario=setup`);
+  await page.waitForFunction(() => document.getElementById('journey-title')?.textContent);
+  await page.evaluate(() => {
+    const p = window.preview;
+    for (const x of p.state.providers) if (x.id !== 'hermes') { x.signedIn = false; x.detail = 'Not signed in'; }
+    p.state.backends = {};
+    p.emit('status', p.state);
+  });
+  let now = await layout();
+  check(`${size}/setup: step 1 is current and the Familiars card sits above a collapsed Advanced`, now.current?.startsWith('1 Agents')
+    && now.done === 0 && !now.advancedOpen && !now.familiarsInAdvanced && now.familiarsBeforeAdvanced && !now.allSet && await page.locator('#familiars').isVisible());
+  await snapshot(`control-${width}-first-run`);
+  // The shipped setup fixture: one agent is signed in, but the first-run choice is still open, so the card stays.
+  await page.goto(`${origin}/control.html?scenario=setup`);
+  await page.waitForFunction(() => document.getElementById('journey-title')?.textContent);
+  now = await layout();
+  check(`${size}/setup fixture: the Familiars card stays under the strip until the choice is kept`, !now.familiarsInAdvanced && now.familiarsBeforeAdvanced && !now.advancedOpen);
+  await page.goto(`${origin}/control.html?scenario=linked`);
+  await page.waitForFunction(() => document.getElementById('chat-agent')?.value === 'claude');
+  now = await layout();
+  check(`${size}/linked: Agents, WoW and Link are done; Familiars moved into a collapsed Advanced; one All set line`,
+    JSON.stringify(now.steps) === JSON.stringify(['1 Agents ✓', '2 WoW ✓', '3 Link ✓']) && now.done === 3 && now.current === null
+    && now.familiarsInAdvanced && !now.advancedOpen && now.allSet);
+  check(`${size}/linked: the essentials stay visible without opening Advanced`, await page.locator('#ui-font').isVisible()
+    && await page.locator('#ui-stream').isVisible() && await page.locator('#ui-sound').isVisible()
+    && !await page.locator('#advanced').evaluate(el => el.open));
+  await snapshot(`control-${width}-linked`);
+  // A default that acts without asking opens Advanced by itself, so the warning box is never hidden.
+  await page.evaluate(() => { const p = window.preview; p.state.ui.defaultMode = 'auto'; p.emit('status', p.state); });
+  check(`${size}/auto default: Advanced opens and the warning box is visible`, (await layout()).advancedOpen
+    && await page.locator('#ui-mode-warn').isVisible() && await page.locator('#modebadge').textContent() === 'Default: Auto');
+  await page.locator('#advanced > summary').click();
+  await page.evaluate(() => window.preview.emit('status', window.preview.state));
+  check(`${size}/auto default: closing Advanced sticks across status updates`, !(await layout()).advancedOpen);
+  // The journey link opens Advanced first when the Familiars card is inside it.
+  await page.evaluate(() => { const p = window.preview; p.state.ui.defaultMode = 'ask'; p.state.backends.claude.ready = false; p.state.backends.codex.ready = false; p.emit('status', p.state); });
+  await page.waitForFunction(() => !document.getElementById('journey-action').hidden);
+  await page.locator('#journey-action').click();
+  check(`${size}/journey link: opens Advanced and shows the Familiars card`, (await layout()).advancedOpen && await page.locator('#familiars').isVisible());
+}
+async function controlRequestsJourney(width) {
+  const size = `control-${width}/requests`;
+  await page.setViewportSize({ width, height: 640 });
+  await page.goto(`${origin}/control.html?scenario=linked`);
+  await page.waitForFunction(() => document.getElementById('chat-agent')?.value === 'claude');
+  check(`${size}: no card without a cut request`, !await page.locator('#requests').isVisible());
+  const full = Array.from({ length: 90 }, (_, i) => `echo "step ${i}: far too long for the in-game card"`).join('\n') + '\nrm -rf D:\\vault\\private';
+  await page.evaluate(full => {
+    const p = window.preview, api = window.familiar, real = api.invoke;
+    p.decisions = [];
+    p.answer = { ok: true };
+    // Preview infrastructure only: stand in for main's "decide" command and record what the panel sends.
+    api.invoke = async (cmd, args) => cmd === 'decide' ? (p.decisions.push(args), p.answer) : real(cmd, args);
+    p.state.requests = [
+      { thread: 't1', questTitle: 'Tidy the logs', project: 'Preview project', agent: 'Claude', requestId: 'r1', title: 'Run a long shell command', full, canAlways: true, at: Date.now() - 65000 },
+      { thread: 't2', questTitle: 'Chat about fonts', project: 'Other project', agent: 'Codex', requestId: 'r2', title: 'Edit 3 files', full: 'diff --git a/x b/x\n+ small change', canAlways: false, at: Date.now() - 20000 },
+    ];
+    p.emit('status', p.state);
+  }, full);
+  const card = await page.evaluate(() => {
+    const rows = [...document.querySelectorAll('#requests .req')];
+    return { rows: rows.length, textFirst: rows.every(r => !!(r.querySelector('pre').compareDocumentPosition(r.querySelector('button')) & Node.DOCUMENT_POSITION_FOLLOWING)),
+      above: !!(document.getElementById('requests').compareDocumentPosition(document.getElementById('journey')) & Node.DOCUMENT_POSITION_FOLLOWING),
+      text: rows[0].querySelector('pre').textContent, labels: rows.map(r => [...r.querySelectorAll('button')].filter(b => !b.hidden).map(b => b.textContent)),
+      title: document.getElementById('requests-title').textContent };
+  });
+  check(`${size}: the card sits above everything, shows each request whole and puts the text before its buttons`, card.rows === 2 && card.above && card.textFirst
+    && card.text === full && card.title === 'Requests waiting on your PC');
+  check(`${size}: Approve and Deny always, Always (this quest) only when the request allows it`,
+    JSON.stringify(card.labels) === JSON.stringify([['Approve', 'Deny', 'Always (this quest)'], ['Approve', 'Deny']]));
+  await snapshot(`control-${width}-requests`);
+  await page.evaluate(() => { document.querySelector('.req-full').scrollTop = 300; });
+  await new Promise(resolve => setTimeout(resolve, 1300)); // two synthetic status ticks
+  check(`${size}: nothing is sent by itself and a status update keeps the reader's place`, await page.evaluate(() => window.preview.decisions.length === 0
+    && document.querySelector('.req-full').scrollTop === 300));
+  // A script-made click is not a user click: it decides nothing.
+  await page.waitForFunction(() => !document.querySelector('.req [data-decide="allow"]').disabled);
+  await page.evaluate(() => document.querySelector('.req [data-decide="allow"]').click());
+  check(`${size}: a click made by script sends nothing`, await page.evaluate(() => window.preview.decisions.length) === 0);
+  await page.locator('.req[data-request="r1"] [data-decide="deny"]').click();
+  check(`${size}: a real click sends one decide for that request`, JSON.stringify(await page.evaluate(() => window.preview.decisions))
+    === JSON.stringify([{ thread: 't1', requestId: 'r1', decision: 'deny' }])
+    && (await page.locator('#feedback').textContent()).startsWith('Denied: Run a long shell command'));
+  await page.evaluate(() => { const p = window.preview; p.state.requests = p.state.requests.filter(r => r.requestId !== 'r1'); p.emit('status', p.state); });
+  check(`${size}: an answered request leaves the card`, await page.locator('#requests .req').count() === 1);
+  await page.evaluate(() => { window.preview.answer = { ok: false, why: 'no longer pending' }; });
+  await page.locator('.req[data-request="r2"] [data-decide="allow"]').click();
+  check(`${size}: a late click says Already answered and leaves the buttons usable`, await page.locator('.req-msg').textContent() === 'Already answered.'
+    && await page.locator('.req[data-request="r2"] button:not([hidden])').evaluateAll(els => els.every(el => !el.disabled)));
+  await page.evaluate(() => { window.preview.answer = { ok: true }; });
+  await page.locator('.req[data-request="r2"] [data-decide="allow"]').click();
+  check(`${size}: Approve sends allow`, await page.evaluate(() => window.preview.decisions.at(-1).decision) === 'allow');
+  await page.evaluate(() => { const p = window.preview; p.state.requests = []; p.emit('status', p.state); });
+  check(`${size}: the card goes away with the last request`, !await page.locator('#requests').isVisible());
+}
+async function controlEssentialsJourney(width) {
+  const size = `control-${width}/essentials`;
+  await page.setViewportSize({ width, height: 640 });
+  await page.goto(`${origin}/control.html?scenario=linked`);
+  await page.waitForFunction(() => document.getElementById('chat-agent')?.value === 'claude');
+  const updates = () => page.evaluate(() => window.preview.calls.filter(c => c.cmd === 'uiSettings').map(c => c.args));
+  check(`${size}: Text size explains when the quest list follows`, (await page.locator('#ui-font-hint').textContent()).includes('The quest list follows after /reload'));
+  await page.locator('#ui-stream').check();
+  check(`${size}: Stream-safe sends one preference, and approvals stay readable by its own hint`, JSON.stringify(await updates()) === JSON.stringify([{ streamSafe: true }])
+    && (await page.locator('#ui-stream-hint').textContent()).includes('Approval cards stay readable'));
+  await openAdvanced();
+  const line = () => page.locator('#approve-key-status').evaluate(el => el.textContent.replace(/\s+/g, ' ').trim());
+  const key = async value => { await page.locator('#ui-approve-key').fill(value); await page.locator('#ui-approve-key').press('Tab'); };
+  await key('F9');
+  check(`${size}: Approve key F9 is shown as registered, without a warning`, await line() === 'Registered: F9 — Familiar checks the real keyboard for it');
+  await key('W');
+  check(`${size}: a bare letter is registered but warned about`, await line() === 'Registered: W — Familiar checks the real keyboard for it That key is used for playing; pick an F-key or a Ctrl/Shift combination.');
+  await page.locator('#ui-approve-key').fill('CTRL-W');
+  check(`${size}: while typing, the line says it is not saved yet`, (await line()).startsWith('Not saved yet'));
+  await key('');
+  check(`${size}: no key registered says what to do instead`, await line() === 'None registered — click the card or Approve button instead');
 }
 async function overlayStorageJourney() {
   await page.setViewportSize({ width: 1280, height: 800 });
@@ -629,7 +765,10 @@ try {
   page = await context.newPage();
   page.setDefaultTimeout(10000);
   page.on('pageerror', error => report.errors.push(error.message));
-  for (const width of [760, 520]) { await controlChatJourney(width); await controlFailureJourney(width); await controlStorageJourney(width); }
+  for (const width of [760, 520]) {
+    await controlChatJourney(width); await controlFailureJourney(width); await controlStorageJourney(width);
+    await controlLayoutJourney(width); await controlRequestsJourney(width); await controlEssentialsJourney(width);
+  }
   await page.setViewportSize({ width: 1280, height: 800 });
   for (const narrow of [false, true]) await compactHeaderJourney(narrow);
   for (const narrow of [false, true]) {
