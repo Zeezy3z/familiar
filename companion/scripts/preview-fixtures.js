@@ -6,7 +6,11 @@
   const long = scenario === "long" || scenario === "handoff-long" || externalLong;
   const approval = scenario.startsWith("approval");
   const history = scenario.startsWith("history-");
-  const welcome = scenario === "welcome" || scenario === "welcome-unready";
+  const welcome = scenario === "welcome" || scenario === "welcome-unready" || scenario === "welcome-noprojects";
+  // Round 4 control-panel scenarios (the status fields are the ones the hub serves; the panel renders them).
+  const doctorStrip = scenario === "doctor-strip";
+  const updateAvailable = scenario === "update-available";
+  const claudeDownloading = scenario === "claude-downloading";
   // Round 3: a cut request (Deny only here), a refused click, the practice quest, Stream-safe, and
   // the Quest Complete / Quest Failed moments (raid-warning toasts).
   const tutorial = scenario === "tutorial";
@@ -14,18 +18,27 @@
   const moment = scenario === "quest-complete" || scenario === "quest-failed";
   const handlers = {};
   const calls = [];
-  const linked = ["welcome", "linked", "paused", "running", "approval", "finished", "interrupted", "desktop", "tutorial", "stream-safe", "quest-complete", "quest-failed"].includes(scenario);
+  const linked = ["welcome", "welcome-noprojects", "projects-empty", "projects-some", "update-available", "linked", "paused", "running", "approval", "finished", "interrupted", "desktop", "tutorial", "stream-safe", "quest-complete", "quest-failed"].includes(scenario);
   const state = {
     build: scenario === "build-unavailable" ? { commit: null, dirty: null } : scenario === "build-dirty" ? { ...window.previewBuild, dirty: true } : window.previewBuild,
     work: { working: scenario === "running" || scenario === "build-running" ? 1 : 0,
       approvals: scenario === "approval" || scenario === "build-approval" ? 2 : 0, confirmation: scenario === "build-handoff" },
-    version: "0.1.0 · synthetic preview", linked, providersChosen: scenario !== "setup",
-    game: linked || scenario === "searching" ? { exe: "Synthetic WoW", foreground: true, client: { width: 1280, height: 800, x: 0, y: 0 } } : null,
+    version: updateAvailable ? "0.2.0 · synthetic preview" : "0.1.0 · synthetic preview", linked, providersChosen: scenario !== "setup",
+    game: linked || doctorStrip || scenario === "searching" ? { exe: "Synthetic WoW", foreground: true, client: { width: 1280, height: 800, x: 0, y: 0 } } : null,
     install: scenario === "setup" ? null : { dir: "C:\\Games\\WoW", flavor: "_classic_beta_" }, installNotes: [],
-    capture: { fps: linked ? 30 : 0, frameW: 1280, frameH: 800, decoded: linked ? 100 : 0, msgs: linked ? 4 : 0 },
-    overlay: { shown: linked, paused: scenario === "paused" }, addon: linked ? { char: "Preview Rogue", realm: "Forever", addon: "Familiar", build: "synthetic", iface: 16001 } : {},
-    layout: linked ? { panel: true } : null, threads: linked ? 2 : 0, projects: 3, launchAtLogin: false,
-    ui: { fontScale: 1, sound: false, raidWarnings: false, quiet: scenario === "quiet" }, chat: { agent: "claude", model: "haiku", effort: "medium" },
+    // doctor-strip: frames flow but no coloured strip is found (fps > 0, nothing decoded, no lock).
+    capture: { fps: linked || doctorStrip ? 30 : 0, frameW: 1280, frameH: 800, decoded: linked ? 100 : 0, msgs: linked ? 4 : 0, ...(doctorStrip ? { crc: 0, locked: false } : {}) },
+    overlay: { shown: linked, paused: scenario === "paused" }, addon: linked ? { char: "Preview Rogue", realm: "Forever", addon: updateAvailable ? "0.3.0" : "Familiar", build: "synthetic", iface: 16001 } : {},
+    layout: linked ? { panel: true } : null, threads: linked ? 2 : 0, launchAtLogin: false,
+    // projects-empty: no explicit folder or root yet; every other scenario has one explicit folder (the card then sits in Advanced).
+    projects: scenario === "projects-empty" ? { explicit: [], roots: [], history: 0 }
+      : scenario === "projects-some" ? { explicit: ["C:\\preview\\sample-project", "C:\\preview\\notes"], roots: ["C:\\preview\\projects"], history: 4 }
+      : { explicit: ["C:\\preview\\sample-project"], roots: [], history: 3 },
+    // first run: Claude Code is still being fetched (state: present | missing | downloading | failed).
+    claude: claudeDownloading ? { state: "downloading", pct: 43, mb: 112 } : { state: "present" },
+    ...(doctorStrip ? { doctor: { step: "strip", level: "warn", text: "Familiar sees the game but no coloured strip in its top-left corner. In game: is Familiar ticked in AddOns? Type /fam strip — it should say TOPLEFT. If something covers that corner, /fam strip tr." } }
+      : linked ? { doctor: { step: "ok", level: "ok", text: "Game link working." } } : {}),
+    ui: { fontScale: 1, sound: false, raidWarnings: false, quiet: scenario === "quiet", trayNotices: true }, chat: { agent: "claude", model: "haiku", effort: "medium" },
     providers: [
       { id: "claude", label: "Claude", glyph: "✦", installed: true, signedIn: scenario !== "setup", enabled: true, detail: scenario === "setup" ? "Not signed in" : "Sign-in found", canLogin: true },
       { id: "codex", label: "Codex", glyph: "◇", installed: true, signedIn: true, enabled: true, detail: "Sign-in found", canLogin: true },
@@ -116,7 +129,7 @@
     ];
     model.detail = { kind: "welcome", linked, linkedChar: linked ? "Preview Rogue" : undefined, backends,
       chat: { ...backends.find(b => b.id === state.chat.agent), model: state.chat.model, act: { type: "newIn", key: "chats" } },
-      counts: { total: 0, running: 0, approval: 0 } };
+      counts: { total: 0, running: 0, approval: 0 }, zones: scenario === "welcome-noprojects" ? 0 : 2 };
     model.target = { text: "Nothing selected - choose Chat, a project quest, or a conversation on the left", warn: true };
     model.keys.mode = undefined;
     model.list.rows = [{ kind: "zone", key: "chats", text: "Chats" },
@@ -239,6 +252,27 @@
       if (cmd === "pause") { state.overlay.paused = !!args; return state.overlay.paused; }
       if (cmd === "providersChosen") state.providersChosen = true;
       if (cmd === "uiSettings") Object.assign(state.ui, args);
+      // Round 4 commands, in memory only. Nothing here opens a dialog, a file, a browser or the network.
+      if (cmd === "checkUpdate") return updateAvailable
+        ? { current: "0.2.0", latest: "0.3.0", url: "https://github.com/Zeezy3z/familiar/releases/tag/v0.3.0", prerelease: false }
+        : { current: "0.2.0", latest: "0.2.0", url: "https://github.com/Zeezy3z/familiar/releases/tag/v0.2.0", prerelease: false };
+      if (cmd === "openUrl") return;
+      if (cmd === "captureSnapshot") return { ok: true, file: "C:\\preview\\Familiar\\strip-20260101-120000.png" };
+      if (cmd === "claudeRetry") { state.claude = { state: "downloading", pct: 0, mb: 112 }; window.preview.emit("status", state); return state.claude; }
+      // A test may set window.preview.projectAddResult (e.g. { ok: false, why: "That folder is excluded by your config" }) to rehearse a refusal.
+      if (cmd === "projectAdd") {
+        if (window.preview.projectAddResult) return window.preview.projectAddResult;
+        const path = args?.kind === "root" ? "C:\\preview\\more-projects" : "C:\\preview\\added-project";
+        (args?.kind === "root" ? state.projects.roots : state.projects.explicit).push(path);
+        window.preview.emit("status", state);
+        return { ok: true, path };
+      }
+      if (cmd === "projectRemove") {
+        state.projects.explicit = state.projects.explicit.filter(p => p !== args?.path);
+        state.projects.roots = state.projects.roots.filter(p => p !== args?.path);
+        window.preview.emit("status", state);
+        return { ok: true };
+      }
       if (cmd === "providerEnable") state.providers.find(p => p.id === args.id).enabled = args.on;
       // Preview infrastructure only: mirror main.ts's chatSettings contract in memory.
       if (cmd === "chatSettings") {

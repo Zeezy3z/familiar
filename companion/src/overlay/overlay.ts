@@ -536,6 +536,8 @@ function staticDetail(d: DetailModel): string {
       ${d.effort ? `<div class="mgroup"><div class="mg-h">Effort</div>${d.effort.options.map((o) => `<span class="btn${o === d.effort!.current ? " cur" : ""}" data-act="${attr({ type: "pickEffort", effort: o })}">${esc(o)}</span>`).join(" ")}</div>` : ""}
       <div class="hint">${d.chat ? "Your pick is used for new chats too. Lower effort answers faster." : "Applies to this quest from its next message."} <span class="btn" data-act="${attr({ type: "closePicker" })}">Close</span></div></div>`;
   if (d.kind === "welcome") {
+    // Lane H adds `zones` to the welcome model; a hub without it draws nothing extra.
+    const noProjects = (d as { zones?: number }).zones === 0;
     const projectStarts = d.backends.filter((b) => b.ready).map((b) =>
       b.id === "claude" || b.id === "codex" ? `<b>+ ${esc(b.label)}</b>` : `<b>/fam ${esc(b.id)}</b> (no message)`);
     return `<div class="welcome">
@@ -547,7 +549,7 @@ function staticDetail(d: DetailModel): string {
         <span class="btn" data-act="${attr(d.chat.act)}">+ Chat</span> ${d.chat.ready ? "Opens a draft; nothing is sent yet. Model lists your chat choices." : "Chat uses Claude or Codex. Open a draft, then use Model to choose an enabled Chat provider or open Familiar from the tray icon on your PC to sign in."}</div>
       <div class="hint welcome-project"><b>Work on a project</b><br>
         ${projectStarts.length ? `Use ${projectStarts.join(" or ")} to choose a project folder. The project picker also lists other familiars.` : "No provider is ready yet. Open Familiar from the tray icon on your PC to sign in before starting a project."}
-        Use Model to see the available models. Check Your familiars below before sending.</div>
+        Use Model to see the available models. Check Your familiars below before sending.${noProjects ? `<br><span class="welcome-noprojects">No project folders yet — add one in Familiar on your PC (tray → Open Familiar → Projects).</span>` : ""}</div>
       <div class="hint welcome-continue"><b>Continue a conversation</b><br>
         Pick a quest or desktop conversation on the left. Familiar asks before sending your first message to a desktop conversation.</div>
       <div class="hint welcome-tutorial"><span class="link" data-act="${attr({ type: "tutorial" })}"><span class="ag ag-familiar">◆</span> Replay A Familiar Face</span> · the practice quest: one request to approve, and nothing runs.</div>
