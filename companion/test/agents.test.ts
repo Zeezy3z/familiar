@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import { CodexBackend, prettyCommand } from "../src/agents/codex";
 import { ClaudeBackend } from "../src/agents/claude";
 import type { AgentEvent } from "../src/agents/types";
-import { editPreview, summarizeTool, truncatePreview } from "../src/agents/types";
+import { approvalText, editPreview, FULL_CAP, summarizeTool, truncatePreview } from "../src/agents/types";
 import { projectRootOf } from "../src/hub/projects";
 import { DEFAULT_CONFIG, isExcluded } from "../src/hub/config";
 import { luaString } from "../src/main/wow";
@@ -18,6 +18,8 @@ describe("display helpers", () => {
     const signal = new AbortController();
     const result = (backend as any).canUseTool({ threadId: "fixture", approvals: new Map() }, "ExitPlanMode", { plan: "x".repeat(4012) }, { signal: signal.signal });
     expect(events[0]).toMatchObject({ type: "approval", kind: "planExit", detail: "x".repeat(4000) + "\n… (12 characters omitted from this preview)", canAlways: false });
+    // The card is cut, so it carries the whole plan for the control panel (the only place it can be approved).
+    expect(events[0]).toMatchObject({ cut: true, full: "x".repeat(4012) });
     signal.abort();
     expect(await result).toMatchObject({ behavior: "deny" });
   });
@@ -33,6 +35,7 @@ describe("display helpers", () => {
       const card = events.filter(e => e.type === "approval").at(-1) as any;
       expect(card.detail.startsWith(long)).toBe(true);
       expect(card.detail).not.toContain("omitted from this preview");
+      expect(card.cut).toBeUndefined();
       signal.abort();
       expect(await result).toMatchObject({ behavior: "deny" });
     }
@@ -41,6 +44,7 @@ describe("display helpers", () => {
     const signal = new AbortController();
     const result = (backend as any).canUseTool({ threadId: "fixture", approvals: new Map() }, "Bash", { command: huge }, { signal: signal.signal });
     expect((events.filter(e => e.type === "approval").at(-1) as any).detail).toBe(truncatePreview(huge, 4000));
+    expect(events.filter(e => e.type === "approval").at(-1)).toMatchObject({ cut: true, full: huge });
     signal.abort();
     await result;
   });
@@ -53,6 +57,7 @@ describe("display helpers", () => {
     const permissions = { description: "x".repeat(650) };
     (backend as any).onRequest(1, "item/permissions/requestApproval", { threadId: "native", permissions });
     expect(events[0]).toMatchObject({ type: "approval", kind: "permissions", detail: truncatePreview(JSON.stringify(permissions, null, 1), 600), canAlways: true });
+    expect(events[0]).toMatchObject({ cut: true, full: JSON.stringify(permissions, null, 1) });
   });
   it("capped provider previews identify text that expansion cannot recover", () => {
     for (const limit of [600, 4000]) {
@@ -64,6 +69,25 @@ describe("display helpers", () => {
     const preview = editPreview("Write", { file_path: "fixture.txt", content: text })!;
     expect(preview).toContain("+line 59\n… (5 lines omitted from this preview)");
     expect(preview).not.toContain("+line 60");
+    // The whole request travels with a cut card, capped (and saying so) past 200k characters.
+    expect(approvalText(preview, preview)).toEqual({ detail: preview });
+    expect(approvalText(preview, text)).toEqual({ detail: preview, cut: true, full: text });
+    expect(approvalText("v", "v".repeat(FULL_CAP + 5)).full).toBe("v".repeat(FULL_CAP) + "\n… (truncated at 200k)");
+  });
+
+  it("Claude's actual file write approval is cut past 60 lines and carries the whole write", async () => {
+    const backend = new ClaudeBackend({ log: () => {}, version: "test" });
+    const events: AgentEvent[] = [];
+    backend.on(e => events.push(e));
+    const content = Array.from({ length: 65 }, (_, i) => `line ${i}`).join("\n");
+    const signal = new AbortController();
+    const result = (backend as any).canUseTool({ threadId: "fixture", approvals: new Map() }, "Write", { file_path: "fixture.txt", content }, { signal: signal.signal });
+    const card = events.find(e => e.type === "approval") as any;
+    expect(card.detail).toContain("(5 lines omitted from this preview)");
+    expect(card.cut).toBe(true);
+    expect(card.full).toContain("+line 64");
+    signal.abort();
+    await result;
   });
   it("prettyCommand shortens Codex shell invocations", () => {
     const raw = String.raw`"D:\\Users\\alice\\AppData\\Local\\Microsoft\\WindowsApps\\pwsh.exe" -NoProfile -Command "Get-Content -LiteralPath 'D:\\src\\familiar\\companion\\package.json'"`;

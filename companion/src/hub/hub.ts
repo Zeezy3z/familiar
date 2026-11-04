@@ -500,7 +500,13 @@ export class Hub {
   saveNow(): boolean {
     const threads = [...this.threads.values()].map((t) => ({
       ...t,
-      entries: t.entries.slice(-MAX_ENTRIES).map((e) => (e.output && e.output.length > 2000 ? { ...e, output: e.output.slice(-2000) } : e)),
+      // A cut request's whole text is only needed while it can still be approved (pending requests
+      // expire on the next start anyway); a quest full of large file writes must not bloat the file.
+      entries: t.entries.slice(-MAX_ENTRIES).map((e) => {
+        if (e.output && e.output.length > 2000) e = { ...e, output: e.output.slice(-2000) };
+        if (e.full !== undefined && e.approval !== "pending") e = { ...e, full: undefined };
+        return e;
+      }),
     }));
     const data = {
       version: 1,
@@ -1163,19 +1169,41 @@ export class Hub {
 
   private lastDecisionAt = 0;
 
-  decide(threadId: string, requestId: string, d: Decision, origin: DecisionOrigin = "game") {
+  /** One decision per request id. `origin` "panel" is only ever passed by main for a click in the
+   * desktop control panel (physical input on the PC, showing the whole request); every game path
+   * (Glass card, keys, keybinds, dev hooks) is "game", which can never approve a cut request. */
+  decide(threadId: string, requestId: string, d: Decision, origin: DecisionOrigin = "game"): { ok: boolean; why?: string } {
     const t = this.threads.get(threadId);
-    if (!t) return;
-    const e = t.entries.find((x) => x.requestId === requestId && x.approval === "pending");
-    if (!e) return; // one decision per request id
-    if (d !== "deny" && d !== "denyAndStop" && Date.now() - e.at < this.minCardAgeMs)
-      return this.toast("That request just appeared. Read it, then decide.", "info");
+    const e = t?.entries.find((x) => x.requestId === requestId && x.approval === "pending");
+    if (!t || !e) return { ok: false, why: "no longer pending" };
+    const grants = d !== "deny" && d !== "denyAndStop";
+    if (grants && e.cut && origin !== "panel") {
+      this.log("[hub] approve refused: cut request");
+      this.toast("Open it in full on your PC to approve.", "info");
+      return { ok: false, why: "cut" };
+    }
+    if (grants && Date.now() - e.at < this.minCardAgeMs) {
+      this.toast("That request just appeared. Read it, then decide.", "info");
+      return { ok: false, why: "fresh" };
+    }
     e.approval = d === "allow" ? "approved" : d === "allowAlways" ? "always" : "denied";
     this.lastDecisionAt = Date.now();
     this.backends[t.agent].respondApproval(t.id, requestId, d);
     this.toasts = this.toasts.filter((x) => !(x.kind === "approval" && x.threadId === t.id));
     this.refreshStatus(t);
     this.changed("decide");
+    return { ok: true };
+  }
+
+  /** Pending requests too long for the in-game card, whole, for the control panel's "Requests
+   * waiting on your PC". Real names: the panel is on the PC, not on stream. */
+  cutRequests() {
+    return [...this.threads.values()].flatMap((t) =>
+      t.entries
+        .filter((e) => e.kind === "approval" && e.approval === "pending" && e.cut && e.requestId)
+        .map((e) => ({ thread: t.id, questTitle: t.title, project: this.projectName(t), agent: agentName(t.agent), requestId: e.requestId!,
+          title: e.title ?? "", full: e.full ?? e.text, canAlways: !!e.canAlways, at: e.at })),
+    );
   }
 
   // ---- sending --------------------------------------------------------------------------------
@@ -1552,6 +1580,7 @@ export class Hub {
           text: e.detail,
           canAlways: e.canAlways,
           options: e.options,
+          ...(e.cut ? { cut: true, full: e.full ?? e.detail } : {}),
           approval: "pending",
           at: Date.now(),
         });

@@ -484,6 +484,7 @@ function threadDetail(hub: Hub, t: Thread): DetailModel {
       options: e.options,
       requestId: e.requestId,
       level: e.level,
+      cut: e.cut,
     })),
   };
 }

@@ -17,6 +17,7 @@ import {
   StartOptions,
   ThreadInfo,
   TodoItem,
+  approvalText,
   truncatePreview,
 } from "./types";
 import { resolveCommand } from "./which";
@@ -624,18 +625,20 @@ export class CodexBackend implements AgentBackend {
         });
         break;
       case "item/permissions/requestApproval":
-      case "mcpServer/elicitation/request":
+      case "mcpServer/elicitation/request": {
         this.approvals.set(requestId, { rpcId: id, threadId, method });
+        const whole = JSON.stringify(p?.permissions ?? p?.message ?? p, null, 1);
         this.ev.emit({
           type: "approval",
           threadId,
           requestId,
           kind: "permissions",
           title: method === "mcpServer/elicitation/request" ? "Tool needs input" : "Grant permissions?",
-          detail: truncatePreview(JSON.stringify(p?.permissions ?? p?.message ?? p, null, 1), 600),
+          ...approvalText(truncatePreview(whole, 600), whole),
           canAlways: method === "item/permissions/requestApproval",
         });
         break;
+      }
       default:
         // Unknown server requests must be answered or the turn hangs.
         this.rpc?.respondError(id, `familiar does not support ${method}`);

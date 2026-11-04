@@ -742,6 +742,8 @@ function statusSnapshot() {
     configPath: path.join(appDataDir(), "config.json"),
     launchAtLogin: cfg.launchAtLogin,
     ui: uiSettings(),
+    // "Requests waiting on your PC": cut requests in full (approved only here, via "decide").
+    requests: hub ? hub.cutRequests() : [],
     providers: providersNow(),
     providersChosen: cfg.providersChosen,
     chat: { agent: cfg.chatAgent, model: cfg.chatModel, effort: cfg.chatEffort },
@@ -1030,6 +1032,19 @@ app.whenReady().then(async () => {
         saveConfig(cfg);
         hub.changed("config");
         return uiSettings();
+      }
+      case "decide": {
+        // A click in the focused control panel, which shows the whole request: physical input on the
+        // PC, not a path from the game. The only caller of hub.decide(..., "panel"); `cmd` answers
+        // only the control panel's own window (from(e, control) above), never the Glass, the
+        // capture page, the addon link or the dev hooks.
+        const { thread, requestId, decision } = (args ?? {}) as { thread?: unknown; requestId?: unknown; decision?: unknown };
+        if (typeof thread !== "string" || typeof requestId !== "string" || (decision !== "allow" && decision !== "allowAlways" && decision !== "deny"))
+          return { ok: false, why: "bad request" };
+        log(`[control] decide ${decision}`);
+        const r = hub.decide(thread, requestId, decision, "panel");
+        sendStatus();
+        return r;
       }
       case "launchAtLogin":
         cfg.launchAtLogin = !!args;

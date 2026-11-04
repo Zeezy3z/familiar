@@ -11,6 +11,7 @@ import {
   AgentEvent,
   BackendStatus,
   Decision,
+  approvalText,
   editPreview,
   truncatePreview,
   Emitter,
@@ -387,9 +388,11 @@ export class AcpBackend implements AgentBackend {
     const requestId = `${this.o.id}:${++this.reqSeq}`;
     const tc = p.toolCall;
     const diff = (tc.content ?? []).find((c: any) => c.type === "diff") as any;
-    const detail = diff
-      ? editPreview("Edit", { file_path: diff.path, old_string: diff.oldText ?? "", new_string: diff.newText ?? "" }) ?? ""
-      : truncatePreview(rawText(tc.rawInput) || contentText(tc.content), 4000);
+    // The card's text within its limits, or (Infinity) the whole request for the control panel.
+    const describe = (chars: number, lines: number) => diff
+      ? editPreview("Edit", { file_path: diff.path, old_string: diff.oldText ?? "", new_string: diff.newText ?? "" }, lines) ?? ""
+      : truncatePreview(rawText(tc.rawInput) || contentText(tc.content), chars);
+    const text = approvalText(describe(4000, 60), describe(Infinity, Infinity));
     const kind = tc.kind === "edit" || tc.kind === "delete" || tc.kind === "move" ? "fileChange" : tc.kind === "execute" ? "command" : "tool";
     return new Promise((resolve) => {
       this.approvals.set(requestId, { threadId: l.threadId, sessionId: p.sessionId, options: p.options, resolve });
@@ -399,7 +402,7 @@ export class AcpBackend implements AgentBackend {
         requestId,
         kind,
         title: (tc.title || "Allow this?") + (this.o.approvalTimeoutSec ? ` (${this.label} says no by itself after ${this.o.approvalTimeoutSec}s)` : ""),
-        detail,
+        ...text,
         canAlways: p.options.some((o) => o.kind === "allow_always"),
       });
     });

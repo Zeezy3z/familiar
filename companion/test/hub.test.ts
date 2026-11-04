@@ -1990,6 +1990,47 @@ describe("physical corroboration (any addon can forge strip messages)", () => {
     }
   });
 
+  it("a cut request is never approved from the game, even with proof; the control panel approves it whole", async () => {
+    await hub.quick("claude", "@familiar long command");
+    const id = hub.view.selected!;
+    const full = "echo " + "x".repeat(5000);
+    const cut = (requestId: string) => claude.emit({ type: "approval", threadId: id, requestId, kind: "tool", title: "Allow Bash?",
+      detail: full.slice(0, 4000) + "\n… (1005 characters omitted from this preview)", canAlways: true, cut: true, full });
+    cut("long");
+    hub.action({ type: "decide", thread: id, requestId: "long", decision: "allow" }, OK);
+    hub.action({ type: "decide", thread: id, requestId: "long", decision: "allowAlways" }, OK);
+    await hub.key("approve", undefined, "full", OK);
+    await hub.key("always", undefined, "focus", OK);
+    expect(claude.decisions).toEqual([]);
+    expect(hub.toasts.at(-1)!.text).toBe("Open it in full on your PC to approve.");
+    const detail = buildModel(hub, { linked: true, fps: 30 }).detail;
+    const card = detail.kind === "thread" ? detail.entries.find((e) => e.requestId === "long") : undefined;
+    expect(card).toMatchObject({ cut: true, approval: "pending" });
+    expect(JSON.stringify(detail)).not.toContain(full); // the Glass never gets the whole text
+    // "Requests waiting on your PC": the whole request with real names; a panel click decides it.
+    expect(hub.cutRequests()).toEqual([{ thread: id, questTitle: "long command", project: "familiar", agent: "Claude", requestId: "long",
+      title: "Allow Bash?", full, canAlways: true, at: expect.any(Number) }]);
+    expect(hub.decide(id, "long", "allow", "panel")).toEqual({ ok: true });
+    expect(claude.decisions).toEqual([{ requestId: "long", d: "allow" }]);
+    expect(hub.cutRequests()).toEqual([]);
+    expect(hub.decide(id, "long", "allow", "panel")).toEqual({ ok: false, why: "no longer pending" });
+    // Deny from the card needs no proof, cut or not.
+    cut("long2");
+    hub.action({ type: "decide", thread: id, requestId: "long2", decision: "deny" });
+    expect(claude.decisions.at(-1)).toEqual({ requestId: "long2", d: "deny" });
+    // The read-it-first rule holds in the panel too.
+    hub.minCardAgeMs = 60_000;
+    cut("long3");
+    expect(hub.decide(id, "long3", "allow", "panel")).toEqual({ ok: false, why: "fresh" });
+    hub.minCardAgeMs = 0;
+    // The whole text is saved only while the request can still be approved.
+    hub.saveNow();
+    const saved = JSON.parse(fs.readFileSync(path.join(appData, "Familiar", "threads.json"), "utf8")).threads.find((t: any) => t.id === id);
+    expect(saved.entries.find((e: any) => e.requestId === "long")).toMatchObject({ cut: true, approval: "approved" });
+    expect(saved.entries.find((e: any) => e.requestId === "long").full).toBeUndefined();
+    expect(saved.entries.find((e: any) => e.requestId === "long3").full).toBe(full);
+  });
+
   it("Mode needs a click on the Mode button", async () => {
     await hub.quick("claude", "@familiar mode");
     const t = hub.selectedThread()!;
