@@ -29,7 +29,7 @@ jobs:
     env:
       ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -82,7 +82,7 @@ jobs:
           for k in FAMILIAR_SIGN_ENDPOINT FAMILIAR_SIGN_ACCOUNT FAMILIAR_SIGN_PROFILE FAMILIAR_SIGN_PUBLISHER; do
             [ -n "${!k}" ] || { echo "::error::$k is empty: set the repository variables listed in docs/releasing.md"; exit 1; }
           done
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
