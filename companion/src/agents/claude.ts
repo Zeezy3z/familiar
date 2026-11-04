@@ -3,6 +3,7 @@
 // ANTHROPIC_API_KEY or the user's existing Claude Code sign-in; Familiar never sees credentials.
 import { randomUUID } from "node:crypto";
 import { StderrFilter } from "./acp";
+import { claudeNotDownloaded } from "./claude-download";
 import { readDesktopSessions, readLiveSessions } from "./claude-desktop";
 import {
   AgentBackend,
@@ -25,8 +26,13 @@ import {
 
 type Sdk = typeof import("@anthropic-ai/claude-agent-sdk");
 let sdkPromise: Promise<Sdk> | null = null;
-// The SDK is ESM-only; load it lazily from our CommonJS bundle.
-const loadSdk = () => (sdkPromise ??= new Function("m", "return import(m)")("@anthropic-ai/claude-agent-sdk") as Promise<Sdk>);
+// The SDK is ESM-only; load it lazily from our CommonJS bundle. Not cached while the release
+// download still lacks it, so a Run Familiar.cmd that fetches it works without a restart.
+const loadSdk = (): Promise<Sdk> => {
+  const missing = claudeNotDownloaded();
+  if (missing) return Promise.reject(new Error(missing));
+  return (sdkPromise ??= new Function("m", "return import(m)")("@anthropic-ai/claude-agent-sdk") as Promise<Sdk>);
+};
 
 const PERMISSION_MODE: Record<Mode, "default" | "acceptEdits" | "plan" | "auto"> = {
   ask: "default",
@@ -132,7 +138,7 @@ export class ClaudeBackend implements AgentBackend {
         ],
       };
     } catch (e: any) {
-      this.st = { ready: false, models: [], error: String(e?.message ?? e) };
+      this.st = { ready: false, models: [], error: String(e?.message ?? e), setup: claudeNotDownloaded() };
     }
     return this.st;
   }

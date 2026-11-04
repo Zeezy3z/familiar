@@ -90,8 +90,10 @@ jobs:
       # neither sees the token.
       - name: Build the prebuilt app zip
         run: node companion/scripts/prebuilt.mjs build "$RUNNER_TEMP/dist/FamiliarApp-$TAG-windows.zip" "$GITHUB_SHA"
-      # Extracts it to a temp folder, checks the required files and CRLF in Run Familiar.cmd, then
-      # runs the extracted companion's --self-test with every node.exe removed from PATH.
+      # Extracts it to a temp folder, checks the required files, CRLF in Run Familiar.cmd and that
+      # neither Claude package (Agent SDK, Claude Code) is in it, then with every node.exe removed
+      # from PATH runs the extracted companion's --self-test, the first run's Claude download from
+      # npm (fetch-claude.cjs, sha512 against the lockfile), the self-test again and an SDK import.
       - name: Check the zip and self-test it without Node
         run: node companion/scripts/prebuilt.mjs check "$RUNNER_TEMP/dist/FamiliarApp-$TAG-windows.zip"
       - name: Attach the app zip and SHA256SUMS.txt

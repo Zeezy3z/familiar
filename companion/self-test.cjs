@@ -1,7 +1,8 @@
 // Checks that this install can run, without starting it: no windows, no login entry, no AddOns
 // link. `electron.exe <companion folder> --self-test` runs it from boot.cjs before the companion
 // loads (release.yml runs it on the extracted download). One line per check; ok is false if any
-// check failed.
+// check failed. A skipped check does not fail: the release download has no Claude Code until its
+// first run fetches it (fetch-claude.cjs).
 const fs = require("node:fs");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
@@ -31,7 +32,10 @@ function selfTest({ appRoot, addonDir, claudeExe }) {
     if (pid !== process.pid) throw new Error(`GetCurrentProcessId returned ${pid}, expected ${process.pid}`);
     return `${koffi.version}, native call ok`;
   });
-  check("Claude Code (claude --version)", () => {
+  const claude = "Claude Code (claude --version)";
+  const sdk = path.join(appRoot, "node_modules", "@anthropic-ai", "claude-agent-sdk", "package.json");
+  if ((!claudeExe || !fs.existsSync(sdk)) && fs.existsSync(path.join(appRoot, ".prebuilt"))) lines.push(`skip ${claude}: not downloaded yet (first run fetches it)`);
+  else check(claude, () => {
     if (!claudeExe) throw new Error("bundled Claude Code binary not found");
     // A cold first start of a ~250 MB binary can be slow while antivirus scans it.
     const r = spawnSync(claudeExe, ["--version"], { encoding: "utf8", timeout: 120_000, windowsHide: true });
