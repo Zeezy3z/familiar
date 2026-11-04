@@ -30,6 +30,7 @@
   .portrait { width: 56px; height: 56px; flex: none; border-radius: 50%; box-shadow: 0 0 0 1px var(--line); }
   .ver { color: var(--muted); }
   #vermismatch[hidden] { display: none; }
+  #vermismatch { text-shadow: var(--shadow); } /* stays crisp over the painted header band */
   #build-id { box-sizing: border-box; width: 100%; background: var(--bg); border: 1px solid var(--line); color: var(--text); padding: calc(var(--u)*1.2); font: var(--fs-sm) var(--mono); }
   main { padding: calc(var(--u)*2.4) calc(var(--u)*3.6); display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: calc(var(--u)*2.4); max-width: 1000px; margin: auto; }
   .card { background: var(--card); border: 1px solid var(--line-soft); border-radius: 4px; padding: calc(var(--u)*2) calc(var(--u)*2.4); }

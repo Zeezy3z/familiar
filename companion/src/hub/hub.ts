@@ -223,9 +223,9 @@ export function setFontScale(cur: number, arg = ""): number | undefined {
   return Math.round(Math.min(FONT_MAX, Math.max(FONT_MIN, s)) * 10) / 10;
 }
 
-/** The six sound cues (round 6 §3, pinned). Lane G's `src/shared/cues.ts` owns this union; until it
- * is on main the same union lives here, to become `import type { Cue } from "../shared/cues"`. */
-export type Cue = "accepted" | "approval" | "approved" | "done" | "reply" | "error";
+/** The six sound cues (round 6); `src/shared/cues.ts` owns the union and the scores. */
+import type { Cue } from "../shared/cues";
+export type { Cue };
 
 /** What main sends the Glass for a cue (IPC "sound"): nothing while Sounds is off; `volume` is the
  * master gain 0..1 (soundVolume / 100, a hand-edited value held to clampVolume's rule). */
