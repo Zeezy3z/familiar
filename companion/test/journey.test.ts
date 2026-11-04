@@ -107,6 +107,15 @@ describe("the familiar's voice and portrait", () => {
     expect(at({ ...linked, providers: [], backends: {}, claude: { state: "failed" } })).toBe("idle");
     expect(at({ ...linked, linked: false, layout: null, work: { working: 2 } })).toBe("puzzled"); // an unlinked game is not "working"
   });
+  it("asks while a request waits on a finished journey, ahead of work; an undone Link step still puzzles it", () => {
+    expect(portraitFor({ work: { working: 1, approvals: 1 } }, -1)).toBe("asking");
+    expect(portraitFor({ work: { approvals: 1 } }, 2)).toBe("puzzled");
+    expect(portraitFor({ work: { approvals: 2 } }, 1)).toBe("idle"); // the WoW step undone: no request can be on screen
+    expect(portraitFor({ work: { approvals: 0, working: 1 } }, -1)).toBe("working");
+    expect(portraitFor({ work: { approvals: 1 }, claude: { state: "downloading" } }, -1)).toBe("asking");
+    const at = (s: Parameters<typeof journey>[0]) => portraitFor(s, journey(s).current);
+    expect(at({ ...linked, work: { working: 0, approvals: 2 } })).toBe("asking");
+  });
 });
 
 describe("the step strip's one-line hints", () => {

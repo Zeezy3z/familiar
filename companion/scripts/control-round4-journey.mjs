@@ -63,6 +63,17 @@ export async function controlRound4Journey(page, origin, width, snapshot = async
   check('portrait: back to idle when nothing is running', await face() === 'idle-192.png');
   await status({ game: null });
   check('portrait: waiting for WoW is still idle, in the familiar\'s voice', await face() === 'idle-192.png' && await title() === "I'm waiting for WoW.");
+  // Round 7: a request waiting on a finished journey makes it ask (assets/asking-192.png, lane A's art). A build
+  // without that picture falls back to idle, once, and never shows a broken image.
+  await open();
+  const asking = await page.evaluate(() => fetch('assets/asking-192.png').then(r => r.ok, () => false));
+  await status({ 'work.approvals': 1, 'work.working': 1 });
+  await page.waitForFunction(() => { const i = document.getElementById('portrait'); return i.complete && i.naturalWidth > 0; });
+  now = await portrait();
+  check(`portrait: a waiting request makes it ask${asking ? '' : ' (no asking picture in this build: idle, loaded)'}`, (asking ? now.src === 'assets/asking-192.png' : now.src === 'assets/idle-192.png') && now.loaded);
+  await status({ 'work.approvals': 0 });
+  await page.waitForFunction(() => document.getElementById('portrait').getAttribute('src') === 'assets/working-192.png');
+  check('portrait: answered, it goes back to work', await face() === 'working-192.png');
   await open();
 
   // ---- Link Doctor and "Save what Familiar sees" ----

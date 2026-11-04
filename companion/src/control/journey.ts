@@ -19,7 +19,7 @@ export interface JourneyStatus {
   chat?: { agent?: string };
   doctor?: DoctorStatus | null;
   claude?: ClaudeStatus | null;
-  work?: { working?: number } | null;
+  work?: { working?: number; approvals?: number } | null;
 }
 
 /** The Claude row of the Familiars card (and step 1) while Claude Code is not on disk; null once it is there. */
@@ -39,11 +39,14 @@ export function claudeLine(c?: ClaudeStatus | null): { state: "missing" | "downl
   return null;
 }
 
-/** Which painted portrait the header shows (dist/assets/<name>-192.png); `current` is journey().current. */
-export function portraitFor(s: JourneyStatus, current: number): "idle" | "working" | "puzzled" {
+/** Which painted portrait the header shows (dist/assets/<name>-192.png); `current` is journey().current. A request
+ * waiting on the player outranks work in progress: the familiar is asking. */
+export function portraitFor(s: JourneyStatus, current: number): "idle" | "working" | "puzzled" | "asking" {
+  const count = (n: unknown) => (typeof n === "number" && n > 0 ? n : 0);
   if (current === 2) return "puzzled"; // the Link step is the one undone
+  if (current === -1 && count(s.work?.approvals)) return "asking";
   if (claudeLine(s.claude)?.state === "downloading") return "working";
-  if (current === -1 && typeof s.work?.working === "number" && s.work.working > 0) return "working";
+  if (current === -1 && count(s.work?.working)) return "working";
   return "idle";
 }
 

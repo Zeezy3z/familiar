@@ -25,8 +25,7 @@ function render(s: any) {
   $("journey-title").className = j.level;
   text("journey-text", j.text);
   $("journey-text").className = "textLevel" in j && j.textLevel ? j.textLevel : "";
-  const portrait = `assets/${portraitFor(s, j.current)}-192.png`;
-  if ($("portrait").getAttribute("src") !== portrait) $("portrait").setAttribute("src", portrait);
+  showPortrait(portraitFor(s, j.current));
   // One line per step; the whole sentence is its title, and what a screen reader hears.
   const steps = j.steps.map((step, i) => `<li${i === j.current ? ' class="cur" aria-current="step"' : ""}><b class="${step.done ? "ok" : ""}">${i + 1} ${esc(step.label)}${step.done ? " ✓" : ""}</b><span class="hint" title="${esc(step.text)}" aria-hidden="true">${esc(j.hints[i])}</span><span class="sr">${esc(step.text)}</span></li>`).join("");
   if ($("journey-steps").dataset.html !== steps) { $("journey-steps").dataset.html = steps; $("journey-steps").innerHTML = steps; }
@@ -103,6 +102,20 @@ function render(s: any) {
   ($("onboard") as HTMLElement).hidden = !!s.providersChosen;
   $("notes").innerHTML = (s.installNotes ?? []).map((n: string) => `<li>${esc(n)}</li>`).join("");
 }
+
+// The header portrait. A face whose picture is missing (an older or partial build) falls back to idle, once.
+const missingFaces = new Set<string>();
+function showPortrait(face: string) {
+  const img = $("portrait") as HTMLImageElement;
+  const src = `assets/${missingFaces.has(face) ? "idle" : face}-192.png`;
+  if (img.getAttribute("src") !== src) img.setAttribute("src", src);
+}
+$("portrait").addEventListener("error", () => {
+  const face = /assets\/([a-z]+)-192\.png$/.exec($("portrait").getAttribute("src") ?? "")?.[1];
+  if (!face || face === "idle" || missingFaces.has(face)) return;
+  missingFaces.add(face);
+  showPortrait(face);
+});
 
 // The Familiars card's Status rows: what each enabled familiar's backend says right now, and the quest count.
 function statusRows(s: any): [string, string, string][] {
