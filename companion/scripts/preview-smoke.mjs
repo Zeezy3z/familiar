@@ -7,6 +7,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { rendererUpdateJourney } from './renderer-update-journey.mjs';
+import { glassRound3Journey } from './glass-round3-journey.mjs';
 
 if (process.env.GITHUB_ACTIONS !== 'true') throw new Error('Run this browser smoke on GitHub Actions only.');
 if (!process.env.FAMILIAR_QA_MODULE) throw new Error('FAMILIAR_QA_MODULE must point to the pinned Playwright installation.');
@@ -952,6 +953,8 @@ try {
   for (const [name, passed] of Object.entries(await rendererUpdateJourney(page))) check(`entry updates: ${name}`, passed);
   await focusJourney();
   await overlayStorageJourney();
+  await page.setViewportSize({ width: 1280, height: 800 });
+  for (const [name, passed] of Object.entries(await glassRound3Journey(page, origin))) check(`glass round 3: ${name}`, passed);
   check('No renderer errors or external requests', report.errors.length === 0);
   report.status = 'passed';
 } catch (error) {
