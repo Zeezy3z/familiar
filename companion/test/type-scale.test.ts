@@ -31,24 +31,8 @@ function fontSizes(text: string) {
   return out;
 }
 
-// TODO(r7-G): the overlay.css sizes lane G is replacing in its type sweep (round 7 §2.4), each with the number of
-// times it occurs today. Delete this list when G merges; the test is otherwise as strict for overlay.css as for
-// control.html. A new occurrence fails, and so does an entry that occurs fewer times than listed.
-const TODO_R7_G: Record<string, number> = {
-  "font-size: 0.9em": 3, // .catch-promise, .catch-meta, .tl-h .s
-  "font-size: calc(var(--row-font) * 1.05)": 2, // .pane-title, .row.header
-  "font-size: 1.25em": 3, // .row .st/.ti, .md h1, .welcome .hint.offer::before
-  "font-size: 0.75em": 1, // .qtitle .ag
-  "font-size: 1.15em": 1, // .md h2
-  "font-size: 1.05em": 1, // .md h3, .md h4
-  "font-size: 0.92em": 2, // .md code, .md table
-  "font-size: 0.88em": 1, // .md pre.code
-  "font-size: calc(var(--fs-sm) * 0.95)": 2, // .tout, .tl-a
-  "font-size: .9em": 1, // .chip
-  "font-size: calc(var(--mini) * .34)": 1, // the minimap badge glyph
-  "font-size: 0.62em": 1, // .toast .sub
-};
-const allowList: Record<Name, Record<string, number>> = { "overlay.css": TODO_R7_G, "control.html": {} };
+// Sizes a file may still use outside the rule, by count. Empty: lane G's type sweep removed the last ones (round 7).
+const allowList: Record<Name, Record<string, number>> = { "overlay.css": {}, "control.html": {} };
 
 const TOKENS: Record<Name, Record<string, string>> = {
   "overlay.css": { "--fs-sm": "var(--small-font)", "--fs-md": "var(--body-font)", "--fs-lg": "calc(var(--body-font)*1.25)", "--fs-xl": "calc(var(--body-font)*1.7)" },

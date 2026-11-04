@@ -30,24 +30,24 @@ const snapshot = async name => {
   report.screenshots.push(`${name}.png`);
 };
 const check = (name, condition) => { assert.ok(condition, name); report.checks.push(name); console.log(`PASS ${name}`); };
-// Find a visible control, normalize its point to the detail region, then invoke the exact
-// incoming-addon path. elementFromPoint in overlay.ts still decides which action is hit.
-async function point(selector) {
-  return page.locator(selector).evaluate(el => {
-    const r = document.getElementById('detail').getBoundingClientRect();
+// Find a visible control, normalize its point to its region (the detail pane unless told otherwise), then invoke
+// the exact incoming-addon path. elementFromPoint in overlay.ts still decides which action is hit.
+async function point(selector, region = 'detail') {
+  return page.locator(selector).evaluate((el, region) => {
+    const r = document.getElementById(region).getBoundingClientRect();
     const b = el.getBoundingClientRect();
     const x = b.left + b.width / 2, y = b.top + b.height / 2;
     if (x < r.left || x >= r.right || y < r.top || y >= r.bottom || document.elementFromPoint(x, y)?.closest('[data-act]') !== el)
       throw new Error(`Control is clipped or covered: ${el.textContent}`);
-    return { t: 'click', r: 'detail', x: (x - r.left) / r.width, y: (y - r.top) / r.height, b: 'L' };
-  });
+    return { t: 'click', r: region, x: (x - r.left) / r.width, y: (y - r.top) / r.height, b: 'L' };
+  }, region);
 }
-async function click(selector, count = 1) {
-  const event = await point(selector);
+async function click(selector, count = 1, region = 'detail') {
+  const event = await point(selector, region);
   const hits = await page.evaluate(({ event, count }) => {
     const hits = [];
     for (let i = 0; i < count; i++) {
-      const r = document.getElementById('detail').getBoundingClientRect();
+      const r = document.getElementById(event.r).getBoundingClientRect();
       const hit = document.elementFromPoint(r.left + event.x * r.width, r.top + event.y * r.height);
       const before = window.preview.calls.length;
       window.preview.emit('input', event);
@@ -806,14 +806,22 @@ try {
     for (const scenario of ['welcome', 'welcome-unready']) {
       await open(scenario, narrow);
       const text = await page.locator('#content').textContent();
+      const bar = await page.locator('#status').textContent();
       const initial = await page.evaluate(() => ({ chat: window.preview.model.detail.chat, calls: window.preview.calls, state: window.preview.state.chat }));
       check(`${size}/${scenario}: task-first choices appear in order`, text.indexOf('Ask a game question') < text.indexOf('Work on a project') && text.indexOf('Work on a project') < text.indexOf('Continue a conversation'));
       check(`${size}/${scenario}: starts at the first choice`, await page.locator('#detail-scroll').evaluate(el => el.scrollTop < 2));
-      check(`${size}/${scenario}: provider and model are visible before opening`, text.includes(initial.chat.label) && text.includes(initial.chat.model) && text.includes(initial.chat.status));
+      // Round 7 (deliberate): was "provider and model are visible before opening" (the welcome's own text named the Chat
+      // provider, model and status). Now: the status bar names the Chat provider and its state before opening; the model is
+      // named on the draft (checked below, "draft names its provider and model").
+      check(`${size}/${scenario}: the Chat provider and its readiness are visible before opening (status bar)`, bar.includes(initial.chat.label)
+        && (scenario === 'welcome' ? bar.includes(`${initial.chat.label} ✓`) : !bar.includes(`${initial.chat.label} ✓`)));
       check(`${size}/${scenario}: no automatic action`, initial.calls.length === 0);
+      // Round 7 (deliberate): the unready branch was the welcome's own per-familiar lines ("switched off", "not ready: Sign in
+      // required", "Hermes"); those moved to the status bar (Claude off · Codex ✗ · Hermes ✓), with the Chat row's own line.
       check(`${size}/${scenario}: link and readiness are truthful`, scenario === 'welcome'
-        ? text.includes('Linked to Preview Rogue.')
-        : text.includes('Waiting for the game link.') && text.includes('switched off') && text.includes('not ready: Sign in required') && text.includes('Hermes'));
+        ? text.includes('Linked to Preview Rogue.') && bar.includes('Claude ✓') && bar.includes('Codex ✓')
+        : text.includes('Waiting for the game link.') && bar.includes('Claude off') && bar.includes('Codex ✗') && bar.includes('Hermes ✓')
+          && text.includes('Chat uses Claude or Codex'));
       if (scenario === 'welcome-unready') check(`${size}/${scenario}: Chat choices are distinct from project-ready providers`, text.includes('Chat uses Claude or Codex'));
       const projectText = await page.locator('.welcome-project').textContent();
       check(`${size}/${scenario}: project starters reflect ready providers`, scenario === 'welcome'
@@ -821,12 +829,17 @@ try {
         : projectText.includes('/fam hermes') && !projectText.includes('+ Claude') && !projectText.includes('+ Codex'));
       check(`${size}/${scenario}: no transcript-only Latest control`, await page.locator('#latest').evaluate(el => getComputedStyle(el).display === 'none'));
       await snapshot(`${size}-${scenario}`);
-      await click('.welcome-chat .btn');
+      // Round 7 (deliberate): with Chat not ready the welcome has no + Chat (§2.1); its draft is still reached the other
+      // existing way, the Quest Log's Chats row ("Ask anything: + Chat or /fam ask"), through the same newIn action.
+      check(`${size}/${scenario}: + Chat only while Chat is ready`, await page.locator('.welcome-chat .btn').count() === (scenario === 'welcome' ? 1 : 0));
+      if (scenario === 'welcome') await click('.welcome-chat .btn');
+      else await click(`#list ${action('newIn')}[data-act*='"key":"chats"']:not(.zone)`, 1, 'list');
       const draft = await page.evaluate(() => ({ detail: window.preview.model.detail, calls: window.preview.calls, state: window.preview.state.chat }));
       check(`${size}/${scenario}: Chat opens only the configured draft`, draft.detail.kind === 'draft' && draft.detail.agent === initial.chat.id && draft.detail.model === initial.chat.model && draft.detail.chat === true);
       check(`${size}/${scenario}: uses only the existing draft action`, draft.calls.length === 1 && draft.calls[0].type === 'newIn' && draft.calls[0].key === 'chats');
       check(`${size}/${scenario}: opening keeps chat defaults`, JSON.stringify(draft.state) === JSON.stringify(initial.state));
       check(`${size}/${scenario}: draft retains readiness and model guidance`, (await page.locator('#content').textContent()).includes(draft.detail.provider.status) && (await page.locator('#content').textContent()).includes('Model'));
+      check(`${size}/${scenario}: draft names its provider and model`, (await page.locator('#content .sub').first().textContent()).startsWith(`${initial.chat.label} · ${initial.chat.model}`));
       if (scenario === 'welcome-unready') check(`${size}/${scenario}: unready draft names Chat choices`, (await page.locator('#content').textContent()).includes('Chat uses Claude or Codex'));
       check(`${size}/${scenario}: draft fits pane width`, await page.locator('#detail-scroll').evaluate(el => el.scrollWidth <= el.clientWidth + 1));
       await snapshot(`${size}-${scenario}-chat-draft`);
