@@ -20,6 +20,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 if (!process.env.FAMILIAR_QA_MODULE) throw new Error("FAMILIAR_QA_MODULE must point to a Playwright installation (…/playwright/index.mjs).");
 const { chromium } = await import(pathToFileURL(process.env.FAMILIAR_QA_MODULE).href);
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+const VERSION = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version;
 const arg = (name) => { const i = process.argv.indexOf(name); return i > 0 ? process.argv[i + 1] : undefined; };
 const outDir = resolve(arg("--out") ?? process.env.FAMILIAR_MEDIA_OUT ?? join(root, "..", "docs", "media"));
 const wantGif = process.argv.includes("--gif");
@@ -278,9 +279,10 @@ async function controlScene(page) {
   const frame = page.frames().find((f) => f.url().includes("control.html") && f !== page.mainFrame());
   await frame.waitForFunction(() => window.preview && document.getElementById("journey-title")?.textContent);
   await frame.evaluate(() => document.fonts.ready);
-  // The fixture's version string says 0.1.0; show what this release is, still marked as sample data.
-  await frame.evaluate(() => { window.preview.state.version = "0.2.0 · sample data"; window.preview.emit("status", window.preview.state); });
-  await frame.waitForFunction(() => document.body.textContent.includes("0.2.0 · sample data"), null, { timeout: 5000 });
+  // The fixture's version string is a stand-in; show what this release is (companion/package.json), still marked as sample data.
+  const shown = `${VERSION} · sample data`;
+  await frame.evaluate((v) => { window.preview.state.version = v; window.preview.emit("status", window.preview.state); }, shown);
+  await frame.waitForFunction((v) => document.body.textContent.includes(v), shown, { timeout: 5000 });
   await page.waitForTimeout(600);
   return { W: W2, H: H2 };
 }
