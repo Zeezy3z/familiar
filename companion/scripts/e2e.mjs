@@ -14,7 +14,10 @@ const get = async (p) => (await fetch(C + p, { headers: auth(47810) })).json();
 const post = async (p, body) => (await fetch(C + p, { method: "POST", headers: auth(47810), body: typeof body === "string" ? body : JSON.stringify(body) })).json();
 const fake = async (js) => (await fetch(F, { method: "POST", headers: auth(47811), body: js })).json();
 const send = (msg) => fake(`fake.send(${JSON.stringify(msg)}, true); 1`);
+// A key as the addon sends it (src + view; FakeWoW's fake.key), not a bare { t: "key" }.
+const key = (k, src = "button") => fake(`fake.key(${JSON.stringify(k)}, ${JSON.stringify(src)}); 1`);
 const ROW = 19.2;
+const startedAt = new Date().toISOString();
 const results = [];
 async function check(name, fn) {
   try {
@@ -82,8 +85,20 @@ await check("link is up", async () => {
   assert(s.capture.crc === 0, `crc errors: ${s.capture.crc}`);
 });
 
+// The Glass ignores clicks while it is hidden (FakeWoW not the foreground window), so every click
+// check below would fail for that reason alone, and later prompts would reach whatever quest is
+// selected. Stop here instead.
+await check("the Glass is showing over FakeWoW (FakeWoW is the foreground window)", async () => {
+  const s = await get("/status");
+  assert(s.game?.foreground && s.overlay?.shown, `foreground ${s.game?.foreground}, Glass shown ${s.overlay?.shown}: bring FakeWoW to the front and run again`);
+});
+if (results.at(-1)[0] === "FAIL") {
+  for (const r of results) console.log(r.join("  "));
+  process.exit(1);
+}
+
 await check("Back returns to the quest log", async () => {
-  await send({ t: "key", k: "back" });
+  await key("back");
   assert(await until(async () => (await model()).list.title === "Quest Log"), "still not on quest log");
 });
 
@@ -94,12 +109,12 @@ await check("right-click a zone starts a draft there", async () => {
   const d = await until(async () => ((await model()).detail.kind === "draft" ? (await model()).detail : null));
   assert(d, "no draft");
   assert(d.project === m.list.rows[zoneIdx].text, `draft zone ${d.project} != ${m.list.rows[zoneIdx].text}`);
-  await send({ t: "key", k: "back" });
+  await key("back");
   await until(async () => (await model()).list.title === "Quest Log");
 });
 
 await check("mode from the game needs a physical click (a synthetic one is refused)", async () => {
-  await send({ t: "key", k: "newClaude" });
+  await key("newClaude");
   await until(async () => (await model()).list.title === "New Quest");
   // The picker may start with one row per agent (when more than Claude and Codex are installed).
   await clickRow((await model()).list.rows.findIndex((r) => r.kind === "project"));
@@ -107,11 +122,11 @@ await check("mode from the game needs a physical click (a synthetic one is refus
   try {
     const before = (await model()).detail.mode;
     // FakeWoW's clicks are not physical mouse input, so physical.ts must refuse this (and say so).
-    await send({ t: "key", k: "mode" });
+    await key("mode");
     await new Promise((r) => setTimeout(r, 1500));
     assert((await model()).detail.mode === before, "mode changed without physical input");
   } finally {
-    await send({ t: "key", k: "back" });
+    await key("back");
     await until(async () => (await model()).list.title === "Quest Log");
   }
 });
@@ -148,7 +163,7 @@ await check("wheel scrolls the details pane", async () => {
 await check("a cut request is never approved from the game, even by a corroborated click", async () => {
   // The tutorial quest needs no agent. The token-gated /action hook stands in for a corroborated
   // card click (main hands the Hub TRUSTED proof for it); only the control panel may approve this.
-  await send({ t: "key", k: "tutorial" });
+  await key("tutorial");
   const quest = await until(async () => (await get("/threads")).find((x) => x.agent === "familiar"));
   assert(quest, "no tutorial quest");
   const full = "echo " + "x".repeat(5000);
@@ -170,7 +185,7 @@ await check("a cut request is never approved from the game, even by a corroborat
 await check("a request shown whole in game is listed for the control panel too (not cut)", async () => {
   // Deciding it there is the control window's own IPC only (no dev hook reaches "decide" with the
   // panel origin); hub.test.ts covers the decision. This checks what main serves the panel.
-  await send({ t: "key", k: "tutorial" });
+  await key("tutorial");
   const quest = await until(async () => (await get("/threads")).find((x) => x.agent === "familiar"));
   assert(quest, "no tutorial quest");
   const requestId = `e2e-short-${Date.now()}`;
@@ -196,6 +211,7 @@ await check("Save what Familiar sees: a PNG of at most 320x32 px with the strip'
 });
 
 if (process.argv.includes("--agents")) {
+  let claudeId;
   await check("Claude quest resumes after a companion restart and answers", async () => {
     const m = await model();
     const idx = m.list.rows.findIndex((r) => r.kind === "thread" && r.agent === "claude");
@@ -204,7 +220,7 @@ if (process.argv.includes("--agents")) {
     await clickRow(idx);
     const ok = await until(async () => (await model()).detail.id === want);
     assert(ok, "quest not selected");
-    const id = want;
+    const id = (claudeId = want);
     await send({ t: "prompt", text: "Reply with exactly the word: resumed" });
     const t = await until(async () => {
       const th = (await get("/threads")).find((x) => x.id === id);
@@ -214,10 +230,13 @@ if (process.argv.includes("--agents")) {
   });
 
   await check("Stop interrupts a running Claude turn", async () => {
+    // Only into the Claude quest the check above selected: a prompt to another selection (the
+    // tutorial, say) would start something else, and a turn that never ran proves nothing.
     const id = (await model()).detail.id;
+    assert(claudeId && id === claudeId, `selected ${id}, not the Claude quest ${claudeId}`);
     await send({ t: "prompt", text: "Count slowly from 1 to 400, one number per line." });
-    await until(async () => (await get("/threads")).find((x) => x.id === id)?.status === "running", 20000, 500);
-    await send({ t: "key", k: "stop" });
+    assert(await until(async () => (await get("/threads")).find((x) => x.id === id)?.status === "running", 20000, 500), "the turn never started");
+    await key("stop");
     const t = await until(async () => {
       const th = (await get("/threads")).find((x) => x.id === id);
       return th && th.status !== "running" ? th : null;
@@ -226,6 +245,18 @@ if (process.argv.includes("--agents")) {
   });
 }
 
+// Evidence for the run record: the capture path and link numbers, and how main judged each click
+// and key from the game (corroborated / unverified: <why> / refused).
+const s = await get("/status");
+console.log(`capture: mode ${s.capture.mode}, fps ${s.capture.fps}, frames ${s.capture.frames}, decoded ${s.capture.decoded}, crc ${s.capture.crc}, missed ${s.capture.missed}`);
+try {
+  const lines = readFileSync(s.logPath, "utf8").split(/\r?\n/);
+  const pick = (re) => lines.filter((l) => re.test(l)).map((l) => "  " + l.slice(0, 200));
+  console.log(pick(/\[capture\] (start |no Runestrip lock|screen capture found)/).slice(-1).join("\n"));
+  console.log(pick(/corroborated|unverified: |refused/).filter((l) => l.slice(2, 26) >= startedAt).join("\n"));
+} catch (e) {
+  console.log(`(log not read: ${e?.message ?? e})`);
+}
 for (const r of results) console.log(r.join("  "));
 const failed = results.filter((r) => r[0] === "FAIL").length;
 console.log(`\n${results.length - failed}/${results.length} passed`);
