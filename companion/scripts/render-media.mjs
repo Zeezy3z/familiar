@@ -23,7 +23,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const arg = (name) => { const i = process.argv.indexOf(name); return i > 0 ? process.argv[i + 1] : undefined; };
 const outDir = resolve(arg("--out") ?? process.env.FAMILIAR_MEDIA_OUT ?? join(root, "..", "docs", "media"));
 const wantGif = process.argv.includes("--gif");
-const origin = "http://127.0.0.1:47812";
+const origin = `http://127.0.0.1:${Number(process.env.FAMILIAR_PREVIEW_PORT) || 47812}`; // the spawned preview server inherits the same variable
 const BUDGET = 6 * 1024 * 1024; // docs/media total (round 4 §3.5)
 mkdirSync(outDir, { recursive: true });
 

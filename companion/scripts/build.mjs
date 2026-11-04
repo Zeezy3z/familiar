@@ -1,7 +1,7 @@
 // Bundles the companion: main + per-window preloads (node/cjs), renderers (browser/iife), and copies static files.
 //   node scripts/build.mjs [out dir, default dist/]
 import { build } from "esbuild";
-import { cpSync, mkdirSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -28,6 +28,9 @@ for (const f of ["overlay/overlay.html", "overlay/overlay.css", "capture/capture
   cpSync(join(root, "src", f), join(dist, f.split("/")[1]));
 }
 cpSync(join(root, "node_modules/@fontsource/marcellus/files/marcellus-latin-400-normal.woff2"), join(dist, "assets/marcellus-latin-400-normal.woff2"));
+// The familiar's painted face and the Quest Complete seals (src/assets/*.png): one file per
+// expression, sized by CSS. Everything in src/assets ships; test/build.test.mjs pins the list and the 1 MB budget.
+for (const f of readdirSync(join(root, "src/assets")).filter((n) => n.endsWith(".png"))) cpSync(join(root, "src/assets", f), join(dist, "assets", f));
 // Tray icon: hand-tuned 16 px art plus a 32 px @2x that Electron picks on high-DPI displays.
 cpSync(join(root, "..", "docs/media/icon-tray-16.png"), join(dist, "assets/tray.png"));
 cpSync(join(root, "..", "docs/media/icon-tray-32.png"), join(dist, "assets/tray@2x.png"));

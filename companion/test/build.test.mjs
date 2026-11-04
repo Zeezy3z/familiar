@@ -351,6 +351,29 @@ describe("dist/claude-pins.json", () => {
   }, 120_000);
 });
 
+// The painted art the Glass (and the control panel) load by relative path "assets/<name>": the
+// real build script into a temp folder. One file per expression, sized by CSS; the budget is round 5 §2.5.
+describe("dist/assets", () => {
+  const PNGS = { "idle-192.png": 192, "working-192.png": 192, "asleep-192.png": 192, "puzzled-192.png": 192, "seal-128.png": 128, "seal-cracked-128.png": 128,
+    "tray.png": 16, "tray@2x.png": 32 };
+  it("the build ships the six painted PNGs beside the tray icon, each the size named, and no other image, under 1 MB", () => {
+    const out = mkdtempSync(join(tmpdir(), "familiar-assets-"));
+    fixtures.push(out);
+    const companionDir = fileURLToPath(new URL("..", import.meta.url));
+    execFileSync(process.execPath, [join(companionDir, "scripts/build.mjs"), out], { cwd: companionDir, stdio: "ignore" });
+    const assets = join(out, "assets");
+    const pngs = readdirSync(assets).filter((f) => /\.(png|jpe?g|gif|webp|svg|tga)$/i.test(f)).sort(); // nothing but these (header-banner.png never ships)
+    expect(pngs).toEqual(Object.keys(PNGS).sort());
+    for (const [name, size] of Object.entries(PNGS)) {
+      const bytes = readFileSync(join(assets, name));
+      expect(bytes.subarray(1, 4).toString(), name).toBe("PNG");
+      expect([bytes.readUInt32BE(16), bytes.readUInt32BE(20)], name).toEqual([size, size]); // IHDR width, height
+    }
+    expect(pngs.reduce((n, f) => n + statSync(join(assets, f)).size, 0)).toBeLessThanOrEqual(1024 * 1024);
+    expect(existsSync(join(assets, "marcellus-latin-400-normal.woff2"))).toBe(true);
+  }, 120_000);
+});
+
 // The shipped preload options (inline sourcemap included), bundled into a temp folder, never dist/.
 describe("per-window preloads", () => {
   it("bundle, and only the control panel's exposes invoke / the cmd channel", async () => {
