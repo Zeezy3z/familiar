@@ -527,7 +527,7 @@ function entryHtml(e: EntryView, threadId: string, agent: string, cwd: string): 
       return `<div class="body md"${revealAct}>${md(e.text)}${e.streaming ? '<span class="caret">▍</span>' : ""}</div>`;
     case "tool": {
       const icon = e.status === "running" ? "◌" : e.status === "error" ? "✗" : "✓";
-      return `<div class="tool-line" data-act="${attr({ type: "tool", id: e.id })}"><span class="ti ${e.status}">${e.status === "unknown" ? "?" : icon}</span> <b>${esc(e.name ?? "tool")}</b> <span class="tsum">${esc(e.text)}</span>${e.status === "unknown" ? '<span class="outcome-unknown">Outcome unknown — check the folder before resending</span>' : ""}</div>${e.expanded && e.output ? `<pre class="tout">${diffHtml(e.output)}</pre>` : ""}`;
+      return `<div class="tool-line" data-act="${attr({ type: "tool", id: e.id })}"><span class="ti ${e.status}">${e.status === "unknown" ? "?" : icon}</span> <b>${esc(e.name ?? "tool")}</b> <span class="tsum">${esc(e.text)}</span>${e.status === "unknown" ? '<span class="outcome-unknown">Outcome unknown — check the folder before resending</span>' : ""}</div>${e.expanded && e.output ? `<div class="tout-veil"><pre class="tout">${diffHtml(e.output)}</pre></div>` : ""}`;
     }
     case "approval": {
       const pending = e.approval === "pending";
@@ -671,7 +671,13 @@ function render() {
   renderTracker(model.tracker);
   renderToasts(model);
   document.body.classList.toggle("blur", blurOn());
-  els.status.textContent = model.status.text + (model.quiet ? " · Alerts muted (/fam quiet off)" : "") + (blurOn() ? " · Stream-safe on" : model.private ? " · Hide names on" : "");
+  // The status words, then what is switched on as chips (Stream-safe wins over Hide names: it hides names too).
+  const chips = [model.quiet ? "Alerts muted (/fam quiet off)" : "", blurOn() ? "Stream-safe on" : model.private ? "Hide names on" : ""].filter(Boolean);
+  const statusHtml = `<span class="st-text">${esc(model.status.text)}</span>` + chips.map((chip) => `<span class="chip">${esc(chip)}</span>`).join("");
+  if (els.status.dataset.sig !== statusHtml) {
+    els.status.innerHTML = statusHtml;
+    els.status.dataset.sig = statusHtml;
+  }
   const keys = keysOf(model);
   const modeHtml = keys?.mode ? `<span>${esc(keys.mode)}</span>` : "";
   if (els.modeLabel.innerHTML !== modeHtml) els.modeLabel.innerHTML = modeHtml;

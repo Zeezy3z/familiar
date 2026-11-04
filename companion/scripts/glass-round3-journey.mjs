@@ -142,15 +142,28 @@ export async function glassRound3Journey(page, origin) {
   const blur = () => page.evaluate(() => {
     const f = sel => { const el = document.querySelector(sel); return el ? getComputedStyle(el).filter : 'missing'; };
     return { body: document.body.classList.contains('blur'), reply: f('.entry.assistant .body'), you: f('.entry.user .body'), tool: f('.tool-line .tsum'), obj: f('.obj'),
-      tracker: f('.tl-a'), preview: f('.approval-preview'), card: f('.entry.approval .card'), title: f('.qtitle'), status: document.getElementById('status').textContent };
+      tracker: f('.tl-a'), preview: f('.approval-preview'), card: f('.entry.approval .card'), title: f('.qtitle'), status: document.getElementById('status').textContent,
+      words: document.querySelector('#status .st-text')?.textContent, chips: [...document.querySelectorAll('#status .chip')].map(c => c.textContent) };
   });
   const b = await blur();
   check('stream-safe: replies, your messages, tools, objectives and tracker are blurred', b.body && [b.reply, b.you, b.tool, b.obj, b.tracker].every(v => v.startsWith('blur(')));
   check('stream-safe: the approval card and titles stay readable', b.preview === 'none' && b.card === 'none' && b.title === 'none');
-  check('stream-safe: status says Stream-safe on', b.status.endsWith(' · Stream-safe on') && !b.status.includes('Hide names on'));
+  check('stream-safe: status says Stream-safe on, as a chip after the words (round 6: it was a " · Stream-safe on" suffix)', b.chips.join() === 'Stream-safe on' && b.words === 'Linked · Claude ready · Codex ready' && !b.status.includes('Hide names on')
+    && await page.evaluate(() => { const c = document.querySelector('#status .chip').getBoundingClientRect(), s = document.getElementById('status').getBoundingClientRect(); return c.left >= s.left && c.right <= s.right; }));
+  // Round 6 §2.3: a violet gauze with a gold edge over the blurred text. The veil is the entry's own ::after, outside the filtered text.
+  const veil = sel => page.evaluate(sel => { const el = document.querySelector(sel); if (!el) return null; const cs = getComputedStyle(el, '::after');
+    return { content: cs.content, opacity: cs.opacity, border: cs.borderTopWidth, edge: cs.borderTopColor, pos: cs.position, events: cs.pointerEvents, bg: cs.backgroundImage, w: parseFloat(cs.width), h: parseFloat(cs.height),
+      entryW: el.clientWidth, entryH: el.clientHeight, ownFilter: getComputedStyle(el).filter }; }, sel);
+  let v = await veil('.entry.assistant');
+  check("curtain: the reply's veil is on the entry: opaque, a 1 px gold edge, the whole entry, inert, and not itself blurred", v.content === '""' && v.opacity === '1' && v.border === '1px' && v.edge === 'rgba(201, 162, 39, 0.4)'
+    && v.pos === 'absolute' && v.events === 'none' && v.bg.startsWith('linear-gradient(') && v.bg.includes('rgba(44, 26, 70, 0.55)') && Math.abs(v.w - v.entryW) < 1.5 && Math.abs(v.h - v.entryH) < 1.5 && v.ownFilter === 'none');
+  check('curtain: your message and the objectives carry the veil too', (await veil('.entry.user')).opacity === '1' && (await veil('.entry.user')).content === '""' && (await veil('.objectives')).content === '""' && (await veil('.objectives')).opacity === '1');
+  const approvalVeil = await veil('.entry.approval');
+  check('curtain: nothing is drawn over the approval card, which stays unblurred', approvalVeil.content === 'none' && b.preview === 'none' && b.card === 'none');
   const revealCalls = await click('.entry.assistant .body');
   check('stream-safe: a click reveals that reply only, with no action', revealCalls.length === 0 && await page.evaluate(() =>
     getComputedStyle(document.querySelector('.entry.assistant .body')).filter === 'none' && getComputedStyle(document.querySelector('.entry.user .body')).filter.startsWith('blur(')));
+  check("curtain: a reveal lifts that reply's veil and no other", (await veil('.entry.assistant')).opacity === '0' && (await veil('.entry.user')).opacity === '1' && (await veil('.objectives')).opacity === '1');
   await push();
   check('stream-safe: a model push keeps the reveal', await page.locator('.entry.assistant.revealed').count() === 1);
   await page.waitForFunction(() => !document.querySelector('.entry.revealed'), null, { timeout: 10000 }).catch(() => {});
@@ -158,7 +171,32 @@ export async function glassRound3Journey(page, origin) {
   await push(() => { window.preview.model.blur = false; });
   check('stream-safe: off removes the blur and the reveal control', await page.evaluate(() => !document.body.classList.contains('blur')
     && getComputedStyle(document.querySelector('.entry.assistant .body')).filter === 'none' && !document.querySelector('.entry.assistant .body[data-act]'))
-    && (await page.locator('#status').textContent()).endsWith(' · Hide names on'));
+    && (await blur()).chips.join() === 'Hide names on'); // round 6: a chip, it was a " · Hide names on" suffix
+  v = await veil('.entry.assistant');
+  check('curtain: with Stream-safe off there is no veil and no Stream-safe chip (Hide names alone is a chip, not a curtain)', v.content === 'none' && (await veil('.objectives')).content === 'none'
+    && !(await blur()).chips.includes('Stream-safe on'));
+  await push(() => { window.preview.model.private = false; window.preview.model.quiet = true; });
+  check('chips: Alerts muted is a chip with its hint, and nothing else is', (await blur()).chips.join() === 'Alerts muted (/fam quiet off)');
+  await push(() => { window.preview.model.blur = true; window.preview.model.private = true; });
+  check('chips: Alerts muted and Stream-safe on side by side, in that order, and Hide names does not repeat itself', (await blur()).chips.join('|') === 'Alerts muted (/fam quiet off)|Stream-safe on');
+  await push(() => { window.preview.model.quiet = false; window.preview.model.private = false; window.preview.model.blur = false; });
+  check('chips: with everything off the status is the words alone', (await blur()).chips.length === 0 && (await blur()).words === 'Linked · Claude ready · Codex ready');
+  // A reasoning block and an expanded tool output are blurred too, and their veils are crisp (outside what is filtered).
+  await push(() => { const m = window.preview.model; m.blur = true; m.private = true; m.detail.entries.push({ id: 'think', kind: 'reasoning', text: 'Thinking about the pull timer.' });
+    const tool = m.detail.entries.find(e => e.kind === 'tool'); tool.expanded = true; tool.output = '+ /pull 10\n- /pull 8'; });
+  const extra = await page.evaluate(() => ({ body: getComputedStyle(document.querySelector('.entry.reasoning .body')).filter, entry: getComputedStyle(document.querySelector('.entry.reasoning')).filter,
+    out: getComputedStyle(document.querySelector('.tout')).filter, outWrap: getComputedStyle(document.querySelector('.tout-veil')).filter }));
+  check('curtain: reasoning and tool output are blurred, behind veils that are not', extra.body.startsWith('blur(') && extra.entry === 'none' && extra.out.startsWith('blur(') && extra.outWrap === 'none'
+    && (await veil('.entry.reasoning')).content === '""' && (await veil('.tout-veil')).content === '""' && (await veil('.tout-veil')).border === '1px');
+  check('curtain: the blur is 7px, with the colour drawn down', await page.evaluate(() => getComputedStyle(document.querySelector('.entry.assistant .body')).filter === 'blur(7px) saturate(0.5)'));
+  await push(() => { const m = window.preview.model; m.detail.entries = m.detail.entries.filter(e => e.id !== 'think'); delete m.detail.entries.find(e => e.kind === 'tool').expanded; m.blur = false; m.private = false; });
+  // With motion on the curtain lifts in --m-fast: gone within 200 ms of the click.
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  await open('stream-safe');
+  await click('.entry.assistant .body');
+  const lifted = await page.waitForFunction(() => getComputedStyle(document.querySelector('.entry.assistant'), '::after').opacity === '0', null, { timeout: 200 }).then(() => true, () => false);
+  check('curtain: a reveal lifts the veil within 200 ms (motion on), and the text is clear', lifted && await page.evaluate(() => getComputedStyle(document.querySelector('.entry.assistant .body')).filter === 'none'));
+  await page.emulateMedia({ reducedMotion: 'reduce' });
 
   // ---- §8 Jump to latest (wheel d:-9999 on detail)
   await open('long');
