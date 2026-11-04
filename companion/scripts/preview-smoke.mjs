@@ -114,9 +114,9 @@ async function controlChatJourney(width) {
   check(`${size}: configured provider/model and live readiness agree`, initial.agent === 'claude' && initial.model === 'haiku'
     && initial.effort === 'medium' && initial.status?.includes('Claude is ready for Chat'));
   const copy = await page.evaluate(() => ({
-    mode: document.querySelector('#ui-mode + .hint')?.textContent,
+    mode: document.getElementById('ui-mode-hint')?.textContent, // round 7: the row's hint line (was #ui-mode + .hint)
     privateLabel: document.getElementById('ui-private').closest('label')?.textContent,
-    approveKey: document.querySelector('#ui-approve-key + .hint')?.textContent.trim(),
+    approveKey: document.querySelector('#quests-card details.how #approve-key-how')?.textContent.trim(), // round 7: in How it works (was #ui-approve-key + .hint)
     suggest: getComputedStyle(document.getElementById('suggest-text')).backgroundColor,
   }));
   check(`${size}: mode hint recommends Ask first`, copy.mode?.includes('Ask first is recommended'));
@@ -280,6 +280,11 @@ async function controlLayoutJourney(width) {
   let now = await layout();
   check(`${size}/setup: step 1 is current and the Familiars card sits above a collapsed Advanced`, now.current?.startsWith('1 Agents')
     && now.done === 0 && !now.advancedOpen && !now.familiarsInAdvanced && now.familiarsBeforeAdvanced && !now.allSet && await page.locator('#familiars').isVisible());
+  // Round 7: no bare key-value list in the step slot; each familiar's backend line is a Status row under its heading.
+  const setupStatus = await page.evaluate(() => ({ kv: document.querySelectorAll('#step-slot .kv, #agents').length, heading: document.querySelector('#providers .prov-h')?.textContent,
+    rows: [...document.querySelectorAll('#providers .prov.status')].map(r => r.querySelector('.n').textContent) }));
+  check(`${size}/setup: no key-value list under the steps; a Status heading and row per familiar in the Familiars card`, setupStatus.kv === 0 && setupStatus.heading === 'Status'
+    && JSON.stringify(setupStatus.rows) === JSON.stringify(['Claude', 'Codex', 'Quests']));
   await snapshot(`control-${width}-first-run`);
   // The shipped setup fixture: one agent is signed in, but the first-run choice is still open, so the card stays.
   await page.goto(`${origin}/control.html?scenario=setup`);
@@ -339,14 +344,24 @@ async function controlRequestsJourney(width) {
       badges: rows.map(r => { const b = r.querySelector('.badge'); return !b.hidden && getComputedStyle(b).display !== 'none' ? b.textContent : null; }),
       labels: rows.map(r => [...r.querySelectorAll('button')].filter(b => !b.hidden).map(b => b.textContent)),
       title: document.getElementById('requests-title').textContent, live: document.getElementById('requests-live').textContent,
-      hint: document.querySelector('#requests > .hint').textContent };
+      hint: document.querySelector('#requests > .hint').textContent,
+      decide: rows.map(r => [...r.querySelectorAll('button[data-decide]')].map(b => `${b.dataset.decide}:${b.className}`)),
+      greens: [...document.querySelectorAll('button.ok')].map(b => b.matches('#requests .req button[data-decide="allow"]')),
+      colours: { approve: getComputedStyle(rows[0].querySelector('[data-decide="allow"]')).backgroundImage, deny: getComputedStyle(rows[0].querySelector('[data-decide="deny"]')).backgroundImage },
+      maxHeight: getComputedStyle(rows[0].querySelector('.req-full')).maxHeight };
   });
+  const how = await page.evaluate(() => { const d = document.querySelector('#requests > details.how'); return { open: d.open, text: d.querySelector('p').textContent }; });
   check(`${size}: the card sits above everything, shows each request whole and puts the text before its buttons`, card.rows === 2 && card.above && card.textFirst
     && card.text === full && card.shortText === 'diff --git a/x b/x\n+ small change' && card.title === 'Requests waiting' && card.live === '2 requests waiting');
   check(`${size}: a cut request carries the badge, a short one does not, and a cut one with no full text is not listed`,
     JSON.stringify(card.badges) === JSON.stringify(['Too long for the in-game card', null]));
-  check(`${size}: the hint says everything is listed here, only whole requests are approved in the game, and nothing happens until a click`,
-    card.hint.includes('Everything your familiars are waiting on') && card.hint.includes('in the game only a request shown in full can be approved') && card.hint.includes('Nothing happens until you click'));
+  check(`${size}: the hint is one line: approve here or in the game, nothing happens until a click`, card.hint === 'Approve here or in the game. Nothing happens until you click.');
+  check(`${size}: How it works, closed, says everything is listed here and only whole requests are approved in the game, word for word`, !how.open
+    && how.text === 'Everything your familiars are waiting on. Approve here or in the game — in the game only a request shown in full can be approved. Nothing happens until you click. Real names are shown even with Hide names or Stream-safe on: this window is on your PC, not on stream.');
+  check(`${size}: Approve is the one green button; Deny stays red, never quiet; Always is the dashed ghost`,
+    JSON.stringify(card.decide) === JSON.stringify([['allow:ok', 'deny:', 'allowAlways:always'], ['allow:ok', 'deny:', 'allowAlways:always']])
+    && card.greens.length === 2 && card.greens.every(Boolean) && card.colours.approve !== card.colours.deny && card.colours.deny.includes('linear-gradient'));
+  check(`${size}: a long request scrolls inside 160 px, so the next one stays in view`, card.maxHeight === '160px');
   check(`${size}: Approve and Deny always, Always (this quest) only when the request allows it`,
     JSON.stringify(card.labels) === JSON.stringify([['Approve', 'Deny', 'Always (this quest)'], ['Approve', 'Deny']]));
   await snapshot(`control-${width}-requests`);

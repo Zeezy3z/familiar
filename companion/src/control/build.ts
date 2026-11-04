@@ -51,6 +51,14 @@ export function compareVersions(a: unknown, b: unknown): -1 | 0 | 1 | undefined 
   return 0;
 }
 
+/** The header's version beside the title: `v0.5.0` for the running app (status.version, the package version main
+ * embeds), keeping a plain suffix such as the preview's "· synthetic preview"; nothing for anything that is not a
+ * version. */
+export function versionLabel(version: unknown): string {
+  const m = typeof version === "string" ? /^v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)((?: · [\w .-]+)?)$/.exec(version.trim()) : null;
+  return m ? `v${m[1]}${m[2]}` : "";
+}
+
 /** Header line when the addon and the app differ (status.update = { app, addon, mismatch, last }). Main decides
  * whether they differ; the addon's version comes from the game (any addon can draw that strip), so the line is only
  * built from two plain version strings and says nothing otherwise. */

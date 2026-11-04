@@ -47,6 +47,8 @@ export function portraitFor(s: JourneyStatus, current: number): "idle" | "workin
   return "idle";
 }
 
+const andList = (xs: string[]) => (xs.length < 2 ? xs.join("") : `${xs.slice(0, -1).join(", ")} and ${xs[xs.length - 1]}`);
+
 export function journey(s: JourneyStatus) {
   const enabled = (s.providers ?? []).filter(p => p.enabled && p.installed);
   const ready = enabled.some(p => s.backends?.[p.id]?.ready);
@@ -70,9 +72,19 @@ export function journey(s: JourneyStatus) {
       : doctorText ? { text: doctorText, level: s.doctor?.level === "warn" ? "warn" as const : "muted" as const }
       : { text: "Restart WoW, tick Familiar and Familiar Sync at character select (Load out of date AddOns), then press Enter and type /fam" }) },
   ];
+  // The strip shows one short line per step; the whole sentence above is its tooltip. While the link is not up the
+  // Link line only says so: the doctor's sentence (or the fixed wording) is the journey text, under the title.
+  const hints = [
+    ready ? `${readyLabels.length ? andList(readyLabels) : "An agent"} ready` : prepared ? "Sign-in found" : unknownSignIn ? "Sign-in not yet verified"
+      : download ? (download.state !== "downloading" ? "Claude Code isn't downloaded" : download.pct != null ? `Downloading Claude Code · ${Math.round(download.pct)} %` : "Downloading Claude Code")
+      : enabled.length ? "Not signed in yet" : "No familiar chosen yet",
+    s.game ? "Game window found" : "Not found yet",
+    s.linked ? "Game link working" : "Not linked yet",
+  ];
   // The panel shows content for the first undone step (-1: all three are done).
   const current = steps.findIndex(step => !step.done);
-  const guide = (title: string, text: string, level: "ok" | "warn" | "muted", action?: "providers" | "config" | "pause") => ({ title, text, level, action, steps, current });
+  const guide = (title: string, text: string, level: "ok" | "warn" | "muted", action?: "providers" | "config" | "pause", textLevel?: "warn" | "muted") =>
+    ({ title, text, level, action, steps, hints, current, ...(textLevel ? { textLevel } : {}) });
   if (s.overlay?.paused) return guide("The Glass is paused", "Resume the overlay to see live replies again. Your conversations are kept.", "warn", "pause");
   if (!enabled.length && download?.state === "downloading") return guide("Downloading Claude Code", "This happens once and takes a few minutes. Progress is on the Familiars card below.", "muted");
   if (!enabled.length && download) return guide(download.state === "failed" ? "Claude Code couldn't be downloaded" : "Claude Code isn't downloaded yet", `Use ${download.retry} on the Familiars card below. Codex and other agents do not need it.`, "warn", "providers");
@@ -82,7 +94,9 @@ export function journey(s: JourneyStatus) {
   if (!s.game) return guide("I'm waiting for WoW.", "Open WoW in Windowed or Windowed (Fullscreen). Familiar stays in the tray while you’re away; agents start when WoW opens.", "muted");
   if (s.game.minimized || s.game.foreground === false) return guide("Return to your WoW window", "The Glass waits while WoW is minimized or in the background. Return to the game when you’re ready.", "muted");
   if (s.capture?.error) return guide("The Runestrip needs attention", "Capture reported an error. Check Advanced → Link details, keep WoW visible, and make sure its coloured strip is uncovered.", "warn");
-  if (!s.linked) return guide("I can't see the game yet.", "The coloured dots top-left are how Familiar talks to your PC. Enable Familiar in AddOns and type /fam. Restart WoW once after first installation. If the dots are covered, /fam strip tr moves them to the top-right.", "warn");
+  if (!s.linked) return doctorText
+    ? guide("I can't see the game yet.", doctorText, "warn", undefined, s.doctor?.level === "warn" ? "warn" : "muted")
+    : guide("I can't see the game yet.", "The coloured dots top-left are how Familiar talks to your PC. Enable Familiar in AddOns and type /fam. Restart WoW once after first installation. If the dots are covered, /fam strip tr moves them to the top-right.", "warn");
   if (!ready) return guide("Linked; waiting for a familiar", "The game link is working. Check the agent status below before sending a message.", "warn", "providers");
   if (s.layout?.ui === false) return guide("Your game UI is hidden", "Show the game UI again when you want to read Familiar’s live replies.", "muted");
   if (!s.layout?.panel) return guide("Ready when you are.", `Type /fam or click the minimap imp to open your Quest Log. Pick an existing conversation to continue.${chatReady ? " Use + Chat for a quick question." : " " + startHint}`, "ok");

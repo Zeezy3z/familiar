@@ -2,7 +2,7 @@
 // Projects card, and one Advanced section. Text that came from an agent, the game or the network is only ever
 // set with textContent (or esc() inside a template), never as markup.
 import { approveKeyStatus, claudeLine, journey, portraitFor } from "./journey";
-import { buildPresentation, restartGuidance, updateLine, versionMismatch } from "./build";
+import { buildPresentation, restartGuidance, updateLine, versionLabel, versionMismatch } from "./build";
 import type { ControlBridge } from "../shared/bridge";
 import { CUES, cueLabel, playCue } from "../shared/cues";
 const bridge = window.familiar as ControlBridge;
@@ -24,9 +24,12 @@ function render(s: any) {
   if ($("journey-title").textContent !== j.title) { text("journey-title", j.title); arrive($("journey-title")); }
   $("journey-title").className = j.level;
   text("journey-text", j.text);
+  $("journey-text").className = "textLevel" in j && j.textLevel ? j.textLevel : "";
   const portrait = `assets/${portraitFor(s, j.current)}-192.png`;
   if ($("portrait").getAttribute("src") !== portrait) $("portrait").setAttribute("src", portrait);
-  $("journey-steps").innerHTML = j.steps.map((step, i) => `<li${i === j.current ? ' class="cur" aria-current="step"' : ""}><b class="${step.done ? "ok" : ""}">${i + 1} ${esc(step.label)}${step.done ? " ✓" : ""}</b><span class="hint${step.level === "warn" ? " warn" : ""}">${esc(step.text)}</span></li>`).join("");
+  // One line per step; the whole sentence is its title, and what a screen reader hears.
+  const steps = j.steps.map((step, i) => `<li${i === j.current ? ' class="cur" aria-current="step"' : ""}><b class="${step.done ? "ok" : ""}">${i + 1} ${esc(step.label)}${step.done ? " ✓" : ""}</b><span class="hint" title="${esc(step.text)}" aria-hidden="true">${esc(j.hints[i])}</span><span class="sr">${esc(step.text)}</span></li>`).join("");
+  if ($("journey-steps").dataset.html !== steps) { $("journey-steps").dataset.html = steps; $("journey-steps").innerHTML = steps; }
   const next = $("journey-action") as HTMLAnchorElement;
   next.hidden = !j.action;
   next.dataset.action = j.action ?? "";
@@ -36,6 +39,7 @@ function render(s: any) {
     text("journey-title", "Saved quests need attention");
     $("journey-title").className = s.storage.level === "error" ? "err" : "warn";
     text("journey-text", s.storage.text);
+    $("journey-text").className = "";
     next.hidden = true;
   }
   // The first undone step's content sits under the strip: the Familiars card for step 1 (and while the first-run
@@ -45,7 +49,7 @@ function render(s: any) {
   const familiarsInStep = j.current === 0 || !s.providersChosen || !!claudeLine(s.claude);
   if (familiarsInStep && j.action === "providers") next.hidden = true; // the card is already right below
   placeFamiliars(familiarsInStep);
-  $("ver").textContent = `v${s.version}`;
+  text("ver", versionLabel(s.version));
   const mismatch = versionMismatch(s.update);
   $("vermismatch").hidden = !mismatch;
   text("vermismatch", mismatch?.text ?? "");
@@ -82,16 +86,6 @@ function render(s: any) {
         ...clientRow,
       ])
     : kv([...(wrongRow.length ? wrongRow : [["Status", "World of Warcraft is not running", "warn"] as [string, unknown, string]]), installRow, ...clientRow]);
-  const b = s.backends ?? {};
-  const be = (x: any) =>
-    x?.ready ? `ready${x.account ? " · " + x.account : ""}` : x?.error ? `unavailable — ${x.error}` : "starts when World of Warcraft is running";
-  $("agents").innerHTML = kv([
-    ...Object.entries<any>(b)
-      .filter(([id]) => (s.providers ?? []).find((p: any) => p.id === id)?.enabled !== false)
-      .map(([id, x]): [string, unknown, string] => [x?.label ?? (s.providers ?? []).find((p: any) => p.id === id)?.label ?? id, be(x), x?.ready ? "ok" : x?.error ? "err" : ""]),
-    ["Quests", s.threads],
-    ...(typeof s.projects === "number" ? [["Zones", s.projects] as [string, unknown]] : []), // newer builds list them on the Projects card
-  ]);
   const a = s.addon ?? {};
   $("addon").innerHTML = kv([
     ["Character", a.char ? `${a.char} — ${a.realm}` : "— (no hello yet)"],
@@ -104,10 +98,25 @@ function render(s: any) {
   renderRequests(s.requests, s.providers ?? []);
   renderProjects(s.projects);
   if (s.update?.last) showUpdate(s.update.last); // the last "Check for updates" answer, from the click that asked
-  renderProviders(s.providers ?? [], s.backends ?? {}, s.claude);
+  renderProviders(s.providers ?? [], s.backends ?? {}, s.claude, statusRows(s));
   renderChat(s);
   ($("onboard") as HTMLElement).hidden = !!s.providersChosen;
   $("notes").innerHTML = (s.installNotes ?? []).map((n: string) => `<li>${esc(n)}</li>`).join("");
+}
+
+// The Familiars card's Status rows: what each enabled familiar's backend says right now, and the quest count.
+function statusRows(s: any): [string, string, string][] {
+  const providers: any[] = s.providers ?? [];
+  const be = (x: any) =>
+    x?.ready ? `ready${x.account ? " · " + x.account : ""}` : x?.error ? `unavailable — ${x.error}` : "starts when World of Warcraft is running";
+  return [
+    ...providers.filter((p) => p.enabled && p.installed).map((p): [string, string, string] => {
+      const x = s.backends?.[p.id];
+      return [String(p.label ?? x?.label ?? p.id), be(x), x?.ready ? "ok" : x?.error ? "err" : "muted"];
+    }),
+    ["Quests", String(s.threads ?? 0), ""],
+    ...(typeof s.projects === "number" ? [["Zones", String(s.projects), ""] as [string, string, string]] : []), // newer builds list them on the Projects card
+  ];
 }
 
 // Moving a card drops focus from anything inside it; put it back (a no-op while Advanced is closed).
@@ -153,7 +162,8 @@ function buildRequest(r: PanelRequest): HTMLElement {
   row.dataset.request = r.requestId;
   const btns = make("div", "btns");
   for (const [decision, label] of DECISIONS) {
-    const b = make("button", decision === "allowAlways" ? "always" : "", { type: "button", "data-decide": decision, "aria-describedby": `${id}-title` }) as HTMLButtonElement;
+    // Approve is the one green button on the panel; Deny stays red; Always is the dashed ghost.
+    const b = make("button", decision === "allow" ? "ok" : decision === "allowAlways" ? "always" : "", { type: "button", "data-decide": decision, "aria-describedby": `${id}-title` }) as HTMLButtonElement;
     b.textContent = label;
     b.disabled = true;
     btns.append(b);
@@ -228,7 +238,7 @@ $("requests-list").addEventListener("click", async (e) => {
 });
 
 // One row per agent: installed? signed in? used in Familiar? — plus Install / Sign in buttons.
-function renderProviders(list: any[], backends: Record<string, any>, claude?: unknown) {
+function renderProviders(list: any[], backends: Record<string, any>, claude: unknown, status: [string, string, string][]) {
   const html = list
     .map((p) => {
       const be = backends[p.id];
@@ -245,7 +255,8 @@ function renderProviders(list: any[], backends: Record<string, any>, claude?: un
       ].join("");
       return `<div class="prov ${p.enabled ? "" : "off"}"><span class="g">${esc(p.glyph)}</span><span class="n">${esc(p.label)}</span><span class="d">${state}</span><span class="a">${actions}</span></div>`;
     })
-    .join("");
+    .join("")
+    + `<h3 class="prov-h">Status</h3>` + status.map(([k, v, cls]) => `<div class="prov status"><span class="g"></span><span class="n">${esc(k)}</span><span class="d ${cls}">${esc(v)}</span></div>`).join("");
   setHtml($("providers"), html, ["install", "login", "enable", "retry"]);
 }
 
@@ -285,7 +296,7 @@ function renderChat(s: any) {
     : current.signedIn === true ? `${label} sign-in found; live readiness is not yet confirmed. Agents start with WoW.`
     : `${label} readiness is not yet verified. Check its status above before sending.`;
   text("chat-status", status);
-  $("chat-status").className = `hint ${ready ? "ok" : "warn"}`;
+  $("chat-status").className = `sst ${ready ? "ok" : "warn"}`;
 }
 for (const [id, key] of [["chat-agent", "agent"], ["chat-model", "model"], ["chat-effort", "effort"]])
   $(id).addEventListener("change", (e) =>
