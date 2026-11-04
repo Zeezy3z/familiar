@@ -134,6 +134,23 @@ await check("a cut request is never approved from the game, even by a corroborat
   }
 });
 
+await check("a request shown whole in game is listed for the control panel too (not cut)", async () => {
+  // Deciding it there is the control window's own IPC only (no dev hook reaches "decide" with the
+  // panel origin); hub.test.ts covers the decision. This checks what main serves the panel.
+  await send({ t: "key", k: "tutorial" });
+  const quest = await until(async () => (await get("/threads")).find((x) => x.agent === "familiar"));
+  assert(quest, "no tutorial quest");
+  const requestId = `e2e-short-${Date.now()}`;
+  await post("/inject", { agent: "familiar", type: "approval", threadId: quest.id, requestId, kind: "command", title: "e2e: short request", detail: "echo hi", canAlways: true });
+  try {
+    const row = await until(async () => (await get("/status")).requests?.find((r) => r.requestId === requestId));
+    assert(row, "not listed for the control panel");
+    assert(row.cut === false && row.full === undefined && row.detail === "echo hi", `row: ${JSON.stringify(row)}`);
+  } finally {
+    await post("/inject", { agent: "familiar", type: "approvalResolved", threadId: quest.id, requestId });
+  }
+});
+
 if (process.argv.includes("--agents")) {
   await check("Claude quest resumes after a companion restart and answers", async () => {
     const m = await model();

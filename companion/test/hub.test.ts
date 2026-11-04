@@ -2135,6 +2135,44 @@ describe("physical corroboration (any addon can forge strip messages)", () => {
     expect(saved.entries.find((e: any) => e.requestId === "long3").full).toBe(full);
   });
 
+  it("a pending request can be approved from the control panel: every request is listed there, questions stay in game", async () => {
+    const id = await ask(codex, "short");
+    let raised: { kind: string; requestId?: string; threadId?: string }[] = [];
+    hub.onToast = (x) => raised.push(x);
+    // Listed whole (detail is the whole text: nothing is cut), with real names and no badge.
+    expect(hub.pendingRequests()).toEqual([{ thread: id, questTitle: "corroborate", project: "familiar", agent: "Codex", requestId: "short",
+      title: "Run command?", detail: "npm test", cut: false, canAlways: true, at: expect.any(Number) }]);
+    expect(hub.decide(id, "short", "allow", "panel")).toEqual({ ok: true });
+    expect(codex.decisions).toEqual([{ requestId: "short", d: "allow" }]);
+    expect(hub.threads.get(id)!.entries.find((e) => e.requestId === "short")).toMatchObject({ approval: "approved" });
+    expect(hub.threads.get(id)!.entries.find((e) => e.requestId === "short")!.refused).toBeUndefined();
+    expect(hub.pendingRequests()).toEqual([]);
+    // One decision per request id: a late click in the panel (or the game) changes nothing.
+    expect(hub.decide(id, "short", "deny", "panel")).toEqual({ ok: false, why: "no longer pending" });
+    hub.action({ type: "decide", thread: id, requestId: "short", decision: "deny" });
+    expect(codex.decisions).toHaveLength(1);
+    // Always and Deny from the panel too.
+    codex.emit({ type: "approval", threadId: id, requestId: "s2", kind: "command", title: "Run command?", detail: "npm run build", canAlways: true });
+    codex.emit({ type: "approval", threadId: id, requestId: "s3", kind: "command", title: "Run command?", detail: "rm -rf dist", canAlways: false });
+    expect(hub.pendingRequests().map((r) => [r.requestId, r.cut, r.full])).toEqual([["s2", false, undefined], ["s3", false, undefined]]);
+    expect(hub.decide(id, "s2", "allowAlways", "panel")).toEqual({ ok: true });
+    expect(hub.decide(id, "s3", "deny", "panel")).toEqual({ ok: true });
+    expect(codex.decisions.slice(1)).toEqual([{ requestId: "s2", d: "allowAlways" }, { requestId: "s3", d: "deny" }]);
+    // Each approval toast names its request, for main's one Windows notice per request.
+    expect(raised.filter((x) => x.kind === "approval").map((x) => [x.threadId, x.requestId])).toEqual([[id, "s2"], [id, "s3"]]);
+    // A multiple-choice question wants an answer, not Approve: it is answered in game, never listed.
+    raised = [];
+    codex.emit({ type: "approval", threadId: id, requestId: "q1", kind: "question", title: "Which?", detail: "• A\n• B", canAlways: false, options: ["A", "B"] } as any);
+    expect(hub.pendingRequests()).toEqual([]);
+    // In a fight the toast (and so the notice) waits, then comes once.
+    hub.setCombat(true);
+    codex.emit({ type: "approval", threadId: id, requestId: "s4", kind: "command", title: "Run command?", detail: "npm test", canAlways: true });
+    expect(raised.map((x) => x.requestId)).toEqual(["q1"]);
+    expect(hub.pendingRequests().map((r) => r.requestId)).toEqual(["s4"]); // the panel lists it at once
+    hub.setCombat(false);
+    expect(raised.map((x) => x.requestId)).toEqual(["q1", "s4"]);
+  });
+
   it("a refusal is written on the card until the next decision", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     try {

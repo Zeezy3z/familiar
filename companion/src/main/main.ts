@@ -18,7 +18,7 @@ import { MODES } from "../agents/types";
 import { resolveCommand } from "../agents/which";
 import { claudeStatus, companionDir } from "../agents/claude-download";
 import { appDataDir, DEFAULT_CONFIG, loadConfig, saveConfig } from "../hub/config";
-import { FONT_MAX, FONT_MIN, Hub } from "../hub/hub";
+import { FONT_MAX, FONT_MIN, Hub, type Toast } from "../hub/hub";
 import { buildModel } from "../hub/viewmodel";
 import { activity } from "../hub/activity";
 import { isIssueUrl, suggestionUrl, type SuggestVersions } from "../hub/suggest";
@@ -50,6 +50,7 @@ import { RUNNING_BUILD } from "./build";
 import { devEnabled, serveDevHooks } from "./dev-hooks";
 import { changedConfigKeys, describeAddonMessage, describeOverlayAction, diagnosticsText, logLine, redact, rotateLog } from "./log-file";
 import { linkDoctor } from "./doctor";
+import { trayNoticeFor } from "./notices";
 import type { CheckUpdate } from "./update";
 
 const VERSION = "0.2.0";
@@ -711,15 +712,42 @@ function schedulePush() {
   }, 40);
 }
 
+/** Requests that already had a Windows notice (thread + request id): one balloon per request. */
+const noticed = new Set<string>();
+const noticeKey = (thread: string | undefined, requestId: string) => `${thread ?? ""}\0${requestId}`;
+function markNoticed(key: string) {
+  noticed.add(key);
+  if (noticed.size > 500) noticed.delete(noticed.values().next().value!);
+}
+const gameInFront = () => !!game && !minimized && (fg === game.key || fg === overlayKey);
+
+/** An approval toast while WoW isn't in front (or is minimized): a Windows notice, so a request
+ * doesn't sit unseen while you're at the desk. Its click opens the control panel (balloon-click),
+ * which lists every pending request. Never moves focus; generic under Hide names. */
+function noticeFor(x: Toast) {
+  if (x.kind !== "approval" || !x.requestId || noticed.has(noticeKey(x.threadId, x.requestId))) return;
+  const t = x.threadId ? hub.threads.get(x.threadId) : undefined;
+  const n = trayNoticeFor({ kind: x.kind, project: t ? hub.projectName(t) : undefined, questTitle: t?.title },
+    { gameInFront: gameInFront(), privateMode: !!cfg.privateMode, trayNotices: cfg.trayNotices !== false });
+  if (!n || !tray) return;
+  markNoticed(noticeKey(x.threadId, x.requestId));
+  tray.displayBalloon({ title: n.title, content: n.content, noSound: true, respectQuietTime: true });
+  log("[notice] request waiting while WoW isn't in front: Windows notice shown");
+}
+
 /** A request too long for the in-game card waits on the PC: make the control panel easy to reach
  * without moving focus (never from the game, never a forced foreground): its taskbar button
- * flashes, or, while it is closed to the tray, a quiet tray notice opens it when clicked. */
+ * flashes, or, while it is closed to the tray, a quiet tray notice opens it when clicked (unless
+ * that request already had one). */
 let requestsWaiting = false;
 function surfaceRequests() {
   requestsWaiting = true;
   tray?.setToolTip("Familiar: a request is waiting on your PC");
-  if (control && !control.isDestroyed()) control.flashFrame(true);
-  else tray?.displayBalloon({ title: "A request is waiting on your PC", content: "Too long for the in-game card. Open Familiar to read it in full and approve it, or Deny it in game.", noSound: true, respectQuietTime: true });
+  if (control && !control.isDestroyed()) return void control.flashFrame(true);
+  const fresh = hub.pendingRequests().filter((r) => r.cut && !noticed.has(noticeKey(r.thread, r.requestId)));
+  if (!fresh.length) return;
+  for (const r of fresh) markNoticed(noticeKey(r.thread, r.requestId));
+  tray?.displayBalloon({ title: "A request is waiting on your PC", content: "Too long for the in-game card. Open Familiar to read it in full and approve it, or Deny it in game.", noSound: true, respectQuietTime: true });
 }
 
 /** Nothing waits any more (decided, expired): stop asking for attention. */
@@ -953,6 +981,7 @@ app.whenReady().then(async () => {
   hub.onSound = (k) => cfg.sound && overlay?.webContents.send("sound", k);
   hub.onSpeak = (t) => overlay?.webContents.send("speak", t);
   hub.onCutRequest = surfaceRequests;
+  hub.onToast = noticeFor;
   hub.onConfigChanged = (c) => {
     saveConfig(c);
     applyLoginItem();

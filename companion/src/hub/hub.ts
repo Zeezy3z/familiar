@@ -113,6 +113,8 @@ export interface Toast {
   /** Text shown instead in private mode (no project, title, command or reply). Without it,
    * private mode shows a generic line per kind (see privateToast in viewmodel.ts). */
   generic?: string;
+  /** approval: the request it is about (main raises one Windows notice per request). */
+  requestId?: string;
 }
 
 export interface View {
@@ -268,6 +270,8 @@ export class Hub {
   onSpeak: (text: string) => void = () => {};
   /** A request too long for the in-game card is waiting (main: flash the panel / a tray notice). */
   onCutRequest: () => void = () => {};
+  /** A toast was raised (after a fight, for held ones): main's Windows notice (notices.ts). */
+  onToast: (x: Toast) => void = () => {};
   /** This companion's version (main's VERSION), compared with the addon's on hello. */
   version = "";
 
@@ -1285,12 +1289,13 @@ export class Hub {
     return { ok: true };
   }
 
-  /** Pending requests for the control panel's "Requests waiting", whole. Real names: the panel is
-   * on the PC, not on stream. */
+  /** Every pending approval for the control panel's "Requests waiting", whole, decided there with
+   * decide(..., "panel") (a cut one only there). Real names: the panel is on the PC, not on stream.
+   * Multiple-choice questions are not listed: they want an answer, not Approve / Deny (in game). */
   pendingRequests(): PendingRequest[] {
     return [...this.threads.values()].flatMap((t) =>
       t.entries
-        .filter((e) => e.kind === "approval" && e.approval === "pending" && e.cut && e.requestId)
+        .filter((e) => e.kind === "approval" && e.approval === "pending" && e.requestId && !e.options?.length)
         .map((e) => ({ thread: t.id, questTitle: t.title, project: this.projectName(t), agent: agentName(t.agent), requestId: e.requestId!,
           title: e.title ?? "", detail: e.text, ...(e.cut ? { full: e.full ?? e.text } : {}), cut: !!e.cut, canAlways: !!e.canAlways, at: e.at })),
     );
@@ -1684,7 +1689,7 @@ export class Hub {
         {
           // A cut request is approved only on the PC: the toast says where, and main makes the panel easy to reach.
           const onPc = e.cut ? ` · ${CUT_TOAST}` : "";
-          this.toast(`Needs approval · ${agentName(t.agent)} · ${this.projectName(t)} · ${e.title}${onPc}`, "approval", t.id, `Needs approval · ${agentName(t.agent)}${onPc}`);
+          this.toast(`Needs approval · ${agentName(t.agent)} · ${this.projectName(t)} · ${e.title}${onPc}`, "approval", t.id, `Needs approval · ${agentName(t.agent)}${onPc}`, e.requestId);
         }
         this.sound("approval");
         if (e.cut) this.alertPc();
@@ -1762,9 +1767,9 @@ export class Hub {
     this.changed("note");
   }
 
-  toast(text: string, kind: Toast["kind"], threadId?: string, generic?: string) {
+  toast(text: string, kind: Toast["kind"], threadId?: string, generic?: string, requestId?: string) {
     if (kind === "done" && this.cfg().quiet) return;
-    const x: Toast = { id: this.toastSeq++, text, kind, at: Date.now(), threadId, ...(generic ? { generic } : {}) };
+    const x: Toast = { id: this.toastSeq++, text, kind, at: Date.now(), threadId, ...(generic ? { generic } : {}), ...(requestId ? { requestId } : {}) };
     // In a fight, a quest's own notices wait (see setCombat); info toasts answer the player and show.
     if (this.combat && kind !== "info" && threadId) return void this.held.push(x);
     this.show(x);
@@ -1774,6 +1779,7 @@ export class Hub {
   private show(x: Toast) {
     this.toasts.push(x);
     if (this.toasts.length > 4) this.toasts.shift();
+    this.onToast(x);
   }
 
   /** Drop toasts, shown or held for after a fight (the player opened the quest, decided it...). */
