@@ -29,6 +29,7 @@ import { providerAvailable } from "../agents/setup";
 import { CHAT_INSTRUCTIONS, withGameContext } from "./chat";
 import { CHATS_KEY, isChatPath, Project, ProjectRegistry, projectRootOf, zoneRefusal } from "./projects";
 import { SUGGEST_TOAST, suggestionUrl, type SuggestVersions } from "./suggest";
+import { rewards } from "./rewards";
 import { TUTORIAL_AGENT, TUTORIAL_NO_MODE, tutorialDecide, tutorialReply, tutorialSetOut, tutorialThread } from "./tutorial";
 
 export type EntryKind = "user" | "assistant" | "reasoning" | "tool" | "approval" | "notice";
@@ -115,6 +116,9 @@ export interface Toast {
   generic?: string;
   /** approval: the request it is about (main raises one Windows notice per request). */
   requestId?: string;
+  /** done/error of a quest (never a chat): its rewards line, "3/3 objectives · 2 edits · $0.21"
+   * (rewards.ts). Counts and cost only, no names, paths or reply text, so private mode keeps it. */
+  sub?: string;
   /** How long it stays up (default: 60 s for approvals, 9 s for the rest). */
   ms?: number;
 }
@@ -1814,7 +1818,7 @@ export class Hub {
           t.status = "error";
           t.lastError = e.error ?? "failed";
           this.note(t, `Turn failed: ${t.lastError}`, "error");
-          this.toast(`Quest Failed · ${t.title}`, "error", t.id, "Quest Failed");
+          this.toast(`Quest Failed · ${t.title}`, "error", t.id, "Quest Failed", undefined, rewards(t));
           this.sound("error");
         } else {
           t.status = "idle";
@@ -1824,9 +1828,10 @@ export class Hub {
           } else {
             const last = [...t.entries].reverse().find((x) => x.kind === "assistant");
             if (this.view.selected !== t.id) t.unread = true;
-            // The moment, not a receipt: no agent, zone or cost ("Answer ready" for a chat).
+            // The moment, not a receipt: no agent or zone ("Answer ready" for a chat); a quest's counts
+            // and cost go in the rewards line under it (rewards.ts).
             const moment = t.kind === "chat" ? "Answer ready" : "Quest Complete";
-            this.toast(`${moment} · ${t.title}`, "done", t.id, moment);
+            this.toast(`${moment} · ${t.title}`, "done", t.id, moment, undefined, rewards(t));
             if (!this.cfg().quiet) this.sound("done");
             if (!this.cfg().quiet && !this.cfg().privateMode && this.cfg().speak && last) this.speak(`${agentName(t.agent)} finished in ${this.projectName(t)}. ${firstSentence(last.text, 200)}`);
           }
@@ -1855,9 +1860,9 @@ export class Hub {
     this.changed("note");
   }
 
-  toast(text: string, kind: Toast["kind"], threadId?: string, generic?: string, requestId?: string) {
+  toast(text: string, kind: Toast["kind"], threadId?: string, generic?: string, requestId?: string, sub?: string) {
     if (kind === "done" && this.cfg().quiet) return;
-    const x: Toast = { id: this.toastSeq++, text, kind, at: Date.now(), threadId, ...(generic ? { generic } : {}), ...(requestId ? { requestId } : {}) };
+    const x: Toast = { id: this.toastSeq++, text, kind, at: Date.now(), threadId, ...(generic ? { generic } : {}), ...(requestId ? { requestId } : {}), ...(sub ? { sub } : {}) };
     // In a fight, a quest's own notices wait (see setCombat); info toasts answer the player and show.
     if (this.combat && kind !== "info" && threadId) return void this.held.push(x);
     this.show(x);
