@@ -577,6 +577,23 @@ describe("outbox (prompts the companion may not have received)", () => {
     expect(messages.filter(m => m.t === "key").slice(-2)).toMatchObject([{ k: "quiet", a: "on" }, { k: "caughtup" }]);
   });
 
+  it("/fam sound <0-100> and <n>% go to the companion as the sound key, not as a prompt; other words still do", () => {
+    advance(30);
+    const prompts = () => messages.filter((m) => m.t === "prompt").length;
+    const before = prompts();
+    for (const arg of ["40", "55%", "250"]) {
+      vm.run(`SlashCmdList.FAMILIAR("sound ${arg}")`);
+      advance(1);
+      expect(last("key")).toMatchObject({ k: "sound", a: arg });
+    }
+    expect(prompts()).toBe(before);
+    vm.run(`SlashCmdList.FAMILIAR("sound loud")`);
+    advance(2);
+    expect(last("key")).toMatchObject({ k: "sound", a: "250" }); // not a setting
+    expect(prompts()).toBe(before + 1);
+    expect(last("prompt").text).toBe("sound loud");
+  });
+
   it("/fam font | sound | warnings go to the companion; other words are prompts", () => {
     vm.run(`SlashCmdList.FAMILIAR("sound off")`);
     advance(1);
