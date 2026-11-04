@@ -1033,6 +1033,13 @@ describe("Hub", () => {
     expect(buildModel(hub, { linked: true, fps: 30 }).target.text).toBe("Codex - tgt - familiar - Ask first");
   });
 
+  it("the welcome's + Claude / + Codex open the same folder picker as the toolbar keys", async () => {
+    hub.action({ type: "start", agent: "codex" });
+    await vi.waitFor(() => expect(hub.view).toMatchObject({ list: "pick", pickAgent: "codex" }));
+    hub.action({ type: "start", agent: "hermes" }); // only Claude and Codex have a picker
+    expect(hub.view.pickAgent).toBe("codex");
+  });
+
   it("backends can report a mode change", async () => {
     await hub.quick("claude", "@familiar p");
     const id = hub.view.selected!;

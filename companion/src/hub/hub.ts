@@ -1058,6 +1058,10 @@ export class Hub {
       case "tutorial": // the welcome page's "Replay A Familiar Face"
         this.openTutorial();
         break;
+      case "start": // the welcome page's + Claude / + Codex: the same folder picker as the toolbar keys
+        if (a.agent !== "claude" && a.agent !== "codex") return;
+        this.key(a.agent === "claude" ? "newClaude" : "newCodex").catch((e) => this.fail(e));
+        return;
       case "agent":
         this.view.pickAgent = a.agent;
         if (this.view.draft) this.view.draft.agent = a.agent;

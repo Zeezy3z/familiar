@@ -7,8 +7,9 @@
   const approval = scenario.startsWith("approval");
   const history = scenario.startsWith("history-");
   // welcome: linked, quests that are idle (the quest giver's idle face); -empty: no quests (asleep);
-  // -working: one running (working); -unlinked / -unready: puzzled; -noprojects: a fresh install with no folders yet.
-  const welcome = ["welcome", "welcome-unready", "welcome-noprojects", "welcome-empty", "welcome-unlinked", "welcome-working"].includes(scenario);
+  // -working: one running (working); -asking: one running and one waiting on you (asking wins); -unlinked / -unready: puzzled;
+  // -noprojects: a fresh install with no folders yet.
+  const welcome = ["welcome", "welcome-unready", "welcome-noprojects", "welcome-empty", "welcome-unlinked", "welcome-working", "welcome-asking"].includes(scenario);
   // Round 4 control-panel scenarios (the status fields are the ones the hub serves; the panel renders them).
   const doctorStrip = scenario === "doctor-strip";
   const updateAvailable = scenario === "update-available";
@@ -17,10 +18,12 @@
   // the Quest Complete / Quest Failed moments (raid-warning toasts).
   const tutorial = scenario === "tutorial";
   const streamSafe = scenario === "stream-safe";
-  const moment = scenario === "quest-complete" || scenario === "quest-failed";
+  const moment = scenario === "quest-complete" || scenario === "quest-failed" || scenario === "quest-complete-inwin";
+  // -inwin: the same notices with raid warnings off, so they are drawn inside the Familiar window (round 7 §2.3).
+  const inwin = scenario.endsWith("-inwin");
   const handlers = {};
   const calls = [];
-  const linked = ["welcome", "welcome-noprojects", "welcome-empty", "welcome-working", "projects-empty", "projects-some", "update-available", "linked", "paused", "running", "approval", "finished", "interrupted", "desktop", "tutorial", "stream-safe", "quest-complete", "quest-failed"].includes(scenario);
+  const linked = ["welcome", "welcome-noprojects", "welcome-empty", "welcome-working", "welcome-asking", "projects-empty", "projects-some", "update-available", "linked", "paused", "running", "approval", "finished", "interrupted", "desktop", "tutorial", "stream-safe", "quest-complete", "quest-failed", "quest-complete-inwin", "approval-always-inwin"].includes(scenario);
   const state = {
     build: scenario === "build-unavailable" ? { commit: null, dirty: null } : scenario === "build-dirty" ? { ...window.previewBuild, dirty: true } : window.previewBuild,
     work: { working: scenario === "running" || scenario === "build-running" ? 1 : 0,
@@ -60,8 +63,9 @@
   ];
   // approval-always: the same short request from a provider that offers a per-quest Always.
   // approval-refused: the hub refused a click on it (written on the card until the next decision).
-  const shortApproval = scenario === "approval" || scenario === "approval-always" || scenario === "approval-refused";
-  if (approval) entries.push({ id: "p1", kind: "approval", title: "Edit the synthetic quest log", text: "+ Clearer spacing for the preview", approval: "pending", requestId: "preview", canAlways: scenario === "approval-always",
+  const always = scenario === "approval-always" || scenario === "approval-always-inwin";
+  const shortApproval = scenario === "approval" || always || scenario === "approval-refused";
+  if (approval) entries.push({ id: "p1", kind: "approval", title: "Edit the synthetic quest log", text: "+ Clearer spacing for the preview", approval: "pending", requestId: "preview", canAlways: always,
     refused: scenario === "approval-refused" ? "That click wasn't confirmed as yours. Click Approve again." : undefined });
   if (scenario === "interrupted") entries.push({ id: "t1", kind: "tool", name: "+ 2 steps", text: "Read, Bash (1 outcome unknown)", status: "unknown" }, { id: "n1", kind: "notice", text: "Interrupted: Familiar was closed or restarted during this turn. Send a message to continue.", level: "error" });
   const model = {
@@ -113,10 +117,11 @@
     model.tracker = [{ id: "preview", agent: "claude", title: "Quest #1", project: "Project 1", status: "approval", activity: "Waiting: Edit Macros.lua", progress: "1/2", cost: "$0.03" }];
   }
   if (moment) {
-    model.raidWarnings = true;
+    model.raidWarnings = !inwin;
     // The hub's rewards line (hub/rewards.ts) rides on the done toast; a failure here has none.
-    model.toasts = [scenario === "quest-complete" ? { kind: "done", text: "Quest Complete · Quest log", sub: "3/3 objectives · 2 edits · $0.21", at: 1 } : { kind: "error", text: "Quest Failed · Quest log", at: 1 }];
+    model.toasts = [scenario !== "quest-failed" ? { kind: "done", text: "Quest Complete · Quest log", sub: "3/3 objectives · 2 edits · $0.21", at: 1 } : { kind: "error", text: "Quest Failed · Quest log", at: 1 }];
   }
+  if (scenario === "approval-always-inwin") model.toasts = [{ kind: "approval", text: "Needs approval · Quest log", at: 1 }];
   if (welcome) {
     const unready = scenario === "welcome-unready";
     state.chat = { agent: unready ? "claude" : "codex", model: unready ? "haiku" : "m2", effort: "medium" };
@@ -134,13 +139,15 @@
     ];
     model.detail = { kind: "welcome", linked, linkedChar: linked ? "Preview Rogue" : undefined, backends,
       chat: { ...backends.find(b => b.id === state.chat.agent), model: state.chat.model, act: { type: "newIn", key: "chats" } },
-      counts: { total: scenario === "welcome-empty" || scenario === "welcome-noprojects" ? 0 : 2, running: scenario === "welcome-working" ? 1 : 0, approval: 0 },
+      counts: { total: scenario === "welcome-empty" || scenario === "welcome-noprojects" ? 0 : 2, running: scenario === "welcome-working" || scenario === "welcome-asking" ? 1 : 0,
+        approval: scenario === "welcome-asking" ? 1 : 0 },
       zones: scenario === "welcome-noprojects" ? 0 : 2 };
-    model.target = { text: "Nothing selected — pick a quest, or + Chat / + Claude.", warn: true };
+    model.target = { text: "Nothing selected · pick a quest, or start one above." };
     model.keys.mode = undefined;
     model.list.rows = [{ kind: "zone", key: "chats", text: "Chats" },
       { kind: "hint", key: "chat-hint", text: "Ask anything: + Chat or /fam ask", act: { type: "newIn", key: "chats" } }];
-    model.status = { text: unready ? "Searching for the Runestrip… · Claude off · Codex ✗ · Hermes ✓" : "Linked · Claude ✓ · Codex ✓", level: linked ? "ok" : "off" };
+    model.status = unready ? { text: "Searching for the Runestrip… · Claude off · Codex ✗ · Hermes ✓", level: "off" }
+      : linked ? { text: "Linked · Claude ✓ · Codex ✓", level: "ok" } : { text: "Not linked", level: "off" };
     if (unready) model.providers.hermes = { label: "Hermes", glyph: "☿" };
   }
   if (long) {
