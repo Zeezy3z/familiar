@@ -279,6 +279,7 @@ function createTray() {
     ]);
   tray.setContextMenu(menu());
   tray.on("click", () => createControl());
+  tray.on("balloon-click", () => createControl()); // the player's own click on the notice
 }
 
 // ---- game tracking ------------------------------------------------------------------------------
@@ -706,8 +707,28 @@ function schedulePush() {
   }, 40);
 }
 
+/** A request too long for the in-game card waits on the PC: make the control panel easy to reach
+ * without moving focus (never from the game, never a forced foreground): its taskbar button
+ * flashes, or, while it is closed to the tray, a quiet tray notice opens it when clicked. */
+let requestsWaiting = false;
+function surfaceRequests() {
+  requestsWaiting = true;
+  tray?.setToolTip("Familiar: a request is waiting on your PC");
+  if (control && !control.isDestroyed()) control.flashFrame(true);
+  else tray?.displayBalloon({ title: "A request is waiting on your PC", content: "Too long for the in-game card. Open Familiar to read it in full and approve it, or Deny it in game.", noSound: true, respectQuietTime: true });
+}
+
+/** Nothing waits any more (decided, expired): stop asking for attention. */
+function settleRequests() {
+  if (!requestsWaiting || hub.cutRequests().length) return;
+  requestsWaiting = false;
+  tray?.setToolTip("Familiar");
+  if (control && !control.isDestroyed()) control.flashFrame(false);
+}
+
 function pushAll() {
   if (!hub) return;
+  settleRequests();
   lastModel = buildModel(hub, { linked: linked(), fps: captureStats.fps ?? 0 });
   overlay?.webContents.send("model", lastModel);
   if (layout) overlay?.webContents.send("layout", layout);
@@ -908,6 +929,7 @@ app.whenReady().then(async () => {
   hub.suggestVersions = suggestVersions;
   hub.onSound = (k) => cfg.sound && overlay?.webContents.send("sound", k);
   hub.onSpeak = (t) => overlay?.webContents.send("speak", t);
+  hub.onCutRequest = surfaceRequests;
   hub.onConfigChanged = (c) => {
     saveConfig(c);
     applyLoginItem();

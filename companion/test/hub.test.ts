@@ -2086,7 +2086,13 @@ describe("physical corroboration (any addon can forge strip messages)", () => {
     const full = "echo " + "x".repeat(5000);
     const cut = (requestId: string) => claude.emit({ type: "approval", threadId: id, requestId, kind: "tool", title: "Allow Bash?",
       detail: full.slice(0, 4000) + "\n… (1005 characters omitted from this preview)", canAlways: true, cut: true, full });
+    let alerts = 0;
+    hub.onCutRequest = () => alerts++;
     cut("long");
+    // The toast says where to approve it, and main is asked to make the control panel easy to reach.
+    expect(hub.toasts.at(-1)).toMatchObject({ kind: "approval", text: "Needs approval · Claude · familiar · Allow Bash? · Open Familiar on your PC to approve",
+      generic: "Needs approval · Claude · Open Familiar on your PC to approve" });
+    expect(alerts).toBe(1);
     hub.action({ type: "decide", thread: id, requestId: "long", decision: "allow" }, OK);
     hub.action({ type: "decide", thread: id, requestId: "long", decision: "allowAlways" }, OK);
     await hub.key("approve", undefined, "full", OK);
@@ -2112,7 +2118,11 @@ describe("physical corroboration (any addon can forge strip messages)", () => {
     expect(claude.decisions.at(-1)).toEqual({ requestId: "long2", d: "deny" });
     // The read-it-first rule holds in the panel too.
     hub.minCardAgeMs = 60_000;
+    hub.setCombat(true); // the PC alert waits for the fight like every other notice
     cut("long3");
+    expect(alerts).toBe(2);
+    hub.setCombat(false);
+    expect(alerts).toBe(3);
     expect(hub.decide(id, "long3", "allow", "panel")).toEqual({ ok: false, why: "fresh" });
     hub.minCardAgeMs = 0;
     // The whole text is saved only while the request can still be approved.

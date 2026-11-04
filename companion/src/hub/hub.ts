@@ -196,6 +196,9 @@ export function setFontScale(cur: number, arg = ""): number | undefined {
   return Math.round(Math.min(FONT_MAX, Math.max(FONT_MIN, s)) * 10) / 10;
 }
 
+/** Where a cut request is approved, said on its approval toast. */
+export const CUT_TOAST = "Open Familiar on your PC to approve";
+
 const FORK_NOTE = "This conversation is open in another app (the desktop app or a terminal), which owns writing to it, so Familiar continues a copy (fork). Close it there to keep working in the same conversation.";
 
 export class Hub {
@@ -221,6 +224,7 @@ export class Hub {
   private combat = false;
   private held: Toast[] = [];
   private heldSpeech?: string;
+  private heldPcAlert = false;
   addon: AddonInfo = {};
   private viewKeys = false; // monotonic for this Hub lifetime; old hellos cannot downgrade safety
   projects: ProjectRegistry;
@@ -243,6 +247,8 @@ export class Hub {
   onSound: (kind: "done" | "approval" | "error") => void = () => {};
   onConfigChanged: (c: Config) => void = () => {};
   onSpeak: (text: string) => void = () => {};
+  /** A request too long for the in-game card is waiting (main: flash the panel / a tray notice). */
+  onCutRequest: () => void = () => {};
 
   constructor(
     public cfg: () => Config,
@@ -1651,8 +1657,13 @@ export class Hub {
         });
         t.status = "approval";
         t.unread = this.view.selected !== t.id;
-        this.toast(`Needs approval · ${agentName(t.agent)} · ${this.projectName(t)} · ${e.title}`, "approval", t.id, `Needs approval · ${agentName(t.agent)}`);
+        {
+          // A cut request is approved only on the PC: the toast says where, and main makes the panel easy to reach.
+          const onPc = e.cut ? ` · ${CUT_TOAST}` : "";
+          this.toast(`Needs approval · ${agentName(t.agent)} · ${this.projectName(t)} · ${e.title}${onPc}`, "approval", t.id, `Needs approval · ${agentName(t.agent)}${onPc}`);
+        }
         this.sound("approval");
+        if (e.cut) this.alertPc();
         break;
       case "approvalResolved": {
         const entry = t.entries.find((x) => x.requestId === e.requestId && x.approval === "pending");
@@ -1756,6 +1767,12 @@ export class Hub {
     else this.onSpeak(text);
   }
 
+  /** A cut request arrived: main surfaces the control panel on the PC (after a fight, like the rest). */
+  private alertPc() {
+    if (this.combat) this.heldPcAlert = true;
+    else this.onCutRequest();
+  }
+
   /** The player's character is in combat (the addon's layout.combat): quests' finish, approval and
    * failure notices, chimes and speech wait until it ends, then come back once (several as one
    * summary line plus each approval). Cards, the tracker, markers and the Approve glow keep
@@ -1766,8 +1783,11 @@ export class Hub {
     if (on) return;
     const held = this.held.map((x) => ({ ...x, at: Date.now() }));
     const speech = this.heldSpeech;
+    const pc = this.heldPcAlert;
     this.held = [];
     this.heldSpeech = undefined;
+    this.heldPcAlert = false;
+    if (pc && this.cutRequests().length) this.onCutRequest();
     if (!held.length) return;
     const count = (k: Toast["kind"]) => held.filter((x) => x.kind === k).length;
     const kind = count("approval") ? "approval" : count("error") ? "error" : "done";
