@@ -53,8 +53,9 @@ the failed job only.
 - `scripts/preview-smoke.mjs` runs only on GitHub Actions; do not spoof `GITHUB_ACTIONS` to claim
   a local substitute. Its browser journeys exercise built renderers, hit testing and reading
   continuity.
-- The prebuilt check's `--self-test` proves the extracted download loads koffi, runs the bundled
-  `claude.exe` and has its bundle and addon, with no Node on PATH. It never starts the companion,
+- The prebuilt check's `--self-test` proves the extracted download loads koffi and has its bundle
+  and addon, holds no Claude Code, downloads it from npm with `fetch-claude.cjs` (sha512 against
+  the lockfile) and then runs that `claude.exe`, with no Node on PATH. It never starts the companion,
   so it says nothing about windows, the overlay or WoW, nor about SmartScreen or antivirus on a
   file downloaded with a browser.
 - Hosted browser evidence does not establish native Windows/WGC/FakeWoW or live in-game
