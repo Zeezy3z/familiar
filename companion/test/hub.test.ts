@@ -1690,6 +1690,8 @@ describe("always-on companion and offline honesty", () => {
     await hub.key("warnings", "");
     expect(cfg.raidWarnings).toBe(false);
     expect(buildModel(hub, { linked: true, fps: 30 })).toMatchObject({ fontScale: 1.6, raidWarnings: false });
+    // FamiliarSync carries it too: the addon sizes its quest-list rows by it at the next login / reload.
+    expect(buildSnapshot(hub)).toContain("\n  fontScale = 1.6,\n");
     Object.assign(cfg, before);
   });
 
