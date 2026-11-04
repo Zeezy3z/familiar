@@ -85,7 +85,7 @@ window (see [Signing in](#signing-in)).
    config** in the control panel) whose subfolders should be offered as zones. Without any, zones
    come from your agents' own history.
 
-Familiar does **not** start with Windows unless you turn it on: control panel → **Start Familiar
+Familiar does **not** start with Windows unless you turn it on: control panel → Advanced → **Start Familiar
 when I sign in to Windows**, or `/fam autostart on` in game.
 
 > **Never played WoW?** Display mode: Esc → Options → System → Graphics → Display Mode →
@@ -354,7 +354,7 @@ guarantee otherwise. Use at your own discretion.
 | Familiar is "out of date" in the AddOns list | The client is newer than the addon's `## Interface:` list. Tick **Load out of date AddOns**; update Familiar when a release lists the new number. |
 | Familiar / Familiar Sync missing from the AddOns list | Restart WoW (not `/reload`). Check that `<WoW>\_forever_\Interface\AddOns\Familiar` exists (`dir` shows `<JUNCTION>`); tray → **Reinstall addon** recreates it and re-points a broken link. |
 | **Not linked** although WoW is open | Check, in order: the companion is running (tray icon); Familiar and Familiar Sync are enabled; display mode is Windowed or Windowed (Fullscreen); the game isn't minimized; nothing always-on-top covers the top-left corner (`/fam strip tr` moves the strip top-right); the game stays on one monitor (mixed DPI scaling can misalign after moving it — move or resize once); with Windows HDR on, if the link never locks, turn HDR off for that monitor. The control panel's link details and `/fam diag` show fps and strip geometry. |
-| Familiar starts with Windows and you don't want it | Untick **Start Familiar when I sign in to Windows**, or `/fam autostart off`. |
+| Familiar starts with Windows and you don't want it | Untick **Start Familiar when I sign in to Windows** (control panel → Advanced), or `/fam autostart off`. |
 | Claude "Not signed in" | Set `ANTHROPIC_API_KEY` for your Windows user and restart Familiar, or sign in to Claude Code itself (`claude /login`). |
 | Codex "Not installed" although you have the npm CLI | Known issue, fixed in 0.1.1: 0.1.0 only detects the Codex desktop app. Install the desktop app, or set `"codexExe"` to the full path of the real `codex.exe` (not `codex.cmd`); the Familiars card may still say Not installed. |
 

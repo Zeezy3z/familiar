@@ -71,7 +71,7 @@ describe("journey guidance for recoverable states", () => {
     const j = journey({ providers: [prepared], backends: { codex: { ready: true } } });
     expect(j.title).toBe("Familiar couldn't find World of Warcraft");
     expect(j.text).toContain("Start WoW: Forever once");
-    expect(j.text).toContain("Reinstall addon under Link details below");
+    expect(j.text).toContain("Reinstall addon under Advanced → Link details");
     expect(j.title).not.toContain("wowRoot");
   });
   it("lets an installed custom ACP provider verify unknown sign-in when WoW starts", () => {
