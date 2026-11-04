@@ -17,6 +17,10 @@ rem marked by companion\.prebuilt (scripts\prebuilt.mjs): no Node, npm or build 
 if exist .prebuilt (
   if not exist node_modules\electron\dist\electron.exe goto :incomplete
   if not exist dist\main.js goto :incomplete
+  rem Anthropic's licence keeps Claude Code out of the download: fetch-claude.cjs downloads the
+  rem version package-lock.json pins from npm and checks it, and returns at once when it is there.
+  rem Not at login, with --background: that must not wait on a download.
+  if /i not "%~1"=="--background" call :fetchclaude
   goto :start
 )
 echo This window installs and starts Familiar. Leave it open; the first run can take several minutes.
@@ -58,6 +62,20 @@ call node scripts\build.mjs || goto :fail
 :start
 echo Familiar is starting. Look for its window and the tray icon at the bottom right.
 start "" /b "%HERE%companion\node_modules\electron\dist\electron.exe" "%HERE%companion" %*
+if defined CLAUDE_FAILED pause
+exit /b 0
+:fetchclaude
+rem The bundled Electron runs the script as plain Node; it must not stay set for the start above.
+set "ELECTRON_RUN_AS_NODE=1"
+"%HERE%companion\node_modules\electron\dist\electron.exe" fetch-claude.cjs
+set "FETCH=%errorlevel%"
+set "ELECTRON_RUN_AS_NODE="
+if "%FETCH%"=="0" exit /b 0
+set CLAUDE_FAILED=1
+echo.
+echo Claude Code could not be downloaded, so Claude will not work in Familiar until it is.
+echo Codex and the other agents still work. Run Familiar.cmd again to retry the download.
+echo.
 exit /b 0
 :incomplete
 echo This Familiar download is incomplete: companion\node_modules\electron\dist\electron.exe or companion\dist\main.js is missing.
