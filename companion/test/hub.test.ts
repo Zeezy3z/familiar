@@ -397,8 +397,18 @@ describe("Hub", () => {
     expect(t.status).toBe("idle");
     expect(t.entries.at(-1)).toMatchObject({ text: "Hello there.", streaming: false });
     expect(hub.toasts.at(-1)!.kind).toBe("done");
-    expect(hub.toasts.at(-1)!.text).toMatch(/^Finished · /);
+    expect(hub.toasts.at(-1)!.text).toMatch(/^Quest Complete · /);
     expect(hub.toasts.at(-1)!.text).not.toContain("Hello there");
+  });
+
+  it("finish toasts name the quest only: Quest Complete, Answer ready for a chat, Quest Failed", async () => {
+    await hub.quick("claude", "@familiar ship it");
+    const quest = hub.view.selected!;
+    claude.emit({ type: "done", threadId: quest, status: "failed", error: "boom" });
+    expect(hub.toasts.at(-1)).toMatchObject({ kind: "error", text: "Quest Failed · ship it", generic: "Quest Failed" });
+    await hub.ask("is the hearth lit?");
+    claude.emit({ type: "done", threadId: hub.view.selected!, status: "completed" });
+    expect(hub.toasts.at(-1)).toMatchObject({ kind: "done", text: "Answer ready · is the hearth lit?", generic: "Answer ready" });
   });
 
   it("approvals: pending → approve via key → backend gets allow; status recovers", async () => {
@@ -997,6 +1007,40 @@ describe("Hub", () => {
     expect(m.detail.kind).toBe("thread");
   });
 
+  it("the tracker shows each quest's own reported spend: dollars, else tokens, else nothing", async () => {
+    await hub.quick("claude", "@familiar priced");
+    const priced = hub.view.selected!;
+    await hub.quick("codex", "@beta counted");
+    const counted = hub.view.selected!;
+    const model = () => buildModel(hub, { linked: true, fps: 30 });
+    const line = (id: string) => model().tracker.find((l) => l.id === id)!;
+    expect(line(priced).cost).toBeUndefined();
+    claude.emit({ type: "usage", threadId: priced, costUsd: 0.1234 });
+    codex.emit({ type: "usage", threadId: counted, inputTokens: 4000, outputTokens: 2000 });
+    expect(line(priced).cost).toBe("$0.12");
+    expect(line(counted).cost).toBe("6.0k tokens");
+    claude.emit({ type: "usage", threadId: priced, costUsd: 0.004 });
+    expect(line(priced).cost).toBe("<$0.01");
+    const detail = model().detail;
+    expect(detail.kind === "thread" && detail.usage).toBe("4.0k in · 2.0k out");
+  });
+
+  it("the Mode button's label follows what the Mode key acts on", async () => {
+    const keys = () => buildModel(hub, { linked: true, fps: 30 }).keys;
+    expect(keys().mode).toBeUndefined(); // welcome: the native "Mode" shows
+    await hub.quick("claude", "@familiar labelled");
+    const t = hub.selectedThread()!;
+    expect(keys()).toMatchObject({ mode: "Ask first", modeHot: false });
+    await hub.key("mode", undefined, "full", OK);
+    expect(keys()).toMatchObject({ mode: "Plan only", modeHot: false });
+    t.mode = "auto"; // chosen in the control panel
+    expect(keys()).toMatchObject({ mode: "Auto", modeHot: true });
+    await hub.key("newChat");
+    expect(keys()).toMatchObject({ mode: "Chat", modeHot: false });
+    hub.action({ type: "select", id: "ext:claude:ext-1" });
+    expect(keys().mode).toBeUndefined(); // a desktop thread: Mode has nothing to act on
+  });
+
   describe("which desktop threads are listed", () => {
     const betaDir = path.join(projRoot, "beta");
     const day = 86400_000;
@@ -1418,6 +1462,50 @@ describe("always-on companion and offline honesty", () => {
     cfg.speak = beforeSpeak;
   });
 
+  it("notices wait for the fight to end", async () => {
+    const sounds: string[] = [], spoken: string[] = [];
+    const beforeSpeak = cfg.speak;
+    cfg.speak = true;
+    hub.onSound = (k) => sounds.push(k);
+    hub.onSpeak = (text) => spoken.push(text);
+    try {
+      await hub.quick("claude", "@familiar first");
+      const first = hub.view.selected!;
+      await hub.quick("codex", "@beta second");
+      const second = hub.view.selected!;
+      hub.toasts = []; // the Started toasts
+      hub.setCombat(true);
+      claude.emit({ type: "message", threadId: first, itemId: "m", text: "Done with the first one." });
+      claude.emit({ type: "done", threadId: first, status: "completed" });
+      codex.emit({ type: "approval", threadId: second, requestId: "r1", kind: "command", title: "Run?", detail: "npm test", canAlways: false });
+      expect(hub.toasts).toEqual([]);
+      expect(sounds).toEqual([]);
+      expect(spoken).toEqual([]);
+      // The card, the marker and the Approve glow are the model's, and keep updating.
+      const m = buildModel(hub, { linked: true, fps: 30 });
+      expect(m.keys.approve).toBe(true);
+      expect(m.list.rows.find((r) => r.key === first)).toMatchObject({ unread: true });
+      await hub.key("archived"); // a reply to the player's own command still shows
+      expect(hub.toasts.map((t) => t.text)).toEqual(["Nothing is archived."]);
+      hub.setCombat(false);
+      expect(hub.toasts.at(-1)!.text).toBe("While you fought: 1 quest finished · 1 needs approval");
+      expect(hub.toasts.some((t) => t.kind === "approval" && t.threadId === second)).toBe(true);
+      expect(sounds).toEqual(["approval"]);
+      expect(spoken).toEqual(["While you fought: 1 quest finished, 1 needs approval"]);
+      // One held notice comes back as it was; one decided during the fight doesn't come back.
+      hub.setCombat(true);
+      claude.emit({ type: "done", threadId: first, status: "failed", error: "boom" });
+      codex.emit({ type: "approval", threadId: second, requestId: "r2", kind: "command", title: "Again?", detail: "npm test", canAlways: false });
+      for (const requestId of ["r1", "r2"]) hub.action({ type: "decide", thread: second, requestId, decision: "deny" });
+      hub.setCombat(false);
+      expect(hub.toasts.at(-1)).toMatchObject({ kind: "error", text: "Quest Failed · first" });
+      expect(hub.toasts.filter((t) => t.kind === "approval" && t.threadId === second)).toEqual([]);
+      expect(sounds).toEqual(["approval", "error"]);
+    } finally {
+      cfg.speak = beforeSpeak;
+    }
+  });
+
   it("catch-up acknowledgments are bound to final content, including corrections under the same item ID", async () => {
     await hub.quick("claude", "@familiar synthetic revision");
     const id = hub.view.selected!;
@@ -1602,6 +1690,8 @@ describe("always-on companion and offline honesty", () => {
     await hub.key("warnings", "");
     expect(cfg.raidWarnings).toBe(false);
     expect(buildModel(hub, { linked: true, fps: 30 })).toMatchObject({ fontScale: 1.6, raidWarnings: false });
+    // FamiliarSync carries it too: the addon sizes its quest-list rows by it at the next login / reload.
+    expect(buildSnapshot(hub)).toContain("\n  fontScale = 1.6,\n");
     Object.assign(cfg, before);
   });
 
@@ -1990,6 +2080,99 @@ describe("physical corroboration (any addon can forge strip messages)", () => {
     }
   });
 
+  it("a cut request is never approved from the game, even with proof; the control panel approves it whole", async () => {
+    await hub.quick("claude", "@familiar long command");
+    const id = hub.view.selected!;
+    const full = "echo " + "x".repeat(5000);
+    const cut = (requestId: string) => claude.emit({ type: "approval", threadId: id, requestId, kind: "tool", title: "Allow Bash?",
+      detail: full.slice(0, 4000) + "\n… (1005 characters omitted from this preview)", canAlways: true, cut: true, full });
+    let alerts = 0;
+    hub.onCutRequest = () => alerts++;
+    cut("long");
+    // The toast says where to approve it, and main is asked to make the control panel easy to reach.
+    expect(hub.toasts.at(-1)).toMatchObject({ kind: "approval", text: "Needs approval · Claude · familiar · Allow Bash? · Open Familiar on your PC to approve",
+      generic: "Needs approval · Claude · Open Familiar on your PC to approve" });
+    expect(alerts).toBe(1);
+    hub.action({ type: "decide", thread: id, requestId: "long", decision: "allow" }, NO_PROOF);
+    expect(hub.threads.get(id)!.entries.find((e) => e.requestId === "long")!.refused?.why).toBe("cut"); // not "click again"
+    hub.action({ type: "decide", thread: id, requestId: "long", decision: "allow" }, OK);
+    hub.action({ type: "decide", thread: id, requestId: "long", decision: "allowAlways" }, OK);
+    await hub.key("approve", undefined, "full", OK);
+    await hub.key("always", undefined, "focus", OK);
+    expect(claude.decisions).toEqual([]);
+    expect(hub.toasts.at(-1)!.text).toBe("Open it in full on your PC to approve.");
+    const detail = buildModel(hub, { linked: true, fps: 30 }).detail;
+    const card = detail.kind === "thread" ? detail.entries.find((e) => e.requestId === "long") : undefined;
+    expect(card).toMatchObject({ cut: true, approval: "pending",
+      refused: "Part of this request is hidden here. Approve it in full from Familiar's control panel on your PC, or Deny." });
+    expect(JSON.stringify(detail)).not.toContain(full); // the Glass never gets the whole text
+    // "Requests waiting on your PC": the whole request with real names; a panel click decides it.
+    expect(hub.cutRequests()).toEqual([{ thread: id, questTitle: "long command", project: "familiar", agent: "Claude", requestId: "long",
+      title: "Allow Bash?", full, canAlways: true, at: expect.any(Number) }]);
+    expect(hub.decide(id, "long", "allow", "panel")).toEqual({ ok: true });
+    expect(claude.decisions).toEqual([{ requestId: "long", d: "allow" }]);
+    expect(hub.threads.get(id)!.entries.find((e) => e.requestId === "long")!.refused).toBeUndefined();
+    expect(hub.cutRequests()).toEqual([]);
+    expect(hub.decide(id, "long", "allow", "panel")).toEqual({ ok: false, why: "no longer pending" });
+    // Deny from the card needs no proof, cut or not.
+    cut("long2");
+    hub.action({ type: "decide", thread: id, requestId: "long2", decision: "deny" });
+    expect(claude.decisions.at(-1)).toEqual({ requestId: "long2", d: "deny" });
+    // The read-it-first rule holds in the panel too.
+    hub.minCardAgeMs = 60_000;
+    hub.setCombat(true); // the PC alert waits for the fight like every other notice
+    cut("long3");
+    expect(alerts).toBe(2);
+    hub.setCombat(false);
+    expect(alerts).toBe(3);
+    expect(hub.decide(id, "long3", "allow", "panel")).toEqual({ ok: false, why: "fresh" });
+    hub.minCardAgeMs = 0;
+    // The whole text is saved only while the request can still be approved.
+    hub.saveNow();
+    const saved = JSON.parse(fs.readFileSync(path.join(appData, "Familiar", "threads.json"), "utf8")).threads.find((t: any) => t.id === id);
+    expect(saved.entries.find((e: any) => e.requestId === "long")).toMatchObject({ cut: true, approval: "approved" });
+    expect(saved.entries.find((e: any) => e.requestId === "long").full).toBeUndefined();
+    expect(saved.entries.find((e: any) => e.requestId === "long3").full).toBe(full);
+  });
+
+  it("a refusal is written on the card until the next decision", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const id = await ask(claude, "r1");
+      const card = () => hub.threads.get(id)!.entries.find((e) => e.requestId === "r1")!;
+      const line = () => {
+        const d = buildModel(hub, { linked: true, fps: 30 }).detail;
+        return d.kind === "thread" ? d.entries.find((e) => e.requestId === "r1")?.refused : undefined;
+      };
+      hub.action({ type: "decide", thread: id, requestId: "r1", decision: "allow" }, NO_PROOF);
+      expect(card().refused?.why).toBe("proof");
+      expect(line()).toBe("That click wasn't confirmed as yours. Click Approve again.");
+      hub.handleAddon({ t: "key", k: "approve", src: "bind", view: "full" }); // no matching key press
+      await tick();
+      expect(card().refused?.why).toBe("proof");
+      hub.handleAddon({ t: "key", k: "approve", view: "sideways" }, OK);
+      await tick();
+      expect(line()).toBe("Use Full view and review the request before deciding.");
+      hub.minCardAgeMs = 400;
+      hub.action({ type: "decide", thread: id, requestId: "r1", decision: "allow" }, OK);
+      expect(line()).toBe("This request just appeared. Read it, then click again.");
+      expect(claude.decisions).toEqual([]);
+      vi.advanceTimersByTime(450);
+      hub.action({ type: "decide", thread: id, requestId: "r1", decision: "allow" }, OK);
+      expect(claude.decisions).toEqual([{ requestId: "r1", d: "allow" }]);
+      expect(card().refused).toBeUndefined();
+      expect(line()).toBeUndefined();
+      // A request that expires takes its refusal line with it too.
+      claude.emit({ type: "approval", threadId: id, requestId: "r2", kind: "command", title: "Again?", detail: "npm test", canAlways: false });
+      hub.action({ type: "decide", thread: id, requestId: "r2", decision: "allow" }, NO_PROOF);
+      claude.emit({ type: "approvalResolved", threadId: id, requestId: "r2" });
+      expect(hub.threads.get(id)!.entries.find((e) => e.requestId === "r2")).toMatchObject({ approval: "expired" });
+      expect(hub.threads.get(id)!.entries.find((e) => e.requestId === "r2")!.refused).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("Mode needs a click on the Mode button", async () => {
     await hub.quick("claude", "@familiar mode");
     const t = hub.selectedThread()!;
@@ -2001,6 +2184,117 @@ describe("physical corroboration (any addon can forge strip messages)", () => {
     hub.handleAddon({ t: "key", k: "mode", src: "button", view: "full" }, OK);
     await tick();
     expect(t.mode).toBe("plan");
+  });
+});
+
+describe("A Familiar Face (the tutorial quest)", () => {
+  const local = () => ({ ...cfg, tutorialSeen: false });
+  const tutorialOf = (h: InstanceType<typeof Hub>) => [...h.threads.values()].filter((t) => t.kind === "tutorial");
+
+  it("first run teaches the approval path", async () => {
+    const c = local();
+    const sounds: string[] = [];
+    let saved: any;
+    const h = new Hub(() => c, { claude, codex }, () => {});
+    h.minCardAgeMs = 0;
+    h.onSound = (k) => sounds.push(k);
+    h.onConfigChanged = (x) => (saved = { ...x });
+    await h.start();
+    const [t] = tutorialOf(h);
+    expect(t).toMatchObject({ agent: "familiar", title: "A Familiar Face", status: "idle", mode: "ask", unread: true });
+    expect(t.entries[0].text).toMatch(/^Well met, adventurer\. I'm your familiar/);
+    expect(t.todos.map((x) => x.text)).toEqual(["Speak to your familiar", "Answer a practice request", "Set out on a real quest"]);
+    expect(saved.tutorialSeen).toBe(true);
+    const m = buildModel(h, { linked: true, fps: 30 });
+    expect(m.list.rows.find((r) => r.kind === "zone" && r.key === t.projectKey)?.text).toBe("Familiar");
+    expect(m.list.rows.find((r) => r.key === t.id)).toMatchObject({ agent: "familiar", unread: true, text: "A Familiar Face" });
+    expect(m.providers.familiar).toEqual({ label: "Familiar", glyph: "◆" });
+    expect(h.projects.list().some((p) => p.path === t.cwd)).toBe(false); // never offered as a zone
+    expect(buildSnapshot(h)).toContain("[Familiar] A Familiar Face");
+
+    h.action({ type: "select", id: t.id });
+    await h.prompt("hi");
+    const card = t.entries.find((e) => e.kind === "approval")!;
+    expect(card).toMatchObject({ approval: "pending", title: "Practice: light the hearth", canAlways: false });
+    expect(card.cut).toBeUndefined();
+    expect(t.status).toBe("approval");
+    expect(h.toasts.at(-1)!.text).toMatch(/^Needs approval · Familiar/);
+    expect(sounds).toEqual(["approval"]);
+    expect(buildModel(h, { linked: true, fps: 30 }).keys.approve).toBe(true);
+    // No mode, no model, and Stop has nothing to stop.
+    await h.key("mode", undefined, "full", OK);
+    expect(h.toasts.at(-1)!.text).toBe("The practice quest has no mode or model. Those are for real quests.");
+    await h.key("model");
+    expect(h.view.picker).toBeFalsy();
+    await h.key("stop");
+    expect(t.status).toBe("approval");
+    // The real corroboration path: refused without proof, written on the card.
+    h.action({ type: "decide", thread: t.id, requestId: card.requestId, decision: "allow" });
+    expect(card).toMatchObject({ approval: "pending", refused: { why: "proof" } });
+    h.action({ type: "decide", thread: t.id, requestId: card.requestId, decision: "allow" }, OK);
+    expect(card.approval).toBe("approved");
+    expect(card.refused).toBeUndefined();
+    expect(t.status).toBe("idle");
+    expect(t.todos.map((x) => x.status)).toEqual(["completed", "completed", "pending"]);
+    expect(t.entries.findLast((e) => e.kind === "assistant")!.text).toMatch(/^The hearth is lit/);
+    expect(h.toasts.map((x) => x.text)).toContain("Quest Complete · A Familiar Face");
+    expect(sounds).toEqual(["approval", "done"]);
+    expect([claude.sent, codex.sent, claude.decisions, codex.decisions]).toEqual([[], [], [], []]); // nothing ran
+    await h.prompt("anything else?");
+    expect(t.entries.findLast((e) => e.kind === "assistant")!.text).toMatch(/^Nothing more to teach/);
+    expect(t.status).toBe("idle");
+    // The first real quest completes the last objective; typed with the tutorial selected, it never
+    // starts in the tutorial's folder (Familiar's own data).
+    await h.quick("claude", "a real one");
+    expect(h.selectedThread()!.cwd).not.toBe(t.cwd);
+    expect(t.todos.every((x) => x.status === "completed")).toBe(true);
+    expect(t.entries.some((e) => e.kind === "notice" && e.text === "Set out on a real quest ✓")).toBe(true);
+    h.saveNow();
+
+    // Restarts never seed a second one, nor one after it was archived and threads.json removed.
+    const again = new Hub(() => c, { claude, codex }, () => {});
+    await again.start();
+    expect(tutorialOf(again)).toHaveLength(1);
+    await again.archive(t.id);
+    expect(tutorialOf(again)).toHaveLength(0);
+    fs.rmSync(path.join(appData, "Familiar", "threads.json"));
+    const third = new Hub(() => c, { claude, codex }, () => {});
+    await third.start();
+    expect(tutorialOf(third)).toHaveLength(0);
+    // /fam tutorial (and the welcome page's link) bring a fresh one.
+    await third.key("tutorial");
+    expect(tutorialOf(third)).toHaveLength(1);
+    expect(third.selectedThread()).toMatchObject({ kind: "tutorial", todos: [{ status: "pending" }, { status: "pending" }, { status: "pending" }] });
+    third.action({ type: "tutorial" });
+    expect(tutorialOf(third)).toHaveLength(1);
+  });
+
+  it("Deny completes the practice too, and never needs proof", async () => {
+    const c = local();
+    const h = new Hub(() => c, { claude, codex }, () => {});
+    h.minCardAgeMs = 0;
+    await h.start();
+    const [t] = tutorialOf(h);
+    h.action({ type: "select", id: t.id });
+    await h.prompt("hello there");
+    const card = t.entries.find((e) => e.kind === "approval")!;
+    await h.prompt("what now?"); // the card is still waiting
+    expect(t.entries.findLast((e) => e.kind === "assistant")!.text).toMatch(/practice request is waiting/);
+    expect(t.status).toBe("approval");
+    h.handleAddon({ t: "key", k: "deny", view: "full" });
+    await tick();
+    expect(card.approval).toBe("denied");
+    expect(t.entries.findLast((e) => e.kind === "assistant")!.text).toMatch(/^Denied — also a fine answer/);
+    expect(h.toasts.map((x) => x.text)).toContain("Quest Complete · A Familiar Face");
+  });
+
+  it("an existing profile is not given the tutorial by itself", async () => {
+    await hub.quick("claude", "@familiar existing work");
+    hub.saveNow();
+    const c = local();
+    const h = new Hub(() => c, { claude, codex }, () => {});
+    await h.start();
+    expect(tutorialOf(h)).toHaveLength(0);
   });
 });
 

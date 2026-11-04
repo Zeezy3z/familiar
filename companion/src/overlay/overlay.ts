@@ -10,6 +10,12 @@ import { approvalPreview } from "./approval-preview";
 import type { OverlayBridge } from "../shared/bridge";
 const bridge = window.familiar as OverlayBridge;
 
+// Round-3 model fields (docs: UX round 3 §9). Read as optional so the Glass renders models from
+// before and after the hub adds them; every one is absent-safe.
+type EntryR3 = EntryView & { cut?: boolean; refused?: string };
+type KeysR3 = RenderModel["keys"] & { mode?: string; modeHot?: boolean };
+type TrackerR3 = TrackerLine & { cost?: string };
+const keysOf = (m: RenderModel | null) => m?.keys as KeysR3 | undefined;
 
 type Rect = [number, number, number, number];
 interface Layout {
@@ -71,6 +77,7 @@ const els = {
   toasts: $("toasts"),
   glowApprove: $("glow-approve"),
   glowStop: $("glow-stop"),
+  modeLabel: $("mode-label"),
   target: $("target"),
   latest: $("latest"),
 };
@@ -201,8 +208,8 @@ function layoutShape(): string {
   if (!layout) return "";
   const size = (r?: Rect) => (r ? `${r[2]}x${r[3]}` : "-");
   return [window.innerWidth / layout.scr[0], layout.panel, layout.drag, layout.ui, layout.native, layout.focus, layout.rowH, layout.fpx, layout.px, layout.op,
-    size(layout.list), size(layout.detail), size(layout.status), size(layout.tracker), size(layout.keys?.approve), size(layout.keys?.stop),
-    JSON.stringify(layout.occ ?? []), model?.fontScale, model?.raidWarnings, model?.tracker.length, !!model?.keys.approve, !!model?.keys.stop].join("|");
+    size(layout.list), size(layout.detail), size(layout.status), size(layout.tracker), size(layout.keys?.approve), size(layout.keys?.stop), size(layout.keys?.mode),
+    JSON.stringify(layout.occ ?? []), model?.fontScale, model?.raidWarnings, model?.tracker.length, !!model?.keys.approve, !!model?.keys.stop, !!keysOf(model)?.mode].join("|");
 }
 
 function applyLayout(moveOnly = false) {
@@ -217,6 +224,7 @@ function applyLayout(moveOnly = false) {
     place(els.tracker, layout.tracker, !layout.drag && layout.ui !== false && !!model?.tracker.length);
     place(els.glowApprove, layout.keys?.approve, panelOn && !!model?.keys.approve);
     place(els.glowStop, layout.keys?.stop, panelOn && !!model?.keys.stop);
+    place(els.modeLabel, layout.keys?.mode, panelOn && !!keysOf(model)?.mode);
     if (settleTimer) clearTimeout(settleTimer);
     settleTimer = setTimeout(() => { settleTimer = undefined; lastShape = ""; applyLayout(); }, 120);
     return;
@@ -245,6 +253,11 @@ function applyLayout(moveOnly = false) {
   clipFor(els.tracker, layout.tracker);
   place(els.glowApprove, layout.keys?.approve, panelOn && !!model?.keys.approve);
   place(els.glowStop, layout.keys?.stop, panelOn && !!model?.keys.stop);
+  // The addon cannot learn the live mode, so its Mode button says "Mode"; the Glass paints the
+  // selected quest's mode over that button's rect. Hidden Glass = the native label shows again.
+  place(els.modeLabel, layout.keys?.mode, panelOn && !!keysOf(model)?.mode);
+  clipFor(els.modeLabel, layout.keys?.mode);
+  fitModeLabel();
   // Toasts: centred near the top of the game, like raid warnings; or (raid warnings off) small,
   // across the top of the transcript, only while the Familiar window is open.
   const raid = model?.raidWarnings !== false;
@@ -262,6 +275,16 @@ function applyLayout(moveOnly = false) {
   if (layout.drag) els.toasts.style.opacity = "0.4";
   else els.toasts.style.opacity = "1";
   syncDetailScroll();
+}
+
+// The native Mode button is small (64x22 in UI.lua): the label takes the body small size, capped by
+// the rect's height, and shrinks further only when a long mode ("Accept edits") would not fit.
+function fitModeLabel() {
+  const el = els.modeLabel, span = el.firstElementChild as HTMLElement | null;
+  if (!span || el.style.display === "none") return;
+  span.style.fontSize = `${Math.min(Math.max(10, (layout?.fpx ?? layout?.px ?? 1) * k * 10.5 * (model?.fontScale ?? 1)), el.clientHeight * 0.6)}px`;
+  const room = el.clientWidth - 6 * k;
+  if (span.scrollWidth > room) span.style.fontSize = `${parseFloat(span.style.fontSize) * room / span.scrollWidth}px`;
 }
 
 // ---- rendering ----------------------------------------------------------------------------------
@@ -347,7 +370,7 @@ function renderDetail(d: DetailModel) {
       ${detailControl}
     </div>`;
   const contextHtml = `${focused && detailsOpen ? `<div class="qmeta"><b>${esc(d.title)}</b>${d.handOff ? `<br>Continue opens this conversation in ${esc(d.handOff.app)} app.` : ""}</div>` : ""}
-    ${detailsOpen ? `<div class="qmeta">${esc(d.project)} · ${esc(d.mode)}${focused && d.cwd ? ` · ${esc(d.cwd)}` : ""}${d.model ? ` · ${esc(d.model)}` : ""}</div>` : ""}
+    ${detailsOpen ? `<div class="qmeta">${esc(d.project)} · ${esc(d.mode)}${focused && d.cwd ? ` · ${esc(d.cwd)}` : ""}${d.model ? ` · ${esc(d.model)}` : ""}${d.usage ? ` · ${esc(d.usage)}` : ""}</div>` : ""}
     ${d.todos.length && (!focused || detailsOpen) ? `<div class="objectives"><div class="obj-h">Objectives${d.todoNote ? ` <span class="s">— ${esc(d.todoNote)}</span>` : ""}</div>${d.todos.map((t) => `<div class="obj ${t.status}">${t.status === "completed" ? "✓" : t.status === "in_progress" ? "▸" : "•"} ${esc(t.text)}</div>`).join("")}</div>` : ""}`;
   const headHtml = `${storageSummary}${focused ? focusHeader + focusState : fullHeader}
     ${model?.storage ? "" : contextHtml}
@@ -376,10 +399,11 @@ function renderDetail(d: DetailModel) {
     // Slice IDs can be reused for different desktop messages, including equal-length text.
     const { text, output, ...metadata } = e;
     // Agent and folder shape approval cards; Hide names blanks the folder, so a card must re-render.
-    const sig = JSON.stringify([d.agent, d.cwd, metadata]);
+    const sig = JSON.stringify([d.agent, d.cwd, blurOn(), metadata]);
     let c = entryCache.get(e.id);
     if (!c) {
       const el = document.createElement("div");
+      el.dataset.id = e.id;
       c = { sig: "", identity: "", el };
       entryCache.set(e.id, c);
     }
@@ -389,6 +413,7 @@ function renderDetail(d: DetailModel) {
       c.el.innerHTML = entryHtml(e, d.id, d.agent, d.cwd);
       c.sig = sig;
     }
+    c.el.classList.toggle("revealed", revealed.has(e.id));
     // Retain this push's strings without allocating escaped copies on every update.
     c.text = text;
     c.output = output;
@@ -438,34 +463,56 @@ function renderDetail(d: DetailModel) {
   } else held?.remove();
 }
 
+// Stream-safe: replies are blurred on the Glass; a click reveals one for a few seconds. Local
+// only (no hub action): it grants nothing. Approval cards are never blurred.
+const blurOn = () => !!(model as { blur?: boolean } | null)?.blur;
+const REVEAL = attr({ type: "local", what: "reveal" });
+const REVEAL_MS = 8000;
+const revealed = new Map<string, ReturnType<typeof setTimeout>>();
+function reveal(id: string) {
+  clearTimeout(revealed.get(id));
+  revealed.set(id, setTimeout(() => {
+    revealed.delete(id);
+    entryCache.get(id)?.el.classList.remove("revealed");
+  }, REVEAL_MS));
+  entryCache.get(id)?.el.classList.add("revealed");
+}
+
 function entryHtml(e: EntryView, threadId: string, agent: string, cwd: string): string {
+  const revealAct = blurOn() ? ` data-act="${REVEAL}"` : "";
   switch (e.kind) {
     case "user":
-      return `<div class="who">You</div><div class="body">${esc(e.text).replace(/\n/g, "<br>")}</div>`;
+      return `<div class="who">You</div><div class="body"${revealAct}>${esc(e.text).replace(/\n/g, "<br>")}</div>`;
     case "assistant":
     case "reasoning":
-      return `<div class="body md">${md(e.text)}${e.streaming ? '<span class="caret">▍</span>' : ""}</div>`;
+      return `<div class="body md"${revealAct}>${md(e.text)}${e.streaming ? '<span class="caret">▍</span>' : ""}</div>`;
     case "tool": {
       const icon = e.status === "running" ? "◌" : e.status === "error" ? "✗" : "✓";
       return `<div class="tool-line" data-act="${attr({ type: "tool", id: e.id })}"><span class="ti ${e.status}">${e.status === "unknown" ? "?" : icon}</span> <b>${esc(e.name ?? "tool")}</b> <span class="tsum">${esc(e.text)}</span>${e.status === "unknown" ? '<span class="outcome-unknown">Outcome unknown — check the folder before resending</span>' : ""}</div>${e.expanded && e.output ? `<pre class="tout">${diffHtml(e.output)}</pre>` : ""}`;
     }
     case "approval": {
       const pending = e.approval === "pending";
+      const { cut, refused } = e as EntryR3;
       const preview = approvalPreview(e.text, e.expanded, pending);
       const btn = (label: string, decision: string, cls = "") =>
         `<span class="btn ${cls}" data-act="${attr({ type: "decide", thread: threadId, requestId: e.requestId, decision })}">${label}</span>`;
       const alwaysLabel = agent === "claude" || agent === "codex" ? "Always (this quest)" : "Always (agent decides how long)";
-      const opts = e.options?.length
-        ? e.options.map((o) => `<span class="btn" data-act="${attr({ type: "answer", thread: threadId, requestId: e.requestId, label: o })}">${esc(o)}</span>`).join("")
-        : btn("Approve", "allow", "ok") + btn("Deny", "deny", "no") + (e.canAlways ? btn(alwaysLabel, "allowAlways", "always") : "");
+      // A cut request is approved only on the PC, where the whole text is shown: Deny is the
+      // only decision drawn here (the hub refuses a grant from the game regardless).
+      const opts = cut
+        ? `<span class="approve-pc">Approve on your PC</span>${btn("Deny", "deny", "no")}`
+        : e.options?.length
+          ? e.options.map((o) => `<span class="btn" data-act="${attr({ type: "answer", thread: threadId, requestId: e.requestId, label: o })}">${esc(o)}</span>`).join("")
+          : btn("Approve", "allow", "ok") + btn("Deny", "deny", "no") + (e.canAlways ? btn(alwaysLabel, "allowAlways", "always") : "");
       return `<div class="card ${pending ? "pending" : e.approval}">
         <div class="card-h">${pending ? '<span class="bang">!</span> ' : ""}${esc(e.title ?? "Approval")}</div>
         ${pending && cwd ? `<div class="card-where">in ${esc(cwd)}</div>` : ""}
         <div class="preview-note">The agent's own summary. If unsure, Deny — nothing happens until you approve.</div>
-        ${pending && e.text.includes("omitted from this preview") ? `<div class="preview-cut" role="alert">! Part of this request is not shown. Deny unless you already know what it does.</div>` : ""}
+        ${pending && cut ? `<div class="preview-cut" role="alert">! Part of this request is not shown here. To approve it, read it in full in Familiar's control panel on your PC — or Deny.</div>` : ""}
         ${preview.shortened ? `<span class="btn preview-toggle" aria-expanded="${!!e.expanded}" data-act="${attr({ type: "approvalPreview", thread: threadId, id: e.id })}"><span aria-hidden="${!!e.expanded}">Show more of preview</span><span aria-hidden="${!e.expanded}">Collapse preview</span></span>` : ""}
         <pre class="card-b approval-preview">${diffHtml(preview.text)}${preview.shortened && !e.expanded ? "\n… [More preview text hidden]" : ""}</pre>
         ${pending ? `<div class="btns">${opts}</div>` : `<div class="card-s">${approvalText(e.approval, agent)}</div>`}
+        ${pending && refused ? `<div class="card-refused" role="alert">✗ ${esc(refused)}</div>` : ""}
       </div>`;
     }
     case "notice":
@@ -503,6 +550,7 @@ function staticDetail(d: DetailModel): string {
         Use Model to see the available models. Check Your familiars below before sending.</div>
       <div class="hint welcome-continue"><b>Continue a conversation</b><br>
         Pick a quest or desktop conversation on the left. Familiar asks before sending your first message to a desktop conversation.</div>
+      <div class="hint welcome-tutorial"><span class="link" data-act="${attr({ type: "tutorial" })}"><span class="ag ag-familiar">◆</span> Replay A Familiar Face</span> · the practice quest: one request to approve, and nothing runs.</div>
       <div class="hint"><b>Your familiars</b></div>
       ${d.backends.map((b) => `<div class="kv"><span>${AGENT_ICON[b.id]} ${esc(b.label)}</span> ${esc(b.status)}</div>`).join("")}
       <div class="kv"><span>Quests</span> ${d.counts.total} · ${d.counts.running} running · ${d.counts.approval} awaiting approval</div>
@@ -512,7 +560,7 @@ function staticDetail(d: DetailModel): string {
     return `<div class="welcome"><div class="big">New ${agentLabel(d.agent)} quest</div>
       <div class="sub">Choose a zone (project folder) on the left.</div>
       <div class="hint">Not listed? Type a full folder path in the box below and press Enter.<br>Type <b>mkdir &lt;your WoW folder&gt;\\_forever_\\Interface\\AddOns\\MyAddon</b> to start a new addon folder.<br>
-      Switch familiar: ${Object.keys(PROVIDERS).map((id) => `<span class="btn" data-act="${attr({ type: "agent", agent: id })}">${AGENT_ICON[id]} ${esc(agentLabel(id))}</span>`).join(" ")}</div></div>`;
+      Switch familiar: ${Object.keys(PROVIDERS).filter((id) => id !== "familiar").map((id) => `<span class="btn" data-act="${attr({ type: "agent", agent: id })}">${AGENT_ICON[id]} ${esc(agentLabel(id))}</span>`).join(" ")}</div></div>`;
   if (d.kind === "draft" && d.chat)
     return `<div class="welcome"><div class="big">${AGENT_ICON[d.agent]} New chat</div>
       <div class="sub">${agentLabel(d.agent)}${d.model ? ` · ${esc(d.model)}` : ""} · web search only, no files or commands</div>
@@ -532,7 +580,7 @@ function renderTracker(lines: TrackerLine[]) {
   els.lines.innerHTML = lines
     .map(
       (l) => `<div class="tl st-${l.status}" data-act="${attr({ type: "select", id: l.id })}">
-        <div class="tl-h"><span class="ag ag-${l.agent}">${AGENT_ICON[l.agent]}</span> ${esc(l.title)} <span class="s">${esc(l.project)}${l.progress ? " · " + l.progress : ""}</span></div>
+        <div class="tl-h"><span class="ag ag-${l.agent}">${AGENT_ICON[l.agent]}</span> ${esc(l.title)} <span class="s">${esc([l.project, l.progress, (l as TrackerR3).cost].filter(Boolean).join(" · "))}</span></div>
         <div class="tl-a">${esc(l.activity)}</div></div>`,
     )
     .join("");
@@ -562,7 +610,12 @@ function render() {
   els.target.classList.toggle("warn", !!model.target.warn);
   renderTracker(model.tracker);
   renderToasts(model);
-  els.status.textContent = model.status.text + (model.quiet ? " · Alerts muted (/fam quiet off)" : "") + (model.private ? " · Hide names on" : "");
+  document.body.classList.toggle("blur", blurOn());
+  els.status.textContent = model.status.text + (model.quiet ? " · Alerts muted (/fam quiet off)" : "") + (blurOn() ? " · Stream-safe on" : model.private ? " · Hide names on" : "");
+  const keys = keysOf(model);
+  const modeHtml = keys?.mode ? `<span>${esc(keys.mode)}</span>` : "";
+  if (els.modeLabel.innerHTML !== modeHtml) els.modeLabel.innerHTML = modeHtml;
+  els.modeLabel.classList.toggle("hot", !!keys?.modeHot);
   els.status.className = `lvl-${model.status.level}`;
   applyLayout();
   if (pendingJump && model.detail.kind === "thread" && pendingJump.thread === model.detail.id && els.detailScroll.clientHeight) {
@@ -630,6 +683,13 @@ function pointIn(r: string, x: number, y: number): Element | null {
 
 let hovered: Element | null = null;
 
+function toLatest() {
+  follow = model?.detail.kind === "thread";
+  els.detailScroll.scrollTop = els.detailScroll.scrollHeight;
+  els.latest.style.display = "none";
+  rememberReadingPlace();
+}
+
 function onInput(ev: any) {
   if (!visible && !devInput) {
     // Never act on clicks the player can't see (the Glass is hidden or not yet aligned).
@@ -638,6 +698,8 @@ function onInput(ev: any) {
   }
   if (ev.t === "wheel") {
     if (ev.r === "detail" && model?.detail.kind === "thread" && model.detail.loading && !model.detail.entries.length) return;
+    // The "Jump to the latest reply" binding: the same as clicking Latest.
+    if (ev.r === "detail" && ev.d <= -9999) return toLatest();
     const target = ev.r === "list" ? els.listScroll : ev.r === "detail" ? els.detailScroll : ev.r === "tracker" ? els.tracker : null;
     if (!target) return;
     target.scrollTop -= ev.d * 4 * parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--row-h") || "16");
@@ -675,11 +737,10 @@ function onInput(ev: any) {
         pendingJump = { thread: act.thread, entry: act.entry };
         bridge.action({ type: "select", id: act.thread, entry: act.entry });
       }
-      if (act.what === "bottom") {
-        follow = true;
-        els.detailScroll.scrollTop = els.detailScroll.scrollHeight;
-        els.latest.style.display = "none";
-        rememberReadingPlace();
+      if (act.what === "bottom") toLatest();
+      if (act.what === "reveal") {
+        const id = (hit.closest(".entry") as HTMLElement | null)?.dataset.id;
+        if (id && blurOn()) reveal(id);
       }
       return;
     }

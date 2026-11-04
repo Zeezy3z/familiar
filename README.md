@@ -89,7 +89,7 @@ window (see [Signing in](#signing-in)).
    config** in the control panel) whose subfolders should be offered as zones. Without any, zones
    come from your agents' own history.
 
-Familiar does **not** start with Windows unless you turn it on: control panel → **Start Familiar
+Familiar does **not** start with Windows unless you turn it on: control panel → Advanced → **Start Familiar
 when I sign in to Windows**, or `/fam autostart on` in game.
 
 > **Never played WoW?** Display mode: Esc → Options → System → Graphics → Display Mode →
@@ -110,8 +110,8 @@ when I sign in to Windows**, or `/fam autostart on` in game.
 | `Continue in Claude app` / `Continue in Codex app` (quest header), `/fam open` | hand the selected quest or desktop thread to the agent's own app, same conversation. One owner at a time: while the app has it open, sending from WoW asks you to close it there and press Retry, or continue as a copy |
 | `/fam show claude` · `codex` · `all` | filter the Quest Log by agent |
 | `+ Chat` / `/fam ask <question>` | chat without a project (see [Chats](#chats)). `/fam ask` continues your latest chat; `/fam ask new <question>` starts another |
-| `Approve` / `Deny` / `Always` | answer the agent's pending request by clicking the card on the Glass, the Approve button, or your Approve keybind. Register that key in the control panel (**Approve key**, e.g. `F9` or `CTRL-F9`) so Familiar can check it was really pressed. `/fam approve` and `/fam always` only remind you of this; `/fam deny` and `/fam stop` work from chat. `Always` also allows that kind of action for the rest of this quest (not other quests); that is how long it lasts with Claude and Codex, while other agents (Hermes, Grok) choose the scope themselves and may remember it longer. See [What can talk to your agents](#what-can-talk-to-your-agents) |
-| `Mode` | switches the quest between **Ask first** and **Plan only**, with a click on the Mode button. **Accept edits** and **Auto** can be chosen only in the desktop control panel (**New quests start in**); new quests start in Ask first unless you change that. Plan only asks the agent not to change anything: Claude uses its own plan mode, and Codex gets a read-only sandbox plus an instruction. If the agent tries anyway, you still get an approval card |
+| `Approve` / `Deny` / `Always` | answer the agent's pending request by clicking the card on the Glass, the Approve button, or your Approve keybind. Register that key in the control panel (**Advanced** → **Approve key**, e.g. `F9` or `CTRL-F9`; the panel shows what is registered and warns about keys you also play with) so Familiar can check it was really pressed. `/fam approve` and `/fam always` only remind you of this; `/fam deny` and `/fam stop` work from chat. `Always` also allows that kind of action for the rest of this quest (not other quests); that is how long it lasts with Claude and Codex, while other agents (Hermes, Grok) choose the scope themselves and may remember it longer. A request too long for the card shows **Deny** only; you approve those in the control panel ([Long requests are approved on your PC](#long-requests-are-approved-on-your-pc)). See [What can talk to your agents](#what-can-talk-to-your-agents) |
+| `Mode` | switches the quest between **Ask first** and **Plan only**, with a click on the Mode button. **Accept edits** and **Auto** can be chosen only in the desktop control panel (**Advanced** → **New quests start in**); new quests start in Ask first unless you change that. Plan only asks the agent not to change anything: Claude uses its own plan mode, and Codex gets a read-only sandbox plus an instruction. If the agent tries anyway, you still get an approval card |
 | `/fam focus game` · `stay` | after Enter/Send, give the keyboard back to WoW (default) or keep typing in Familiar |
 | `Model` | open the model list in the details pane; click one to use it |
 | `Text` | native, copyable transcript (from the last `/reload`) |
@@ -120,7 +120,8 @@ when I sign in to Windows**, or `/fam autostart on` in game.
 | `/fam <text>` | send to the selected quest without opening the window |
 | `/fam claude <text>` / `/fam codex <text>` | start a quest in the current zone |
 | `/fam stop` · `tracker` · `strip tr` · `quiet on` · `diag` · `reload` · `help` | stop the agent, toggle the tracker, move the strip, mute ordinary notices, print diagnostics, … |
-| `/fam private on` · `off` | hide names for streaming: project and quest names (see [Privacy & data](#privacy--data)) |
+| `/fam stream on` · `off` | Stream-safe: hide names and blur replies on the Glass (see [Streaming](#streaming)) |
+| `/fam private on` · `off` | hide names only: project and quest names (see [Streaming](#streaming)) |
 | `/fam draft discard` | clear this character's unfinished composer draft |
 | `/fam suggest <idea>` | open a pre-filled GitHub issue in your browser (up to 500 characters; also **Suggest a change** in the control panel). Only your text and version numbers go in; nothing is sent until you submit it there |
 
@@ -143,7 +144,7 @@ files, no commands. Claude chats run Claude Haiku at medium effort with web sear
 chats get web search in a read-only sandbox with Codex's shell, plugins, apps and browser/computer
 control switched off; MCP servers from your own Codex `config.toml` still load, and anything Codex
 asks permission for comes to you as an approval card. **Model** in a chat picks another model and
-effort; the control panel's **Chat** row sets the default.
+effort; the control panel (**Advanced** → **Chat defaults**) sets the default.
 
 Your character's level, race, class, faction and zone, and your quest log with objective progress,
 go along with each chat question (never your character name or realm). `/fam ask context off`
@@ -173,7 +174,8 @@ come to the game, not back to the chat app. Hermes denies an unanswered approval
 
 Familiar talks to agents you already have installed. It has no accounts, no login of its own and no
 servers, and it never reads, copies or stores any agent's credentials. The control panel's
-**Familiars** card shows each agent as installed / signed in, with a **Use** switch, **Install…**
+**Familiars** card (under the step strip until your first agent is set up, then under
+**Advanced**) shows each agent as installed / signed in, with a **Use** switch, **Install…**
 (opens the vendor's page; Familiar never installs agents) and **Sign in**.
 
 **Claude.** The supported path is an Anthropic API key: create one in the
@@ -194,7 +196,7 @@ own plan.
 
 ## Configuration
 
-`%APPDATA%\Familiar\config.json` (control panel → **Open config**, then **Reload config**). If a
+`%APPDATA%\Familiar\config.json` (control panel → **Advanced** → **Open config**, then **Reload config**). If a
 hand edit leaves it invalid JSON, Familiar moves it to `config.json.bad-<time>` and starts from
 defaults.
 
@@ -212,10 +214,11 @@ defaults.
 | `chatAgent` / `chatModel` / `chatEffort` | `claude` / `haiku` / `medium` | defaults for Chats |
 | `externalDays`, `externalPerZone`, `followDesktopArchive` | `21`, `6`, `true` | which desktop threads are listed |
 | `sound`, `speak`, `quiet`, `raidWarnings`, `fontScale`, `toolDetail` | | notices and display |
-| `privateMode` | `false` | Hide names (streaming): generic project/quest names, no desktop threads, generic notices (see [Privacy & data](#privacy--data)) |
+| `privateMode` | `false` | Hide names (streaming): generic project/quest names, no desktop threads, generic notices (see [Streaming](#streaming)) |
+| `blurTranscript` | `false` | blur replies, sent messages and tool lines on the Glass; set together with `privateMode` by **Stream-safe** (see [Streaming](#streaming)) |
 
-Logs: `%APPDATA%\Familiar\familiar.log` (control panel → **Open log file**). **Companion controls**
-shows a copyable build line (version, commit, source status; no paths) for bug reports.
+Logs: `%APPDATA%\Familiar\familiar.log` (control panel → **Advanced** → **Open log file**). **Companion controls**
+(also under **Advanced**) shows a copyable build line (version, commit, source status; no paths) for bug reports.
 
 ## Privacy & data
 
@@ -241,6 +244,16 @@ sign-in and their own privacy terms. Familiar identifies itself to them as a cli
   * WoW SavedVariables (`Familiar.lua`) — the last 30 prompts you sent, in plain text, messages
     awaiting confirmation, settings, and your unsent draft (per character).
   * Conversations you start also live in each agent's own history.
+
+### Streaming
+
+* **Stream-safe (the one switch to use):** control panel → **In game** → **Stream-safe**, or
+  `/fam stream on|off` in game. It hides names (see **Hide names only** below), blurs replies, your
+  sent messages, tool lines and objectives on the Glass, and turns speech off. Click a blurred reply
+  to read it for 8 seconds. **Approval cards are never blurred**: you must see what you approve.
+  What you type in the box is still on screen while you type it, and the control panel is a
+  separate window on your PC that shows real names and whole requests, so keep it out of the
+  captured area. Unticking restores names and text; speech stays off until you turn it on.
 * **On stream or in screenshots:** the overlay (project names, titles, replies, approval commands)
   is a separate window, so it is **not** in OBS **Game Capture**. Capture it with **Display
   Capture**, or with a **Window Capture** source on the window titled `Familiar Glass`
@@ -249,14 +262,14 @@ sign-in and their own privacy terms. Familiar identifies itself to them as a cli
   encodes what you are sending; crop it out: it is 256×16 pixels in the game window's top-left
   corner (use a *Crop/Pad* filter on the source), and `/fam strip dim` makes it near-black.
   (The OBS steps are untested across OBS versions.)
-* **Hide names (for streaming):** control panel → **In game** → **Hide names** (the `/fam private` command and `privateMode` config key keep their names), or
-  `/fam private on|off`. Zones show as *Project 1, 2, …* and quests as *Quest #1, #2, …* (chats as
-  *Chat #n*), desktop threads are hidden, notices and raid warnings say only
-  `Finished · Claude`, `Needs approval · Claude` or `Failed · Claude` (normally they also name the project
-  and quest, never the reply text), nothing is spoken, and the FamiliarSync snapshot
-  holds no titles and no transcript. It hides names, not content: replies, tool lines, approval
-  cards and what you type stay visible on screen and can contain file names or paths. Your real
-  names and conversations are kept on your PC as before.
+* **Hide names only (no blur):** control panel → **Advanced** → **Hide names** (the `/fam private`
+  command and `privateMode` config key keep their names), or `/fam private on|off`. Zones show as
+  *Project 1, 2, …* and quests as *Quest #1, #2, …* (chats as *Chat #n*), desktop threads are
+  hidden, notices and raid warnings are generic (for example `Quest Complete` or `Quest Failed`,
+  with no project or quest name; normally they name both, never the reply text), nothing is
+  spoken, and the FamiliarSync snapshot holds no titles and no transcript. It hides names, not
+  content: replies, tool lines, approval cards and what you type stay visible on screen and can
+  contain file names or paths. Your real names and conversations are kept on your PC as before.
 
 ## What can talk to your agents
 
@@ -278,8 +291,8 @@ the game *decide* anything on its own:
   didn't start, `/fam stop`, then find the addon.
 * **Quests start in Ask first.** Everything the agent wants to run or change comes to you as a
   card, shown as the agent reports it, until it is answered. Long edits are cut at 60 lines, plans
-  and commands at 4,000 characters and permission lists at 600 characters, and the card then says
-  in red that part of the request is not shown; if it does, Deny and check in the agent's app.
+  and commands at 4,000 characters and permission lists at 600 characters. A cut request can only
+  be denied from the game; see [Long requests are approved on your PC](#long-requests-are-approved-on-your-pc).
 * **Riskier modes only from the desktop.** In game, Mode only switches between Ask first and Plan
   only. **Accept edits** (the agent changes files in its project without a card; Codex: also runs
   sandboxed commands there) and **Auto** (the agent approves routine actions itself) can only be
@@ -301,7 +314,19 @@ can do what your keyboard can, short of approving.
 **Why did my click or key not approve?** Familiar approves only when it can match the approval to
 your mouse or your registered Approve key. If the game stalled or the request had only just
 appeared, click again. A keybind approval does nothing until that key is entered in the control
-panel.
+panel. A request the card says is cut is approved only in the control panel (below).
+
+### Long requests are approved on your PC
+
+Some requests are too long for the in-game card. Familiar never offers **Approve** or **Always**
+for those in the game, even with a real click: the card says part of the request is not shown and
+has **Deny** only. To approve one, open Familiar's control panel (tray → **Open Familiar**). The
+**Requests waiting on your PC** card at the top shows the whole request, not shortened, in a
+scrollable box, and then **Approve · Deny · Always (this quest)**. It stays listed while the
+request is still pending. Only a real click or key press in that window counts (a click in the
+focused panel is physical input on your PC); nothing in the game, and nothing automatic, can answer
+from there. The panel shows real names even when Hide names or Stream-safe is on, because it is on
+your PC and not part of the stream.
 
 ## Is this allowed by Blizzard?
 
@@ -333,7 +358,7 @@ guarantee otherwise. Use at your own discretion.
 | Familiar is "out of date" in the AddOns list | The client is newer than the addon's `## Interface:` list. Tick **Load out of date AddOns**; update Familiar when a release lists the new number. |
 | Familiar / Familiar Sync missing from the AddOns list | Restart WoW (not `/reload`). Check that `<WoW>\_forever_\Interface\AddOns\Familiar` exists (`dir` shows `<JUNCTION>`); tray → **Reinstall addon** recreates it and re-points a broken link. |
 | **Not linked** although WoW is open | Check, in order: the companion is running (tray icon); Familiar and Familiar Sync are enabled; display mode is Windowed or Windowed (Fullscreen); the game isn't minimized; nothing always-on-top covers the top-left corner (`/fam strip tr` moves the strip top-right); the game stays on one monitor (mixed DPI scaling can misalign after moving it — move or resize once); with Windows HDR on, if the link never locks, turn HDR off for that monitor. The control panel's link details and `/fam diag` show fps and strip geometry. |
-| Familiar starts with Windows and you don't want it | Untick **Start Familiar when I sign in to Windows**, or `/fam autostart off`. |
+| Familiar starts with Windows and you don't want it | Untick **Start Familiar when I sign in to Windows** (control panel → Advanced), or `/fam autostart off`. |
 | Claude "Not signed in" | Set `ANTHROPIC_API_KEY` for your Windows user and restart Familiar, or sign in to Claude Code itself (`claude /login`). |
 | Codex "Not installed" although you have the npm CLI | Known issue, fixed in 0.1.1: 0.1.0 only detects the Codex desktop app. Install the desktop app, or set `"codexExe"` to the full path of the real `codex.exe` (not `codex.cmd`); the Familiars card may still say Not installed. |
 

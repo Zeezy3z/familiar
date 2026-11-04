@@ -33,6 +33,8 @@ function entry(v: unknown): v is Entry {
     optional(v, "streaming", x => typeof x === "boolean") && optional(v, "canAlways", x => typeof x === "boolean") && optional(v, "options", strings) &&
     optional(v, "status", member(["running", "ok", "error", "unknown"])) &&
     optional(v, "approval", member(["pending", "approved", "denied", "always", "expired"])) &&
+    optional(v, "cut", x => typeof x === "boolean") && optional(v, "full", string) &&
+    optional(v, "refused", x => object(x) && member(["proof", "fresh", "cut", "view"])(x.why) && finite(x.at)) &&
     optional(v, "level", member(["info", "error"]));
 }
 
@@ -43,7 +45,7 @@ function thread(v: unknown): v is Thread {
       !Array.isArray(v.entries) || !v.entries.every(entry) || new Set(v.entries.map(e => e.id)).size !== v.entries.length ||
       !Array.isArray(v.todos) || !v.todos.every(t => object(t) && string(t.text) && member(["pending", "in_progress", "completed"])(t.status) && optional(t, "id", string))) return false;
   return ["nativeId", "model", "todoNote", "adoptedFrom", "lastError", "questsSent"].every(key => optional(v, key, string)) &&
-    optional(v, "attentionSeen", x => x === null || string(x)) && optional(v, "kind", x => x === "chat") && optional(v, "fork", x => typeof x === "boolean") &&
+    optional(v, "attentionSeen", x => x === null || string(x)) && optional(v, "kind", member(["chat", "tutorial"])) && optional(v, "fork", x => typeof x === "boolean") &&
     optional(v, "usage", x => object(x) && ["inputTokens", "outputTokens", "costUsd", "contextWindow"].every(key => optional(x, key, finite)));
 }
 
@@ -82,6 +84,8 @@ export class ThreadStore {
   private writeError = false;
   private notice?: RecoveryNotice;
   code = "other";
+  /** The last read found no saved-quest file at all: Familiar's first run on this profile. */
+  firstRun = false;
   constructor(private file: string) {}
 
   get warning(): StorageWarning | undefined {
@@ -99,6 +103,7 @@ export class ThreadStore {
     catch (e) {
       this.code = storageCode(e);
       if (this.code !== "ENOENT") this.blocked = "read";
+      else this.firstRun = true;
       return { threads: [] };
     }
     let result: ReturnType<typeof decode>;

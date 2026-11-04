@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { Config, writeFileAtomic } from "../hub/config";
-import { Hub } from "../hub/hub";
+import { FONT_MAX, FONT_MIN, Hub } from "../hub/hub";
 import { buildModel } from "../hub/viewmodel";
 
 export const DEFAULT_WOW_ROOT = "C:\\Program Files (x86)\\World of Warcraft";
@@ -430,6 +430,8 @@ export function buildSnapshot(hub: Hub, opts: { stopping?: boolean } = {}): stri
     // Companion clock (epoch seconds). The addon compares it with its own outbox timestamps.
     ...(opts.stopping ? [`  stoppedAt = ${Math.floor(Date.now() / 1000)},`] : []),
     `  acked = { ${hub.acked.slice(-60).map(luaString).join(", ")} },`,
+    // The control panel's Text size: the addon sizes its quest-list rows by it at login / reload.
+    `  fontScale = ${luaScale(hub.cfg().fontScale)},`,
     // Provider ids the addon accepts in /fam <provider> <text> and /fam show <provider>.
     `  providers = { ${Object.keys(hub.backends).filter((id) => hub.enabled(id)).map(luaString).join(", ")} },`,
     `  list = {\n    ${list.join(",\n    ")}\n  },`,
@@ -437,6 +439,11 @@ export function buildSnapshot(hub: Hub, opts: { stopping?: boolean } = {}): stri
     "}",
     "",
   ].join("\n");
+}
+
+/** A Lua number literal for the font scale, within the range the hub allows. */
+function luaScale(s: number): string {
+  return String(Number.isFinite(s) ? Math.round(Math.min(FONT_MAX, Math.max(FONT_MIN, s)) * 100) / 100 : 1);
 }
 
 /** Like luaString, but keeps |cff......| / |r colour codes we inserted. */

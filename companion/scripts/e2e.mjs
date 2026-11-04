@@ -112,6 +112,28 @@ await check("wheel scrolls the details pane", async () => {
   assert(moved, `scrollTop stayed ${top0}`);
 });
 
+await check("a cut request is never approved from the game, even by a corroborated click", async () => {
+  // The tutorial quest needs no agent. The token-gated /action hook stands in for a corroborated
+  // card click (main hands the Hub TRUSTED proof for it); only the control panel may approve this.
+  await send({ t: "key", k: "tutorial" });
+  const quest = await until(async () => (await get("/threads")).find((x) => x.agent === "familiar"));
+  assert(quest, "no tutorial quest");
+  const full = "echo " + "x".repeat(5000);
+  const requestId = `e2e-cut-${Date.now()}`;
+  await post("/inject", { agent: "familiar", type: "approval", threadId: quest.id, requestId, kind: "command", title: "e2e: cut request",
+    detail: full.slice(0, 4000) + "\n… (1005 characters omitted from this preview)", canAlways: false, cut: true, full });
+  await sleep(500); // older than minCardAgeMs: only the cut can refuse it
+  try {
+    await post("/action", { type: "decide", thread: quest.id, requestId, decision: "allow" });
+    const card = (await get("/threads")).find((x) => x.id === quest.id)?.last.find((e) => e.requestId === requestId);
+    assert(card?.approval === "pending", `card is ${card?.approval}`);
+    assert(card?.refused?.why === "cut", `refusal: ${JSON.stringify(card?.refused)}`);
+    assert((await get("/status")).requests?.some((r) => r.requestId === requestId && r.full === full), "not listed for the control panel in full");
+  } finally {
+    await post("/inject", { agent: "familiar", type: "approvalResolved", threadId: quest.id, requestId });
+  }
+});
+
 if (process.argv.includes("--agents")) {
   await check("Claude quest resumes after a companion restart and answers", async () => {
     const m = await model();
