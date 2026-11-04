@@ -13,6 +13,7 @@ function Minimap_.Init()
   local db = ns.db.minimap
   if db.hide then return end
   local btn = CreateFrame("Button", "FamiliarMinimapButton", Minimap)
+  Minimap_.button = btn -- Layout reports its rect (layout.mini) so the Glass can mark it
   btn:SetSize(31, 31)
   btn:SetFrameStrata("MEDIUM")
   btn:SetFrameLevel(8)
@@ -47,7 +48,10 @@ function Minimap_.Init()
       place(self, db.angle)
     end)
   end)
-  btn:SetScript("OnDragStop", function(self) self:SetScript("OnUpdate", nil) end)
+  btn:SetScript("OnDragStop", function(self)
+    self:SetScript("OnUpdate", nil)
+    ns.Layout.Dirty() -- the reported rect (layout.mini) follows the move
+  end)
   btn:SetScript("OnEnter", function(self)
     GameTooltip:SetOwner(self, "ANCHOR_LEFT")
     GameTooltip:AddLine("Familiar", 1, 0.82, 0)

@@ -72,6 +72,8 @@ describe("Familiar addon (headless)", () => {
     expect(l.scr).toEqual([1739, 979]);
     expect(l.panel).toBe(false);
     expect(vm.run(`return MOCK.chat[#MOCK.chat]`)).toContain("ready");
+    expect(l.mini).toEqual(JSON.parse(vm.run(`return "[" .. table.concat(NS.Layout.prect(FamiliarMinimapButton), ",") .. "]"`))); // window closed
+    expect(l.mini).toHaveLength(4);
   });
 
   it("opens the window via /fam and reports touch-surface rects", () => {
@@ -85,6 +87,7 @@ describe("Familiar addon (headless)", () => {
     // The companion matches Always / Mode clicks to the real mouse on these rects before acting.
     expect(l.keys.always).toBeTruthy();
     expect(l.keys.mode).toBeTruthy();
+    expect(l.mini).toHaveLength(4); // and still there with the window open
   });
 
   it("sends a prompt from the composer (Enter) and keeps history", () => {
@@ -574,6 +577,23 @@ describe("outbox (prompts the companion may not have received)", () => {
     expect(messages.filter(m => m.t === "key").slice(-2)).toMatchObject([{ k: "quiet", a: "on" }, { k: "caughtup" }]);
   });
 
+  it("/fam sound <0-100> and <n>% go to the companion as the sound key, not as a prompt; other words still do", () => {
+    advance(30);
+    const prompts = () => messages.filter((m) => m.t === "prompt").length;
+    const before = prompts();
+    for (const arg of ["40", "55%", "250"]) {
+      vm.run(`SlashCmdList.FAMILIAR("sound ${arg}")`);
+      advance(1);
+      expect(last("key")).toMatchObject({ k: "sound", a: arg });
+    }
+    expect(prompts()).toBe(before);
+    vm.run(`SlashCmdList.FAMILIAR("sound loud")`);
+    advance(2);
+    expect(last("key")).toMatchObject({ k: "sound", a: "250" }); // not a setting
+    expect(prompts()).toBe(before + 1);
+    expect(last("prompt").text).toBe("sound loud");
+  });
+
   it("/fam font | sound | warnings go to the companion; other words are prompts", () => {
     vm.run(`SlashCmdList.FAMILIAR("sound off")`);
     advance(1);
@@ -1000,5 +1020,70 @@ describe("minimap and title icons", () => {
     expect(tga[16]).toBe(32);
     expect(tga[17] & 0x0f).toBe(8); // 8 alpha bits
     if (tga[2] === 2) expect(tga.length).toBeGreaterThanOrEqual(18 + tga[0] + 64 * 64 * 4); // all pixel rows present
+  });
+});
+
+describe("minimap button rect (layout.mini)", () => {
+  const sentLayouts = (state: LuaVM) => Number(state.run(`local n = 0 for _, t in ipairs(draftSent) do if t == "layout" then n = n + 1 end end return n`));
+  const mini = (state: LuaVM) => state.run(`local m = NS.Layout.Build().mini return m and table.concat(m, ",") or "none"`);
+
+  it("is the button's rect through the shared rect helper, scaled and flipped to physical pixels", () => {
+    const state = draftBoot();
+    // mock geometry: (100,100) 31x31 in a minimap at UI scale 0.8, 979 px tall screen -> k = 0.8 * 979 / 768
+    expect(mini(state)).toBe("102,845,32,32");
+    expect(mini(state)).toBe(state.run(`return table.concat(NS.Layout.prect(FamiliarMinimapButton), ",")`));
+  });
+
+  it("is absent when the button was never created (db.minimap.hide)", () => {
+    const state = draftBoot(`FamiliarDB = { minimap = { angle = 210, hide = true } }`);
+    expect(state.run(`return tostring(FamiliarMinimapButton)`)).toBe("nil");
+    expect(mini(state)).toBe("none");
+    expect(state.run(`NS.Layout.Send() return tostring(NS.Layout.Build().mini)`)).toBe("nil");
+  });
+
+  it("is absent while the button is hidden, and back when it is shown again", () => {
+    const state = draftBoot();
+    state.run(`FamiliarMinimapButton:Hide()`);
+    expect(mini(state)).toBe("none");
+    state.run(`FamiliarMinimapButton:Show() Minimap:Hide()`); // the minimap itself hidden hides its children
+    expect(mini(state)).toBe("none");
+    state.run(`Minimap:Show()`);
+    expect(mini(state)).toBe("102,845,32,32");
+  });
+
+  it("a minimap drag stop sends a fresh layout within 0.1 s with the moved rect", () => {
+    const state = draftBoot();
+    state.run(`MOCK.advance(5)`);
+    const before = sentLayouts(state);
+    state.run(`FamiliarMinimapButton.__x = 200 MOCK.fire(FamiliarMinimapButton, "OnDragStart") MOCK.fire(FamiliarMinimapButton, "OnDragStop")`);
+    expect(sentLayouts(state)).toBe(before); // debounced, not sent synchronously
+    state.run(`MOCK.advance(0.1)`);
+    expect(sentLayouts(state)).toBe(before + 1);
+    expect(mini(state)).toBe("204,845,32,32");
+  });
+
+  it("a frame over the button is listed as an occluder even with the window and tracker closed", () => {
+    const state = draftBoot();
+    state.run(`if NS.Tracker.IsShown() then NS.Tracker.Toggle() end`);
+    state.run(`MOCK.advance(5)`); // let the toggle's own layout and the ticker settle
+    expect(state.run(`return tostring(NS.UI.IsShown() or NS.Tracker.IsShown())`)).toBe("false");
+    expect(state.run(`return tostring(NS.Layout.Build().occ)`)).toBe("nil");
+    state.run(`GameTooltip.__x, GameTooltip.__y, GameTooltip.__w, GameTooltip.__h = 90, 90, 80, 40 GameTooltip:Show()`);
+    expect(state.run(`local o = NS.Layout.Build().occ return o and #o or 0`)).toBe("1");
+    const before = sentLayouts(state);
+    state.run(`MOCK.advance(0.1)`);
+    expect(sentLayouts(state)).toBe(before + 1); // the OnShow hook noticed (CheckOccluders no longer needs a window)
+    state.run(`GameTooltip:Hide() GameTooltip.__x = 900`);
+    state.run(`GameTooltip:Show()`); // elsewhere on screen: not an occluder of the button
+    expect(state.run(`return tostring(NS.Layout.Build().occ)`)).toBe("nil");
+  });
+
+  it("/fam diag prints the button's rect, or 'hidden'", () => {
+    const diag = (state: LuaVM) => {
+      state.run(`MOCK.chat = {} SlashCmdList.FAMILIAR("diag")`);
+      return state.run(`return table.concat(MOCK.chat, "|")`).split("|").find((l) => l.includes("minimap:")) ?? "";
+    };
+    expect(diag(draftBoot())).toMatch(/minimap: 102,845 32×32$/);
+    expect(diag(draftBoot(`FamiliarDB = { minimap = { angle = 210, hide = true } }`))).toMatch(/minimap: hidden$/);
   });
 });
