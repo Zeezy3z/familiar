@@ -8,14 +8,14 @@
   @font-face { font-family: "Familiar Display"; src: url("assets/marcellus-latin-400-normal.woff2") format("woff2"); }
   :root {
     color-scheme: dark; accent-color: var(--gold);
-    /* Shared token block: the same names and values as overlay.css :root (the Glass is the source). */
+    /* Shared token block: the same names as overlay.css :root (the Glass is the source of the colours). */
     --gold:#ffd100; --gold-dim:#c9a227; --text:#ece4d4; --text-dim:#bfb6a4; --muted:#9c9384;
     --ok:#7dd96b; --warn:#ff8040; --err:#ff5a4f; --info:#71d5ff; --claude:#d98a60; --codex:#7fd1a8;
     --familiar:#b9a3ff; --line:rgba(143,115,64,.45); --line-soft:rgba(143,115,64,.22);
     --display:"Familiar Display","Palatino Linotype",Georgia,serif; --sans:"Segoe UI",system-ui,sans-serif; --mono:"Cascadia Mono",Consolas,monospace;
-    --small-font:12px; --body-font:14px;   /* the Glass derives these from the game layout; fixed here */
     --u:5px;                                /* Glass: calc(var(--small-font)*.4); control panel: 5px */
-    --fs-sm:var(--small-font); --fs-md:var(--body-font); --fs-lg:calc(var(--body-font)*1.25); --fs-xl:calc(var(--body-font)*1.7);
+    /* Four sizes and nothing else (test/type-scale.test.ts). The Glass derives its four from the game layout; the panel's are fixed. */
+    --fs-sm:12px; --fs-md:14px; --fs-lg:16px; --fs-xl:22px;
     --shadow:1px 1px 0 #000; --r:2px; --r-btn:3px;
     /* Motion: state changes · arrivals (toast, card, seal, badge) · the moment settling; nothing longer, nothing loops but the caret. */
     --m-fast:150ms; --m-arrive:350ms; --m-settle:600ms;
@@ -34,45 +34,45 @@
   #build-id { box-sizing: border-box; width: 100%; background: var(--bg); border: 1px solid var(--line); color: var(--text); padding: calc(var(--u)*1.2); font: var(--fs-sm) var(--mono); }
   main { padding: calc(var(--u)*2.4) calc(var(--u)*3.6); display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: calc(var(--u)*2.4); max-width: 1000px; margin: auto; }
   .card { background: var(--card); border: 1px solid var(--line-soft); border-radius: 4px; padding: calc(var(--u)*2) calc(var(--u)*2.4); }
-  .card h2 { font-family: var(--display); color: var(--gold); font-size: 15px; font-weight: normal; margin: 0 0 calc(var(--u)*1.2); }
+  .card h2 { font-family: var(--display); color: var(--gold); font-size: var(--fs-lg); font-weight: normal; margin: 0 0 calc(var(--u)*1.2); }
   .kv { display: grid; grid-template-columns: 160px 1fr; gap: 2px calc(var(--u)*1.6); }
   .kv > div:nth-child(odd) { color: var(--text); }
   .ok { color: var(--ok); } .warn { color: var(--warn); } .err { color: var(--err); } .muted { color: var(--muted); }
   .wide { grid-column: 1 / -1; }
   .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   #log { height: 190px; overflow: auto; font: var(--fs-sm) var(--mono); white-space: pre-wrap; color: var(--text-dim); }
-  button { background: linear-gradient(180deg, #5a1010, #2a0505); color: var(--gold); border: 1px solid #000; box-shadow: inset 0 1px 0 rgba(255,209,0,.25), inset 0 -1px 0 #000; border-radius: var(--r-btn); padding: 4px 12px; font-family: var(--display); cursor: pointer; }
+  button { background: linear-gradient(180deg, #5a1010, #2a0505); color: var(--gold); border: 1px solid #000; box-shadow: inset 0 1px 0 rgba(255,209,0,.25), inset 0 -1px 0 #000; border-radius: var(--r-btn); padding: 4px 12px; font-family: var(--display); font-size: var(--fs-md); cursor: pointer; }
   button { transition: filter var(--m-fast); }
   button:hover { filter: brightness(1.3); }
   .btns { display: flex; gap: calc(var(--u)*1.2); flex-wrap: wrap; margin-top: calc(var(--u)*1.2); }
   ul { margin: 4px 0; padding-left: 18px; } li { margin: 2px 0; }
-  .hint { color: var(--muted); font-size: 13px; line-height: 1.5; max-width: 72ch; }
-  .warnbox { margin-top: calc(var(--u)*1.2); padding: calc(var(--u)*1.2) calc(var(--u)*1.6); border: 1px solid var(--warn); background: #2a1708; color: var(--text); font-size: 13px; line-height: 1.5; }
+  .hint { color: var(--text-dim); font-size: var(--fs-sm); line-height: 1.5; max-width: 72ch; }
+  .warnbox { margin-top: calc(var(--u)*1.2); padding: calc(var(--u)*1.2) calc(var(--u)*1.6); border: 1px solid var(--warn); background: #2a1708; color: var(--text); font-size: var(--fs-sm); line-height: 1.5; }
   #modebadge { margin-left: auto; font-family: var(--display); border: 1px solid var(--warn); border-radius: var(--r-btn); padding: 1px 8px; }
   #onboard { margin: 0 0 calc(var(--u)*2); border-color: var(--gold-dim); }
   .prov { display: grid; grid-template-columns: 22px 120px 1fr auto; gap: calc(var(--u)*1.2) calc(var(--u)*2); align-items: center; padding: calc(var(--u)*1.2) 0; border-top: 1px solid var(--line-soft); }
   .prov:first-child, #chatset { border-top: none; }
-  .prov .g { color: var(--gold); font-size: 16px; text-align: center; }
-  .prov .n { font-family: var(--display); font-size: 14px; }
-  .prov .d { color: var(--muted); font-size: 12px; }
+  .prov .g { color: var(--gold); font-size: var(--fs-lg); text-align: center; }
+  .prov .n { font-family: var(--display); font-size: var(--fs-md); }
+  .prov .d { color: var(--muted); font-size: var(--fs-sm); }
   .prov .d code { color: var(--text-dim); user-select: all; }
   .prov .a { display: flex; gap: calc(var(--u)*1.2); align-items: center; white-space: nowrap; }
   .prov.off .n, .prov.off .g { opacity: .45; }
-  button.small { padding: 2px 8px; font-size: 12px; }
+  button.small { padding: 2px 8px; font-size: var(--fs-sm); }
   button.linklike { background: none; border: none; box-shadow: none; padding: 0; font: inherit; color: var(--gold); text-decoration: underline; }
   progress { display: block; width: 100%; height: 6px; margin-top: 4px; accent-color: var(--gold); }
   .res.ok { color: var(--ok); } .res.warn { color: var(--warn); }
   #projects[hidden] { display: none; }
   #project-rows:empty { display: none; }
   #project-rows .prov .d { user-select: all; }
-  textarea, select, input[type="text"] { background: var(--field); color: var(--text); border: 1px solid var(--gold-dim); border-radius: var(--r-btn); padding: 3px 6px; }
+  textarea, select, input[type="text"] { background: var(--field); color: var(--text); border: 1px solid var(--gold-dim); border-radius: var(--r-btn); padding: 3px 6px; font-family: var(--sans); font-size: var(--fs-md); }
   button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, a:focus-visible, summary:focus-visible, pre:focus-visible { outline: 2px solid var(--gold); outline-offset: 3px; }
   button:disabled { opacity: .6; cursor: wait; }
   a { color: var(--gold); }
 
   /* Step 1-3 strip + the current step's content. */
   #journey { border-color: var(--line); background: linear-gradient(120deg, #262016, var(--card)); }
-  #journey h2 { font-size: 21px; margin-bottom: calc(var(--u)*1.6); }
+  #journey h2 { font-size: var(--fs-xl); margin-bottom: calc(var(--u)*1.6); }
   #journey-text { margin: 0; line-height: 1.5; max-width: 70ch; }
   .steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: calc(var(--u)*2.4); padding: 0 0 calc(var(--u)*2); margin: 0; list-style: none; }
   .steps li { border-top: 2px solid var(--line-soft); padding-top: calc(var(--u)*1.2); margin: 0; }
@@ -95,13 +95,13 @@
 
   /* Requests waiting: every pending approval is decided here, with the whole text in front of you. */
   #requests { border-color: var(--warn); background: linear-gradient(120deg, #2a1708, var(--card)); }
-  #requests h2 { color: var(--warn); font-size: 18px; }
+  #requests h2 { color: var(--warn); font-size: var(--fs-lg); }
   #requests[hidden] { display: none; }
   .req { padding: calc(var(--u)*2) 0 0; margin-top: calc(var(--u)*2); border-top: 1px solid var(--line); animation: arrive var(--m-arrive) ease-out; }
   .req:first-child { border-top: none; margin-top: 0; }
   .req-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: calc(var(--u)*.8) calc(var(--u)*1.6); }
-  .req h3 { margin: 0; font-family: var(--display); font-weight: normal; font-size: 16px; color: var(--text); overflow-wrap: anywhere; }
-  .badge { border: 1px solid var(--warn); border-radius: var(--r-btn); padding: 0 6px; font-size: 12px; color: var(--warn); white-space: nowrap; }
+  .req h3 { margin: 0; font-family: var(--display); font-weight: normal; font-size: var(--fs-md); color: var(--text); overflow-wrap: anywhere; }
+  .badge { border: 1px solid var(--warn); border-radius: var(--r-btn); padding: 0 6px; font-size: var(--fs-sm); color: var(--warn); white-space: nowrap; }
   .badge[hidden] { display: none; }
   .req-meta { margin: 2px 0 calc(var(--u)*1.2); }
   .req-full { margin: 0; padding: calc(var(--u)*1.6); max-height: min(50vh, 420px); overflow: auto; background: var(--bg); border: 1px solid var(--line); border-radius: var(--r); font: var(--fs-sm) var(--mono); line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); }
@@ -127,7 +127,7 @@
   /* Advanced: everything else, collapsed by default. */
   #advanced { border: 1px solid var(--line-soft); border-radius: 4px; background: var(--card); }
   #advanced > summary { cursor: pointer; padding: calc(var(--u)*2) calc(var(--u)*2.4); color: var(--gold); font-family: var(--display); }
-  #advanced > summary .muted { font-family: var(--sans); font-size: 13px; }
+  #advanced > summary .muted { font-family: var(--sans); font-size: var(--fs-sm); }
   .adv-body { display: grid; gap: calc(var(--u)*2.4); padding: 0 calc(var(--u)*2.4) calc(var(--u)*2.4); }
   .adv-body .card { background: transparent; }
   .diagnostics summary { cursor: pointer; padding: calc(var(--u)*1.6) 0; color: var(--gold); font-family: var(--display); }
