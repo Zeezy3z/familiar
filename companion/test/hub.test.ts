@@ -1140,6 +1140,62 @@ describe("zones for worktrees", () => {
   });
 });
 
+describe("project folders from the control panel (Projects card)", () => {
+  it("an added folder is a zone in the next pick without a restart; removing it takes it away; excluded folders are refused with the reason", async () => {
+    // Its own config: no roots yet, like a first run without agent history.
+    const own = { ...cfg, projectRoots: [] as string[], projects: [] as string[] };
+    let saved = 0;
+    const h = new Hub(() => own, { claude, codex }, () => {});
+    h.minCardAgeMs = 0;
+    await h.start();
+    h.onConfigChanged = () => saved++; // each added or removed folder is saved
+    const zones = () => { const d = buildModel(h, { linked: true, fps: 30 }).detail; return d.kind === "welcome" ? d.zones : -1; };
+    const pick = async () => {
+      await h.key("newClaude");
+      const rows = buildModel(h, { linked: true, fps: 30 }).list.rows;
+      await h.key("back");
+      return rows.filter((r) => r.kind === "project").map((r) => r.text);
+    };
+    expect(zones()).toBe(0);
+    expect(h.projectsSummary()).toEqual({ explicit: [], roots: [], history: 0 });
+
+    const alpha = path.join(projRoot, "alpha");
+    expect(h.addProjectFolder(alpha, "project")).toEqual({ ok: true, path: alpha });
+    expect(own.projects).toEqual([alpha]);
+    expect(saved).toBe(1);
+    expect(h.projects.list().map((p) => p.name)).toEqual(["alpha"]);
+    expect(await pick()).toEqual(["alpha"]);
+    expect(zones()).toBe(1);
+    expect(h.addProjectFolder(alpha + path.sep, "project")).toEqual({ ok: true, path: alpha }); // already there: not added twice
+    expect(own.projects).toEqual([alpha]);
+
+    // Refused, with the reason the panel shows: excluded by config, opted out, too broad, missing.
+    expect(h.addProjectFolder(path.join(projRoot, "node_modules"), "project")).toEqual({ ok: false, why: "That folder is excluded by your config." });
+    expect(h.addProjectFolder(path.join(projRoot, "private-vault"), "root")).toEqual({ ok: false, why: "That folder is excluded by your config." });
+    const hidden = fs.mkdtempSync(path.join(projRoot, "optout-"));
+    fs.writeFileSync(path.join(hidden, ".nofamiliar"), "");
+    expect(h.addProjectFolder(hidden, "project").why).toMatch(/\.nofamiliar file, so Familiar never offers it/);
+    expect(h.addProjectFolder(os.homedir(), "root").why).toMatch(/home folder can't be a zone/);
+    expect(h.addProjectFolder(path.join(projRoot, "no-such-folder"), "project")).toEqual({ ok: false, why: "That folder doesn't exist." });
+    expect(own.projects).toEqual([alpha]);
+    expect(own.projectRoots).toEqual([]);
+
+    // A folder of projects: its subfolders are zones (minus the excluded ones).
+    expect(h.addProjectFolder(projRoot, "root")).toMatchObject({ ok: true });
+    expect(h.projects.list().map((p) => p.name).sort()).toEqual(["alpha", "beta", "familiar", "gamma"]);
+    expect(h.projectsSummary()).toEqual({ explicit: [alpha], roots: [projRoot], history: 0 });
+
+    // Removing: the zone goes at once, unless agent history still lists it.
+    expect(h.removeProjectFolder(projRoot)).toEqual({ ok: true });
+    expect(h.projects.list().map((p) => p.name)).toEqual(["alpha"]);
+    await h.quick("claude", "@alpha start something");
+    expect(h.removeProjectFolder(alpha)).toEqual({ ok: true });
+    expect(h.removeProjectFolder(alpha)).toEqual({ ok: false });
+    expect(h.projects.list().map((p) => p.name)).toEqual(["alpha"]); // a quest worked there
+    expect(h.projectsSummary()).toEqual({ explicit: [], roots: [], history: 1 });
+  });
+});
+
 
 describe("always-on companion and offline honesty", () => {
   it("handles each prompt id once, persists the ids, and FamiliarSync can list them", async () => {

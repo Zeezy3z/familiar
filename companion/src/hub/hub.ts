@@ -27,7 +27,7 @@ import { ClaudeBackend } from "../agents/claude";
 import { CodexBackend } from "../agents/codex";
 import { providerAvailable } from "../agents/setup";
 import { CHAT_INSTRUCTIONS, withGameContext } from "./chat";
-import { CHATS_KEY, Project, ProjectRegistry, projectRootOf } from "./projects";
+import { CHATS_KEY, isChatPath, Project, ProjectRegistry, projectRootOf, zoneRefusal } from "./projects";
 import { SUGGEST_TOAST, suggestionUrl, type SuggestVersions } from "./suggest";
 import { TUTORIAL_AGENT, TUTORIAL_NO_MODE, tutorialDecide, tutorialReply, tutorialSetOut, tutorialThread } from "./tutorial";
 
@@ -428,6 +428,70 @@ export class Hub {
     if (selected && found.has(selected) && !this.extHistory.has(selected) && !this.extHistoryState.has(selected))
       this.loadExtHistory(selected, this.view.window[selected] ?? 150);
     this.changed("external");
+  }
+
+  // ---- project folders (the control panel's Projects card) --------------------------------------
+  /** Rebuild the zones from the config (roots, explicit folders) and history (quests, desktop
+   * threads), so an added or removed folder shows in the next pick without a restart. */
+  reloadProjects() {
+    const fresh = new ProjectRegistry(this.cfg);
+    fresh.scanRoots();
+    for (const t of this.threads.values()) if (t.kind !== "tutorial") fresh.add(t.cwd, t.updatedAt);
+    for (const x of this.external.values()) {
+      if (x.projectCwd || x.cwd) fresh.add(x.projectCwd ?? x.cwd, x.updatedAt);
+      else fresh.chats(x.updatedAt);
+    }
+    this.projects = fresh;
+    this.changed("projects");
+    // The agents' own project lists (Codex desktop) come back with the next listing.
+    if (this.waking) this.refreshExternal().catch((e) => this.log("[hub] external: " + e));
+  }
+
+  /** Add a folder chosen in the control panel: a project ("project") or a folder whose subfolders
+   * are projects ("root"). Refused, with the reason, where it could never be a zone. */
+  addProjectFolder(folder: string, kind: "project" | "root"): { ok: boolean; path?: string; why?: string } {
+    let real: string;
+    try {
+      real = fs.realpathSync.native(folder);
+      if (!fs.statSync(real).isDirectory()) return { ok: false, why: "That isn't a folder." };
+    } catch {
+      return { ok: false, why: "That folder doesn't exist." };
+    }
+    const c = this.cfg();
+    if (isChatPath(real)) return { ok: false, why: "That is Familiar's own Chats folder." };
+    const why = zoneRefusal(real, c);
+    if (why) return { ok: false, why };
+    const key = kind === "root" ? "projectRoots" : "projects";
+    if (!c[key].some((x) => normPath(x) === normPath(real))) {
+      c[key] = [...c[key], real];
+      this.onConfigChanged(c);
+    }
+    this.reloadProjects();
+    return { ok: true, path: real };
+  }
+
+  /** Remove a folder added as a project or a folder of projects (its zones stay while agent
+   * history still lists them). */
+  removeProjectFolder(folder: string): { ok: boolean } {
+    const c = this.cfg();
+    const n = normPath(folder);
+    const projects = c.projects.filter((x) => normPath(x) !== n);
+    const projectRoots = c.projectRoots.filter((x) => normPath(x) !== n);
+    if (projects.length === c.projects.length && projectRoots.length === c.projectRoots.length) return { ok: false };
+    c.projects = projects;
+    c.projectRoots = projectRoots;
+    this.onConfigChanged(c);
+    this.reloadProjects();
+    return { ok: true };
+  }
+
+  /** The Projects card: the folders you added, and how many zones came from agent history. */
+  projectsSummary(): { explicit: string[]; roots: string[]; history: number } {
+    const c = this.cfg();
+    const explicit = new Set(c.projects.map(normPath));
+    const roots = new Set(c.projectRoots.map(normPath));
+    const history = this.projects.list().filter((p) => !explicit.has(p.key) && !roots.has(normPath(path.dirname(p.path)))).length;
+    return { explicit: [...c.projects], roots: [...c.projectRoots], history };
   }
 
   /** Folder a new quest "in the same zone as <cwd>" starts in (worktrees map to their project). */

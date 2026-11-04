@@ -870,7 +870,7 @@ async function captureSnapshot(): Promise<{ ok: boolean; file?: string; why?: st
 
 /** Zones for the control panel's Projects card: the folders you added, and how many came from history. */
 function projectsStatus() {
-  return { explicit: [...cfg.projects], roots: [...cfg.projectRoots], history: 0 };
+  return hub ? hub.projectsSummary() : { explicit: [...cfg.projects], roots: [...cfg.projectRoots], history: 0 };
 }
 
 /** The last "Check for updates" answer (only ever from the player's click). */
@@ -1161,7 +1161,7 @@ app.whenReady().then(async () => {
         return shell.openPath(logFile);
       case "reloadConfig":
         cfg = loadConfig(log);
-        hub.projects.scanRoots();
+        hub.reloadProjects(); // folders removed from config.json go too
         hub.changed("config");
         return true;
       case "providerEnable": {
@@ -1258,10 +1258,21 @@ app.whenReady().then(async () => {
         if (lastSnapshot && fs.existsSync(lastSnapshot)) shell.showItemInFolder(lastSnapshot);
         else await shell.openPath(appDataDir());
         return true;
-      case "projectAdd":
-        return { ok: false, why: "Not available yet." };
-      case "projectRemove":
-        return { ok: false };
+      case "projectAdd": {
+        // The folder dialog belongs to the panel window; nothing is added unless a folder is picked.
+        const kind = (args as { kind?: unknown } | undefined)?.kind === "root" ? "root" : "project";
+        const pick = await dialog.showOpenDialog(control!, { title: kind === "root" ? "Add a folder of projects" : "Add a project folder", properties: ["openDirectory"] });
+        if (pick.canceled || !pick.filePaths[0]) return { ok: false };
+        const r = hub.addProjectFolder(pick.filePaths[0], kind);
+        log(`[projects] add ${kind === "root" ? "a folder of projects" : "a project folder"}: ${r.ok ? "added" : r.why}`);
+        sendStatus();
+        return r;
+      }
+      case "projectRemove": {
+        const r = hub.removeProjectFolder(String((args as { path?: unknown } | undefined)?.path ?? ""));
+        sendStatus();
+        return r;
+      }
       case "checkUpdate":
         return { current: VERSION, error: "Not available yet." } satisfies CheckUpdate;
       case "openUrl":
