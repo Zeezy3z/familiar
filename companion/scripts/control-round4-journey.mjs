@@ -110,6 +110,7 @@ export async function controlRound4Journey(page, origin, width, snapshot = async
       rows: [...card.querySelectorAll('#project-rows .prov')].map(r => [r.querySelector('.n').textContent, r.querySelector('.d').textContent]),
       buttons: [...card.querySelectorAll('.btns button')].map(b => b.textContent) };
   });
+  await status({ projects: 3 }); // an older main reports a plain count (the fixtures may carry the newer shape)
   check('projects: an older status (a plain count) shows no card', !(await place()).visible);
   await status({ projects: { explicit: [], roots: [], history: 3 } });
   let where = await place();
@@ -158,6 +159,7 @@ export async function controlRound4Journey(page, origin, width, snapshot = async
   // ---- Versions and "Check for updates" ----
   await open();
   const header = () => page.locator('#vermismatch').evaluate(el => ({ shown: !el.hidden && getComputedStyle(el).display !== 'none', text: el.textContent }));
+  await status({ update: null });
   check('versions: without status.update there is no mismatch line', !(await header()).shown);
   const update = (addon, mismatch = true) => status({ update: { app: '0.2.0', addon, mismatch } });
   await update('0.1.1');
