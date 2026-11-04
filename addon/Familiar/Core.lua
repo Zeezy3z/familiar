@@ -228,6 +228,20 @@ function Familiar_OnCompartmentClick(_, button)
   if button == "RightButton" then ns.Tracker.Toggle() else ns.UI.Toggle() end
 end
 
+-- The familiar's own face (media/familiar.tga, 64x64): the minimap button and the window title use it.
+-- No file extension: the client tries .blp, then .tga. If the client refuses it, the game's imp is
+-- loaded by path exactly as before, so the worst case is the old look; /fam diag says which is in use.
+ns.ICON = "Interface\\AddOns\\Familiar\\media\\familiar"
+ns.ICON_FALLBACK = "Interface\\Icons\\Spell_Shadow_SummonImp"
+function ns.SetIcon(tex)
+  local ok = tex:SetTexture(ns.ICON)
+  if ok and tex:GetTexture() then ns.iconSource = "own"; return "own" end
+  tex:SetTexture(ns.ICON_FALLBACK)
+  tex:SetTexCoord(0.05, 0.95, 0.05, 0.95) -- only the spell icon needs its square bevel trimmed
+  ns.iconSource = "fallback"
+  return "fallback"
+end
+
 function ns.Print(...)
   local parts = {}
   for i = 1, select("#", ...) do parts[i] = tostring((select(i, ...))) end
@@ -449,6 +463,7 @@ SlashCmdList.FAMILIAR = function(input)
       end)
       names[i] = ok and desc or "?"
     end
+    ns.Print("icon: " .. (ns.iconSource == "own" and "own" or ns.iconSource == "fallback" and "fallback (game imp)" or "not drawn"))
     ns.Print("under cursor: " .. (#names > 0 and table.concat(names, ", ") or "nothing"))
     ns.Print(("native JSON %s - snapshot %s - window %s - tracker %s"):format(
       (C_EncodingUtil and C_EncodingUtil.SerializeJSON) and "yes" or "no",
