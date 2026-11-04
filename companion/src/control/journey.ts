@@ -34,7 +34,7 @@ export function claudeLine(c?: ClaudeStatus | null): { state: "missing" | "downl
     const why = typeof c.error === "string" && c.error.trim() ? ` (${c.error.trim()})` : "";
     return { state: "failed", level: "warn", text: `Claude Code couldn't be downloaded${why}. Other agents still work.`, retry: "Retry" };
   }
-  if (c?.state === "missing") return { state: "missing", level: "muted", text: "Claude Code isn't downloaded yet.", retry: "Download" };
+  if (c?.state === "missing") return { state: "missing", level: "muted", text: "Claude Code isn't downloaded yet. Click Retry to download it (about 112 MB).", retry: "Retry" };
   return null;
 }
 
@@ -52,8 +52,8 @@ export function journey(s: JourneyStatus) {
   const signedLabels = enabled.filter(p => p.signedIn).map(p => p.label).filter(Boolean);
   const signInText = signedLabels.length ? `Sign-in found (${signedLabels.join(", ")}); agents start with WoW` : "Sign-in found; agents start with WoW";
   const download = claudeLine(s.claude);
-  // The Link Doctor's sentence says why the link is not up; its "ok" line never overrides a link that is not.
-  const doctorText = typeof s.doctor?.text === "string" && s.doctor.step !== "ok" ? s.doctor.text.trim() : "";
+  // The Link Doctor's sentence says why the link is not up; an ok-level line never overrides a link that is not.
+  const doctorText = typeof s.doctor?.text === "string" && s.doctor.level !== "ok" ? s.doctor.text.trim() : "";
   const steps: { label: string; done: boolean; text: string; level?: "ok" | "warn" | "muted" }[] = [
     { label: "Agents", done: prepared || unknownSignIn, text: ready ? readyText : prepared ? signInText : unknownSignIn ? "Installed; sign-in is not yet verified" : download ? (download.state === "downloading" ? download.text : `Claude Code isn't downloaded; use ${download.retry} below`) : "Enable an agent and check its sign-in below" },
     { label: "WoW", done: !!s.game, text: s.game ? "Game window found" : "Use Windowed or Windowed (Fullscreen)" },

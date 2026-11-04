@@ -28,11 +28,13 @@ export function restartGuidance(work?: Partial<RestartActivity> | null) {
 
 // ---- versions: the addon/app mismatch line and the "Check for updates" result ---------------------------
 
-const SEMVER = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/;
-const parseVersion = (v: unknown) => { const m = typeof v === "string" ? SEMVER.exec(v.trim()) : null; return m ? { core: [+m[1], +m[2], +m[3]], pre: m[4]?.split(".") } : null; };
+const SEMVER = /^v?(\d+)\.(\d+)(?:\.(\d+))?(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/;
+const parseVersion = (v: unknown) => { const m = typeof v === "string" ? SEMVER.exec(v.trim()) : null; return m ? { core: [+m[1], +m[2], +(m[3] ?? 0)], pre: m[4]?.split(".") } : null; };
 const shown = (v: string) => v.trim().replace(/^v/, "");
 
-/** Semver order of two release strings (a "v" prefix is fine); undefined when either is not a version. */
+/** Semver order of two release strings (a "v" prefix is fine); undefined when either is not a version. Only used to
+ * say which of the addon and the app is behind: main says whether they differ (status.update.mismatch) and whether a
+ * release is newer (checkUpdate.newer). */
 export function compareVersions(a: unknown, b: unknown): -1 | 0 | 1 | undefined {
   const x = parseVersion(a), y = parseVersion(b);
   if (!x || !y) return undefined;
@@ -49,29 +51,34 @@ export function compareVersions(a: unknown, b: unknown): -1 | 0 | 1 | undefined 
   return 0;
 }
 
-/** Header line when the addon and the app differ. The addon's version comes from the game (any addon can draw
- * that strip), so only a plain version string is ever shown; "dev" (a clone) and anything else say nothing. */
-export function versionMismatch(app: unknown, addon: unknown): { text: string } | null {
-  const order = compareVersions(addon, app);
-  if (!order) return null; // equal, or not versions at all
-  const [a, v] = [shown(String(addon)), shown(String(app))];
-  return { text: order === 1 ? `App ${v} is behind addon ${a}. Update the app from the Releases page.` : `Addon ${a} is behind app ${v}. Update it with WowUp or the release zip.` };
+/** Header line when the addon and the app differ (status.update = { app, addon, mismatch, last }). Main decides
+ * whether they differ; the addon's version comes from the game (any addon can draw that strip), so the line is only
+ * built from two plain version strings and says nothing otherwise. */
+export function versionMismatch(u: { app?: unknown; addon?: unknown; mismatch?: unknown } | null | undefined): { text: string } | null {
+  if (!u || u.mismatch !== true || !parseVersion(u.app) || !parseVersion(u.addon)) return null;
+  const [a, v] = [shown(String(u.addon)), shown(String(u.app))];
+  const order = compareVersions(a, v);
+  return { text: order === 1 ? `App ${v} is behind addon ${a}. Update the app from the Releases page.`
+    : order === -1 ? `Addon ${a} is behind app ${v}. Update it with WowUp or the release zip.`
+    : `Addon ${a} and app ${v} differ. Update the one that's behind.` };
 }
 
-/** The line under "Check for updates". `url` is shown as a link only when it is a Familiar release page. */
-export function updateLine(r: { current?: string; latest?: string; url?: string; prerelease?: boolean; error?: string } | null | undefined):
+/** The line under "Check for updates" (checkUpdate's answer, also status.update.last). `url` becomes a link only
+ * when it is one of this project's release pages. */
+export function updateLine(r: { current?: string; latest?: string; newer?: boolean; url?: string; prerelease?: boolean; error?: string } | null | undefined):
   { level: "ok" | "warn" | "muted"; text: string; open?: string } {
   if (!r || typeof r !== "object") return { level: "warn", text: "Couldn't reach GitHub (no network?)" };
-  if (r.error) return { level: "warn", text: `Couldn't reach GitHub (no network?) · ${String(r.error).slice(0, 160)}` };
+  if (r.error) {
+    const why = String(r.error).trim().slice(0, 160);
+    return { level: "warn", text: /^couldn't reach github/i.test(why) ? "Couldn't reach GitHub (no network?)" : `Couldn't check for updates: ${why}.` };
+  }
   if (typeof r.latest !== "string" || !r.latest.trim()) return { level: "warn", text: "GitHub didn't name a latest release." };
   const [current, latest] = [shown(String(r.current ?? "")), shown(r.latest)];
   const beta = r.prerelease ? " (beta)" : "";
-  const order = compareVersions(latest, current);
-  if (order === 1 || (order === undefined && latest !== current)) {
+  if (r.newer === true) {
     const ok = typeof r.url === "string" && /^https:\/\/github\.com\/Zeezy3z\/familiar\/releases(\/|$)/.test(r.url);
     return { level: "warn", text: `${latest} is out${beta}`, open: ok ? r.url : undefined };
   }
-  return order === -1
-    ? { level: "muted", text: `You're on ${current}, ahead of the latest release${beta} (${latest}).` }
-    : { level: "ok", text: `You're on ${current}, the latest${beta}.` };
+  return latest === current ? { level: "ok", text: `You're on ${current}, the latest${beta}.` }
+    : { level: "muted", text: `You're on ${current}. The latest release is ${latest}${beta}.` };
 }

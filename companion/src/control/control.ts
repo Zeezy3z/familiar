@@ -36,11 +36,12 @@ function render(s: any) {
   // The first undone step's content sits under the strip: the Familiars card for step 1 (and while the first-run
   // choice is still open), the journey text itself for steps 2 and 3. Everything done: one line.
   $("all-set").hidden = !(j.current === -1 && j.level === "ok" && !s.storage);
-  const familiarsInStep = j.current === 0 || !s.providersChosen;
+  // Claude Code downloading, failed or missing keeps the card up here too, so its progress and Retry are in view.
+  const familiarsInStep = j.current === 0 || !s.providersChosen || !!claudeLine(s.claude);
   if (familiarsInStep && j.action === "providers") next.hidden = true; // the card is already right below
   placeFamiliars(familiarsInStep);
   $("ver").textContent = `v${s.version}`;
-  const mismatch = versionMismatch(s.version, s.addon?.addon);
+  const mismatch = versionMismatch(s.update);
   $("vermismatch").hidden = !mismatch;
   text("vermismatch", mismatch?.text ?? "");
   const build = buildPresentation(s.version, s.build);
@@ -97,6 +98,7 @@ function render(s: any) {
   renderUi(s.ui);
   renderRequests(s.requests, s.providers ?? []);
   renderProjects(s.projects);
+  if (s.update?.last) showUpdate(s.update.last); // the last "Check for updates" answer, from the click that asked
   renderProviders(s.providers ?? [], s.backends ?? {}, s.claude);
   renderChat(s);
   ($("onboard") as HTMLElement).hidden = !!s.providersChosen;
@@ -468,11 +470,11 @@ async function addFolder(kind: "project" | "root") {
   let added = "";
   buttons.forEach((b) => (b.disabled = true)); // one folder dialog at a time
   text("project-result", "");
-  await act(() => (added ? `Added ${added}` : "No folder was added."), async () => {
+  await act(() => (added ? `Added ${added}` : ""), async () => {
     const r = await bridge.invoke("projectAdd", { kind });
     if (r?.ok) { added = typeof r.path === "string" && r.path ? r.path : "the folder"; await refreshStatus(); }
     else if (typeof r?.why === "string" && r.why) throw new Error(r.why);
-    text("project-result", added ? `Added ${added}. It is offered the next time you pick a project.` : "No folder was added.");
+    text("project-result", added ? `Added ${added}. It is offered the next time you pick a project.` : ""); // a cancelled dialog says nothing
   }, { group: $("b-project-add").closest<HTMLElement>(".btns")!, label: "Projects" });
   buttons.forEach((b) => (b.disabled = false));
 }
@@ -488,18 +490,29 @@ $("project-rows").addEventListener("click", (e) => {
 });
 
 // Save what Familiar sees: a small crop of the strip corner, written by the companion; named here, never shown.
+// "Open folder" shows the file in Explorer (main's openSnapshot).
 btn("b-snapshot", () => "", async () => { // the line under the button is the answer
-  text("snapshot-result", "");
+  $("snapshot-result").replaceChildren();
   const r = await bridge.invoke("captureSnapshot");
   if (!r?.ok) throw new Error(typeof r?.why === "string" && r.why ? r.why : "Familiar has no picture of the game to save yet");
   const name = typeof r.file === "string" ? r.file.split(/[\\/]/).pop() : "";
-  text("snapshot-result", `Saved ${name || "a picture"} in your Familiar folder (%APPDATA%\\Familiar). It shows the top-left 320×32 pixels of the game window; look at it before attaching it to a bug report.`);
+  const open = document.createElement("button");
+  open.type = "button";
+  open.id = "b-open-snapshot";
+  open.className = "linklike";
+  open.textContent = "Open folder";
+  open.addEventListener("click", () => act("", () => bridge.invoke("openSnapshot")));
+  $("snapshot-result").replaceChildren(`Saved ${name || "a picture"} in your Familiar folder. It shows the top-left 320×32 pixels of the game window; look at it before attaching it to a bug report. `, open);
 });
 
-// Check for updates: one request to GitHub, only on this click. The download page opens only on a second, explicit click.
+// Check for updates: one request to GitHub, only on this click (never scheduled). The download page opens only on a
+// second, explicit click. The same answer comes back as status.update.last, so this redraws only when it changed.
 function showUpdate(result: unknown) {
-  const line = updateLine(result as any);
   const el = $("update-result");
+  const key = JSON.stringify(result ?? null);
+  if (el.dataset.key === key) return;
+  el.dataset.key = key;
+  const line = updateLine(result as any);
   el.className = `hint res ${line.level === "muted" ? "" : line.level}`;
   const lead = document.createElement(line.open ? "b" : "span");
   lead.textContent = line.text;

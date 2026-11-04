@@ -116,7 +116,7 @@ describe("Claude Code download in the Agents step and the Familiars card", () =>
     expect(claudeLine({ state: "failed", error: "no response from the npm registry for 60 s" })).toMatchObject({ level: "warn", retry: "Retry",
       text: "Claude Code couldn't be downloaded (no response from the npm registry for 60 s). Other agents still work." });
     expect(claudeLine({ state: "failed" })?.text).toBe("Claude Code couldn't be downloaded. Other agents still work.");
-    expect(claudeLine({ state: "missing" })).toMatchObject({ retry: "Download" });
+    expect(claudeLine({ state: "missing" })).toMatchObject({ retry: "Retry", text: expect.stringContaining("Click Retry") });
     for (const c of [undefined, null, { state: "present" }, { state: "bogus" }]) expect(claudeLine(c)).toBeNull();
   });
   it("tells a first-run player with only Claude that it is downloading, not that they must pick an agent", () => {
@@ -144,23 +144,33 @@ describe("addon and app versions", () => {
     expect(compareVersions("dev", "1.0.0")).toBeUndefined();
     expect(compareVersions("1.0.0", "0.1.0 · synthetic preview")).toBeUndefined();
   });
-  it("shows a mismatch line only for two real versions that differ, naming the one that is behind", () => {
-    expect(versionMismatch("0.2.0", "0.2.0")).toBeNull();
-    expect(versionMismatch("0.2.0", "dev")).toBeNull();
-    expect(versionMismatch("0.2.0", undefined)).toBeNull();
-    expect(versionMismatch("0.2.0", "<b>0.1.0</b>")).toBeNull(); // the game's text is only ever shown when it is a plain version
-    expect(versionMismatch("0.2.0", "0.1.1")?.text).toBe("Addon 0.1.1 is behind app 0.2.0. Update it with WowUp or the release zip.");
-    expect(versionMismatch("0.2.0", "0.3.0")?.text).toBe("App 0.2.0 is behind addon 0.3.0. Update the app from the Releases page.");
+  it("shows a mismatch line only when main says they differ and both are plain versions, naming the one that is behind", () => {
+    const up = (app: unknown, addon: unknown, mismatch = true) => versionMismatch({ app, addon, mismatch });
+    expect(up("0.2.0", "0.2.0", false)).toBeNull(); // main says they match
+    expect(up("0.2.0", "0.1.1", false)).toBeNull(); // the panel never decides that they differ
+    expect(up("0.2.0", "dev")).toBeNull();
+    expect(up("0.2.0", undefined)).toBeNull();
+    expect(up("0.2.0", "<b>0.1.0</b>")).toBeNull(); // the game's text is only ever shown when it is a plain version
+    expect(versionMismatch(undefined)).toBeNull();
+    expect(up("0.2.0", "0.1.1")?.text).toBe("Addon 0.1.1 is behind app 0.2.0. Update it with WowUp or the release zip.");
+    expect(up("0.2.0", "0.3")?.text).toBe("App 0.2.0 is behind addon 0.3. Update the app from the Releases page.");
+    expect(up("0.2.0", "0.2.0+build5")?.text).toBe("Addon 0.2.0+build5 and app 0.2.0 differ. Update the one that's behind.");
   });
-  it("words the update check, linking only a Familiar release page", () => {
+  it("words the update check from main's `newer`, linking only a Familiar release page", () => {
     const url = "https://github.com/Zeezy3z/familiar/releases/tag/v0.3.0";
-    expect(updateLine({ current: "0.2.0", latest: "v0.3.0", url })).toEqual({ level: "warn", text: "0.3.0 is out", open: url });
-    expect(updateLine({ current: "0.2.0", latest: "v0.3.0-beta.1", url, prerelease: true }).text).toBe("0.3.0-beta.1 is out (beta)");
-    expect(updateLine({ current: "0.2.0", latest: "v0.2.0", url })).toEqual({ level: "ok", text: "You're on 0.2.0, the latest." });
-    expect(updateLine({ current: "0.3.0", latest: "v0.2.0" })).toMatchObject({ level: "muted", text: "You're on 0.3.0, ahead of the latest release (0.2.0)." });
-    expect(updateLine({ current: "0.2.0", latest: "v0.3.0", url: "https://evil.example/releases" }).open).toBeUndefined();
-    expect(updateLine({ current: "0.2.0", latest: "v0.3.0", url: "https://github.com/Zeezy3z/familiar-evil/releases" }).open).toBeUndefined();
-    expect(updateLine({ error: "ENOTFOUND" })).toMatchObject({ level: "warn", text: expect.stringContaining("Couldn't reach GitHub (no network?)") });
+    expect(updateLine({ current: "0.2.0", latest: "0.3.0", newer: true, url })).toEqual({ level: "warn", text: "0.3.0 is out", open: url });
+    expect(updateLine({ current: "0.2.0", latest: "v0.3.0-beta.1", newer: true, url, prerelease: true }).text).toBe("0.3.0-beta.1 is out (beta)");
+    expect(updateLine({ current: "0.2.0", latest: "0.2.0", newer: false, url })).toEqual({ level: "ok", text: "You're on 0.2.0, the latest." });
+    expect(updateLine({ current: "0.3.0", latest: "0.2.0", newer: false })).toEqual({ level: "muted", text: "You're on 0.3.0. The latest release is 0.2.0." });
+    expect(updateLine({ current: "0.2.0", latest: "0.3.0", url }).open).toBeUndefined(); // not newer unless main says so
+    expect(updateLine({ current: "0.2.0", latest: "0.3.0", newer: true, url: "https://evil.example/releases" }).open).toBeUndefined();
+    expect(updateLine({ current: "0.2.0", latest: "0.3.0", newer: true, url: "https://github.com/Zeezy3z/familiar-evil/releases" }).open).toBeUndefined();
+    expect(updateLine({ current: "0.2.0", latest: "0.3.0", newer: true, url: "https://github.com/Zeezy3z/familiar/releases/latest" }).open).toBe("https://github.com/Zeezy3z/familiar/releases/latest");
+  });
+  it("says what failed, in main's words, and shows no link", () => {
+    expect(updateLine({ current: "0.2.0", error: "couldn't reach GitHub" })).toEqual({ level: "warn", text: "Couldn't reach GitHub (no network?)" });
+    expect(updateLine({ current: "0.2.0", error: "GitHub answered 403" }).text).toBe("Couldn't check for updates: GitHub answered 403.");
+    expect(updateLine({ current: "0.2.0", error: "no release is published yet" }).text).toBe("Couldn't check for updates: no release is published yet.");
     expect(updateLine(undefined).text).toBe("Couldn't reach GitHub (no network?)");
     expect(updateLine({ current: "0.2.0" }).level).toBe("warn");
   });

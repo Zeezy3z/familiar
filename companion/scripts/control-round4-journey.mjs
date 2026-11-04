@@ -1,5 +1,5 @@
 // Round 4 control-panel journeys: the built control.html through the synthetic preview bridge. Commands that
-// main serves (captureSnapshot, projectAdd, projectRemove, claudeRetry, checkUpdate, openUrl) are stood in for
+// main serves (captureSnapshot, openSnapshot, projectAdd, projectRemove, claudeRetry, checkUpdate, openUrl) are stood in for
 // here and recorded in window.preview.sent; nothing leaves the page. Returns { checkName: passed } like
 // glass-round3-journey.mjs, so the smoke can report each one.
 export async function controlRound4Journey(page, origin, width, snapshot = async () => {}) {
@@ -24,7 +24,8 @@ export async function controlRound4Journey(page, origin, width, snapshot = async
           p.state.projects.roots = p.state.projects.roots.filter(x => x !== args.path);
           return { ok: had };
         }
-        if (['captureSnapshot', 'checkUpdate', 'claudeRetry', 'openUrl'].includes(cmd)) { p.sent.push({ cmd, args }); return p.answer[cmd]; }
+        if (cmd === 'checkUpdate') { p.sent.push({ cmd, args }); p.state.update = { app: '0.2.0', addon: '0.2.0', mismatch: false, ...p.state.update, last: p.answer.checkUpdate }; return p.answer.checkUpdate; }
+        if (['captureSnapshot', 'openSnapshot', 'claudeRetry', 'openUrl'].includes(cmd)) { p.sent.push({ cmd, args }); return p.answer[cmd]; }
         return real(cmd, args);
       };
     });
@@ -60,7 +61,11 @@ export async function controlRound4Journey(page, origin, width, snapshot = async
   await page.waitForFunction(() => document.getElementById('snapshot-result').textContent);
   const saved = await page.locator('#snapshot-result').textContent();
   check('snapshot: one request; the result names the file and the 320×32 crop, without the full path', await sent() === '[{"cmd":"captureSnapshot"}]'
-    && saved.includes('strip-20261103-153012.png') && saved.includes('320×32') && saved.includes('look at it before attaching') && !saved.includes('player'));
+    && saved.includes('strip-20261103-153012.png') && saved.includes('320×32') && saved.includes('look at it before attaching') && !saved.includes('player')
+    && saved.endsWith('Open folder'));
+  await page.locator('#b-open-snapshot').click();
+  await page.waitForFunction(() => window.preview.sent.length >= 2);
+  check('snapshot: Open folder asks main to show the saved picture, with no path from the page', await sent() === '[{"cmd":"captureSnapshot"},{"cmd":"openSnapshot"}]');
   await page.evaluate(() => { window.preview.answer.captureSnapshot = { ok: false, why: 'Familiar has no picture of the game yet.' }; });
   await page.locator('#b-snapshot').click();
   await page.waitForFunction(() => !document.getElementById('snapshot-result').textContent);
@@ -78,20 +83,22 @@ export async function controlRound4Journey(page, origin, width, snapshot = async
   await status({ 'providers.0.installed': false, 'providers.0.enabled': false, 'providers.0.signedIn': null, 'providers.0.detail': 'Not downloaded yet', claude: { state: 'downloading', pct: 43, mb: 112 } });
   let row = await claude();
   check('claude: the row shows progress, with a bar and nothing to click', row.text === 'Downloading Claude Code · 43 % of 112 MB' && row.bar === '43' && row.button === null);
+  const cardUp = () => page.evaluate(() => !document.getElementById('advanced').contains(document.getElementById('familiars')));
+  check('claude: while it downloads the card sits above Advanced, though another agent is ready', await cardUp());
   await snapshot(`control-${width}-claude-downloading`);
   await status({ claude: { state: 'failed', error: '<img src=x onerror="window.__pwned=1">' } });
   row = await claude();
-  check('claude: a failure names the reason as plain text and offers Retry', row.text.includes('couldn\'t be downloaded (<img src=x') && row.text.endsWith('Other agents still work.') && row.button === 'Retry' && !row.markup
-    && await page.evaluate(() => window.__pwned) === undefined);
+  check('claude: a failure names the reason as plain text and offers Retry, in view without opening Advanced', row.text.includes('couldn\'t be downloaded (<img src=x') && row.text.endsWith('Other agents still work.') && row.button === 'Retry' && !row.markup
+    && await page.evaluate(() => window.__pwned) === undefined && await cardUp() && await page.locator('#providers [data-retry]').isVisible());
   await page.evaluate(() => { window.preview.answer.claudeRetry = { state: 'downloading', pct: 0 }; });
   await page.locator('#providers [data-retry]').click();
   await page.waitForFunction(() => window.preview.sent.length >= 1);
   check('claude: Retry sends one claudeRetry and says where to watch', await sent() === '[{"cmd":"claudeRetry"}]' && (await page.locator('#feedback').textContent()).includes('Progress is on the Familiars card'));
   await status({ claude: { state: 'missing' } });
-  check('claude: missing offers Download', (await claude()).button === 'Download');
+  check('claude: missing offers Retry, as the quest page and the Familiars card tell the player', (await claude()).button === 'Retry' && await cardUp());
   await status({ 'providers.0.installed': true, 'providers.0.enabled': true, 'providers.0.signedIn': true, 'providers.0.detail': 'Signed in', claude: { state: 'present' } });
   row = await claude();
-  check('claude: once on disk the row is the ordinary one', row.text === 'Signed in' && row.bar === null && row.button === null);
+  check('claude: once on disk the row is the ordinary one and the card goes back under Advanced', row.text === 'Signed in' && row.bar === null && row.button === null && !await cardUp());
 
   // ---- Projects ----
   await open();
@@ -129,8 +136,9 @@ export async function controlRound4Journey(page, origin, width, snapshot = async
     && (await place()).rows.length === 2);
   await page.evaluate(() => { window.preview.add = { ok: false }; });
   await page.locator('#b-project-add').click();
-  await page.waitForFunction(() => document.getElementById('project-result').textContent === 'No folder was added.');
-  check('projects: cancelling the dialog is not an error', await localError('.btns:has(#b-project-add)') === '');
+  await page.waitForFunction(() => !document.getElementById('b-project-add').disabled);
+  check('projects: cancelling the dialog says nothing, neither a result nor an error', await localError('.btns:has(#b-project-add)') === ''
+    && await page.locator('#project-result').textContent() === '' && await page.locator('#feedback').textContent() === '' && (await place()).rows.length === 2);
   await page.evaluate(() => { window.preview.add = { ok: true, path: 'C:\\x\\<b>bold</b>' }; });
   await page.locator('#b-project-add').click();
   await page.waitForFunction(() => document.querySelectorAll('#project-rows .prov').length === 3);
@@ -150,47 +158,63 @@ export async function controlRound4Journey(page, origin, width, snapshot = async
   // ---- Versions and "Check for updates" ----
   await open();
   const header = () => page.locator('#vermismatch').evaluate(el => ({ shown: !el.hidden && getComputedStyle(el).display !== 'none', text: el.textContent }));
-  check('versions: the preview\'s unparseable version shows no mismatch', !(await header()).shown);
-  await status({ version: '0.2.0', 'addon.addon': '0.1.1' });
+  check('versions: without status.update there is no mismatch line', !(await header()).shown);
+  const update = (addon, mismatch = true) => status({ update: { app: '0.2.0', addon, mismatch } });
+  await update('0.1.1');
   let h = await header();
   check('versions: addon behind app shows one line in the header, next to the version', h.shown && h.text === 'Addon 0.1.1 is behind app 0.2.0. Update it with WowUp or the release zip.');
   await snapshot(`control-${width}-version-mismatch`);
-  await status({ 'addon.addon': '0.3.0' });
+  await update('0.3.0');
   check('versions: app behind addon says so', (await header()).text === 'App 0.2.0 is behind addon 0.3.0. Update the app from the Releases page.');
-  for (const odd of ['dev', '0.2.0', '<img src=x onerror="window.__pwned=1">'])
-    { await status({ 'addon.addon': odd }); check(`versions: addon "${odd.slice(0, 12)}" shows nothing`, !(await header()).shown && await page.evaluate(() => window.__pwned) === undefined); }
+  await update('0.1.1', false);
+  check('versions: the panel never decides that they differ: mismatch false shows nothing', !(await header()).shown);
+  for (const odd of ['dev', '<img src=x onerror="window.__pwned=1">'])
+    { await update(odd); check(`versions: addon "${odd.slice(0, 12)}" shows nothing`, !(await header()).shown && await page.evaluate(() => window.__pwned) === undefined); }
   await openAdvanced();
   await new Promise(resolve => setTimeout(resolve, 1200)); // a synthetic status tick or two
   check('updates: nothing is checked by itself', await sent() === '[]');
   const url = 'https://github.com/Zeezy3z/familiar/releases/tag/v0.3.0';
   const line = () => page.locator('#update-result').evaluate(el => ({ text: el.textContent, open: !!el.querySelector('#b-open-release') }));
-  await page.evaluate(url => { window.preview.answer.checkUpdate = { current: '0.2.0', latest: 'v0.3.0', url, prerelease: false }; }, url);
+  await page.evaluate(url => { window.preview.answer.checkUpdate = { current: '0.2.0', latest: '0.3.0', newer: true, url, prerelease: false }; }, url);
   await page.locator('#b-update').click();
   await page.waitForFunction(() => document.getElementById('update-result').textContent);
   let u = await line();
   check('updates: one click sends one checkUpdate and shows "0.3.0 is out" with the download link, which is not opened', await sent() === '[{"cmd":"checkUpdate"}]'
     && u.text === '0.3.0 is out · Open the download page' && u.open);
+  await page.evaluate(() => { document.getElementById('b-open-release').dataset.kept = '1'; });
+  await new Promise(resolve => setTimeout(resolve, 1200)); // status now carries the answer as update.last
+  check('updates: status.update.last does not redraw the line or its link', await page.evaluate(() => !!document.getElementById('b-open-release')?.dataset.kept));
   await snapshot(`control-${width}-update-available`);
   await page.evaluate(() => document.getElementById('b-open-release').click());
   check('updates: a click made by script opens nothing', await sent() === '[{"cmd":"checkUpdate"}]');
   await page.locator('#b-open-release').click();
   await page.waitForFunction(() => window.preview.sent.length >= 2);
   check('updates: the user\'s click opens exactly the URL main returned', await sent() === JSON.stringify([{ cmd: 'checkUpdate' }, { cmd: 'openUrl', args: { url } }]));
-  await page.evaluate(() => { window.preview.answer.checkUpdate = { current: '0.2.0', latest: 'v0.2.0', url: 'https://github.com/Zeezy3z/familiar/releases/tag/v0.2.0' }; });
+  await page.evaluate(() => { window.preview.answer.checkUpdate = { current: '0.2.0', latest: '0.2.0', newer: false, url: 'https://github.com/Zeezy3z/familiar/releases/tag/v0.2.0' }; });
   await page.locator('#b-update').click();
   await page.waitForFunction(() => document.getElementById('update-result').textContent.includes('the latest'));
   u = await line();
   check('updates: on the latest version it says so, with no link', u.text === 'You\'re on 0.2.0, the latest.' && !u.open);
-  await page.evaluate(() => { window.preview.answer.checkUpdate = { current: '0.2.0', latest: 'v0.3.0-beta.1', url: 'https://evil.example/releases', prerelease: true }; });
+  await page.evaluate(() => { window.preview.answer.checkUpdate = { current: '0.2.0', latest: '0.3.0-beta.1', newer: true, url: 'https://evil.example/releases', prerelease: true }; });
   await page.locator('#b-update').click();
   await page.waitForFunction(() => document.getElementById('update-result').textContent.includes('beta'));
   u = await line();
   check('updates: a prerelease is marked (beta) and a URL that is not a Familiar release page is not offered', u.text === '0.3.0-beta.1 is out (beta)' && !u.open);
-  await page.evaluate(() => { window.preview.answer.checkUpdate = { error: 'ENOTFOUND api.github.com' }; });
+  await page.evaluate(() => { window.preview.answer.checkUpdate = { current: '0.2.0', error: "couldn't reach GitHub" }; });
   await page.locator('#b-update').click();
   await page.waitForFunction(() => document.getElementById('update-result').textContent.includes('Couldn'));
   u = await line();
-  check('updates: without a network it says it could not reach GitHub', u.text.startsWith('Couldn\'t reach GitHub (no network?)') && !u.open);
+  check('updates: without a network it says it could not reach GitHub', u.text === 'Couldn\'t reach GitHub (no network?)' && !u.open);
+  await page.evaluate(() => { window.preview.answer.checkUpdate = { current: '0.2.0', error: 'GitHub answered 403' }; });
+  await page.locator('#b-update').click();
+  await page.waitForFunction(() => document.getElementById('update-result').textContent.includes('403'));
+  check('updates: any other failure is named in main\'s words', (await line()).text === 'Couldn\'t check for updates: GitHub answered 403.');
+  // A panel opened after the click: the answer comes with the status.
+  await open();
+  await openAdvanced();
+  await status({ update: { app: '0.2.0', addon: '0.2.0', mismatch: false, last: { current: '0.2.0', latest: '0.3.0', newer: true, url } } });
+  u = await line();
+  check('updates: status.update.last alone shows the line, and still nothing was sent', u.text === '0.3.0 is out · Open the download page' && u.open && await sent() === '[]');
 
   // ---- Windows notice setting ----
   await open();
