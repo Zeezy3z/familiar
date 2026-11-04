@@ -3,7 +3,7 @@ import * as path from "node:path";
 import { attentionItems, type AttentionItem } from "./attention";
 import { providerInfo } from "../agents/providers";
 import { AgentKind, MODE_LABEL, TodoItem } from "../agents/types";
-import { agentName, Entry, Hub, mustFork, Thread, ThreadStatus, Toast } from "./hub";
+import { agentName, Entry, Hub, mustFork, Refusal, Thread, ThreadStatus, Toast } from "./hub";
 import { CHATS_KEY } from "./projects";
 
 export type Act = Record<string, unknown> & { type: string };
@@ -485,9 +485,18 @@ function threadDetail(hub: Hub, t: Thread): DetailModel {
       requestId: e.requestId,
       level: e.level,
       cut: e.cut,
+      refused: e.refused && e.approval === "pending" ? REFUSED[e.refused.why] : undefined,
     })),
   };
 }
+
+/** The red line a refused card shows until the next decision (the toast says it too, but expires). */
+const REFUSED: Record<Refusal, string> = {
+  proof: "That click wasn't confirmed as yours. Click Approve again.",
+  fresh: "This request just appeared. Read it, then click again.",
+  cut: "Part of this request is hidden here. Approve it in full from Familiar's control panel on your PC, or Deny.",
+  view: "Use Full view and review the request before deciding.",
+};
 
 /**
  * Tool-call display per config: "full" = every call; "hidden" = none (running calls still show as

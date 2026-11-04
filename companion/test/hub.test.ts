@@ -2005,13 +2005,15 @@ describe("physical corroboration (any addon can forge strip messages)", () => {
     expect(hub.toasts.at(-1)!.text).toBe("Open it in full on your PC to approve.");
     const detail = buildModel(hub, { linked: true, fps: 30 }).detail;
     const card = detail.kind === "thread" ? detail.entries.find((e) => e.requestId === "long") : undefined;
-    expect(card).toMatchObject({ cut: true, approval: "pending" });
+    expect(card).toMatchObject({ cut: true, approval: "pending",
+      refused: "Part of this request is hidden here. Approve it in full from Familiar's control panel on your PC, or Deny." });
     expect(JSON.stringify(detail)).not.toContain(full); // the Glass never gets the whole text
     // "Requests waiting on your PC": the whole request with real names; a panel click decides it.
     expect(hub.cutRequests()).toEqual([{ thread: id, questTitle: "long command", project: "familiar", agent: "Claude", requestId: "long",
       title: "Allow Bash?", full, canAlways: true, at: expect.any(Number) }]);
     expect(hub.decide(id, "long", "allow", "panel")).toEqual({ ok: true });
     expect(claude.decisions).toEqual([{ requestId: "long", d: "allow" }]);
+    expect(hub.threads.get(id)!.entries.find((e) => e.requestId === "long")!.refused).toBeUndefined();
     expect(hub.cutRequests()).toEqual([]);
     expect(hub.decide(id, "long", "allow", "panel")).toEqual({ ok: false, why: "no longer pending" });
     // Deny from the card needs no proof, cut or not.
@@ -2029,6 +2031,44 @@ describe("physical corroboration (any addon can forge strip messages)", () => {
     expect(saved.entries.find((e: any) => e.requestId === "long")).toMatchObject({ cut: true, approval: "approved" });
     expect(saved.entries.find((e: any) => e.requestId === "long").full).toBeUndefined();
     expect(saved.entries.find((e: any) => e.requestId === "long3").full).toBe(full);
+  });
+
+  it("a refusal is written on the card until the next decision", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const id = await ask(claude, "r1");
+      const card = () => hub.threads.get(id)!.entries.find((e) => e.requestId === "r1")!;
+      const line = () => {
+        const d = buildModel(hub, { linked: true, fps: 30 }).detail;
+        return d.kind === "thread" ? d.entries.find((e) => e.requestId === "r1")?.refused : undefined;
+      };
+      hub.action({ type: "decide", thread: id, requestId: "r1", decision: "allow" }, NO_PROOF);
+      expect(card().refused?.why).toBe("proof");
+      expect(line()).toBe("That click wasn't confirmed as yours. Click Approve again.");
+      hub.handleAddon({ t: "key", k: "approve", src: "bind", view: "full" }); // no matching key press
+      await tick();
+      expect(card().refused?.why).toBe("proof");
+      hub.handleAddon({ t: "key", k: "approve", view: "sideways" }, OK);
+      await tick();
+      expect(line()).toBe("Use Full view and review the request before deciding.");
+      hub.minCardAgeMs = 400;
+      hub.action({ type: "decide", thread: id, requestId: "r1", decision: "allow" }, OK);
+      expect(line()).toBe("This request just appeared. Read it, then click again.");
+      expect(claude.decisions).toEqual([]);
+      vi.advanceTimersByTime(450);
+      hub.action({ type: "decide", thread: id, requestId: "r1", decision: "allow" }, OK);
+      expect(claude.decisions).toEqual([{ requestId: "r1", d: "allow" }]);
+      expect(card().refused).toBeUndefined();
+      expect(line()).toBeUndefined();
+      // A request that expires takes its refusal line with it too.
+      claude.emit({ type: "approval", threadId: id, requestId: "r2", kind: "command", title: "Again?", detail: "npm test", canAlways: false });
+      hub.action({ type: "decide", thread: id, requestId: "r2", decision: "allow" }, NO_PROOF);
+      claude.emit({ type: "approvalResolved", threadId: id, requestId: "r2" });
+      expect(hub.threads.get(id)!.entries.find((e) => e.requestId === "r2")).toMatchObject({ approval: "expired" });
+      expect(hub.threads.get(id)!.entries.find((e) => e.requestId === "r2")!.refused).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("Mode needs a click on the Mode button", async () => {

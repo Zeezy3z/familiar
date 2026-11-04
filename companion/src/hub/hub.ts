@@ -463,7 +463,7 @@ export class Hub {
         t.status = t.status === "new" ? "new" : t.lastError ? "error" : "idle";
         for (const e of t.entries) {
           e.streaming = false;
-          if (e.kind === "approval" && e.approval === "pending") e.approval = "expired";
+          if (e.kind === "approval" && e.approval === "pending") settle(e, "expired");
           if (e.kind === "tool" && e.status === "running") e.status = "unknown";
         }
         if (cut)
@@ -689,11 +689,18 @@ export class Hub {
       case "approve":
       case "deny":
       case "always": {
-        if (view !== "legacy" && view !== "full" && view !== "focus")
+        if (view !== "legacy" && view !== "full" && view !== "focus") {
+          const shown = this.pendingApproval(true);
+          if (typeof shown === "object") refuse(shown.entry, "view");
           return this.toast("Unknown view context. Use Full view and review the request before deciding.", "info");
+        }
         // Approving needs a real click on the button or the registered Approve key; denying never does.
         if (k !== "deny" && !proof.ok) {
           this.log(`[hub] ${k} refused: ${proof.why ?? "no proof"}`);
+          // The card the key would have acted on (not a desktop-thread or held-message prompt).
+          const prompting = (this.view.confirm && this.view.selected === this.view.confirm.extId) || (this.view.held && this.view.selected === this.view.held.threadId);
+          const target = prompting ? undefined : this.pendingApproval(view === "focus");
+          if (typeof target === "object") refuse(target.entry, "proof");
           return this.toast("Not approved. Click the request on the Glass, or press the Approve key set in Familiar's control panel.", "info");
         }
         // Debounce: a double-press must not approve the next queued request unseen.
@@ -773,6 +780,7 @@ export class Hub {
     const denying = a.type === "decide" && (a.decision === "deny" || a.decision === "denyAndStop");
     if (Hub.CORROBORATED_ACTIONS.has(a.type) && !denying && !proof.ok) {
       this.log(`[hub] action ${a.type} refused: ${proof.why ?? "no proof"}`);
+      if (typeof a.requestId === "string") refuse(this.threads.get(String(a.thread))?.entries.find((x) => x.requestId === a.requestId && x.approval === "pending"), "proof");
       return this.toast("That click could not be matched to your mouse. Click it again.", "info");
     }
     switch (a.type) {
@@ -857,7 +865,7 @@ export class Hub {
         if (!t) return;
         // Mark it answered first, so the backend's approvalResolved doesn't call it "expired".
         const q = t.entries.find((x) => x.requestId === a.requestId && x.approval === "pending");
-        if (q) q.approval = "approved";
+        if (q) settle(q, "approved");
         this.backends[t.agent].answerQuestion?.(t.id, a.requestId, a.label);
         return;
       }
@@ -1179,14 +1187,16 @@ export class Hub {
     const grants = d !== "deny" && d !== "denyAndStop";
     if (grants && e.cut && origin !== "panel") {
       this.log("[hub] approve refused: cut request");
+      refuse(e, "cut");
       this.toast("Open it in full on your PC to approve.", "info");
       return { ok: false, why: "cut" };
     }
     if (grants && Date.now() - e.at < this.minCardAgeMs) {
+      refuse(e, "fresh");
       this.toast("That request just appeared. Read it, then decide.", "info");
       return { ok: false, why: "fresh" };
     }
-    e.approval = d === "allow" ? "approved" : d === "allowAlways" ? "always" : "denied";
+    settle(e, d === "allow" ? "approved" : d === "allowAlways" ? "always" : "denied");
     this.lastDecisionAt = Date.now();
     this.backends[t.agent].respondApproval(t.id, requestId, d);
     this.toasts = this.toasts.filter((x) => !(x.kind === "approval" && x.threadId === t.id));
@@ -1591,7 +1601,7 @@ export class Hub {
         break;
       case "approvalResolved": {
         const entry = t.entries.find((x) => x.requestId === e.requestId && x.approval === "pending");
-        if (entry && entry.approval === "pending") entry.approval = "expired";
+        if (entry && entry.approval === "pending") settle(entry, "expired");
         this.refreshStatus(t);
         break;
       }
@@ -1608,7 +1618,7 @@ export class Hub {
         for (const x of t.entries) {
           x.streaming = false;
           if (x.kind === "tool" && x.status === "running") x.status = "unknown";
-          if (x.kind === "approval" && x.approval === "pending") x.approval = "expired";
+          if (x.kind === "approval" && x.approval === "pending") settle(x, "expired");
         }
         t.entries = t.entries.filter((x) => x.kind !== "reasoning");
         if (e.status === "failed" && isUsageLimit(e.error)) {
@@ -1737,6 +1747,17 @@ export function firstSentence(text: string, max = 90) {
   const m = clean.match(/^(.{10,}?[.!?])(\s|$)/);
   const s = m ? m[1] : clean;
   return s.length > max ? s.slice(0, max - 1) + "…" : s;
+}
+
+/** A request leaves "pending" (decided, answered or expired); a refusal written on it goes too. */
+function settle(e: Entry, approval: NonNullable<Entry["approval"]>) {
+  e.approval = approval;
+  delete e.refused;
+}
+
+/** Write a refusal on the pending card it was about, where it stays until a decision (toasts expire). */
+function refuse(e: Entry | undefined, why: Refusal) {
+  if (e?.kind === "approval" && e.approval === "pending") e.refused = { why, at: Date.now() };
 }
 
 function stripUndef(o: any) {
