@@ -233,6 +233,8 @@ function applyLayout(moveOnly = false) {
   k = window.innerWidth / layout.scr[0];
   // Layout is kept even while hidden so hit-testing of incoming clicks still works.
   const panelOn = layout.panel && !layout.drag && layout.ui !== false;
+  // The welcome portrait steps aside when the pane is under 200 CSS px tall (overlay.css, body.short-detail).
+  document.body.classList.toggle("short-detail", !!layout.detail && layout.detail[3] * k < 200);
   const rowH = (layout.rowH ?? 16) * k;
   const fpx = (layout.fpx ?? layout.px) * k;
   const fs = model?.fontScale ?? 1;
@@ -520,6 +522,19 @@ function entryHtml(e: EntryView, threadId: string, agent: string, cwd: string): 
   }
 }
 
+// The welcome page is the quest giver: its face and first lines follow what the model already says
+// (no new field). Unlinked, or linked with no familiar ready, it is puzzled; no quests, asleep;
+// something running, working; otherwise idle. Offer sentences below the head stay as they were.
+type WelcomeModel = Extract<DetailModel, { kind: "welcome" }>;
+function welcomeHead(d: WelcomeModel): { expr: "idle" | "working" | "asleep" | "puzzled"; big: string; sub: string } {
+  const link = d.linkedChar ? esc(d.linkedChar) : "the game";
+  if (!d.linked) return { expr: "puzzled", big: "I can't see the game yet.", sub: "Waiting for the game link. Familiar on your PC says what it sees (tray → Open Familiar)." };
+  if (!d.backends.some((b) => b.ready)) return { expr: "puzzled", big: "Well met.", sub: "No familiar is ready yet. Open Familiar from the tray icon on your PC to sign in." };
+  if (d.counts.total === 0) return { expr: "asleep", big: "No quests yet.", sub: "Wake me with + Claude or + Codex, or ask a question with + Chat." };
+  if (d.counts.running > 0) return { expr: "working", big: "Well met.", sub: `Linked to ${link} · ${d.counts.running} working.` };
+  return { expr: "idle", big: "Well met.", sub: `Linked to ${link}.` };
+}
+
 function staticDetail(d: DetailModel): string {
   if (d.kind === "models")
     return `<div class="welcome models"><div class="big">${d.chat ? "Chat model" : "Model"}</div>
@@ -540,17 +555,17 @@ function staticDetail(d: DetailModel): string {
     const noProjects = (d as { zones?: number }).zones === 0;
     const projectStarts = d.backends.filter((b) => b.ready).map((b) =>
       b.id === "claude" || b.id === "codex" ? `<b>+ ${esc(b.label)}</b>` : `<b>/fam ${esc(b.id)}</b> (no message)`);
-    return `<div class="welcome">
-      <div class="big">What would you like to do?</div>
-      <div class="sub">${d.linked ? d.linkedChar ? `Linked to ${esc(d.linkedChar)}.` : "Linked to the game." : "Waiting for the game link."}</div>
-      <div class="hint welcome-chat"><b>Ask a game question</b><br>
+    const { expr, big, sub } = welcomeHead(d);
+    return `<div class="welcome ${expr}">
+      <div class="whead"><img class="portrait" src="assets/${expr}-192.png" alt="" decoding="sync"><div class="wtext"><div class="big">${big}</div><div class="sub">${sub}</div></div></div>
+      <div class="hint offer welcome-chat"><b>Ask a game question</b><br>
         Quests, talents, zones, or a quick lookup. Chat uses web search, without project files or commands.<br>
         ${esc(d.chat.label)}${d.chat.model ? ` · ${esc(d.chat.model)}` : ""} · ${esc(d.chat.status)}<br>
         <span class="btn" data-act="${attr(d.chat.act)}">+ Chat</span> ${d.chat.ready ? "Opens a draft; nothing is sent yet. Model lists your chat choices." : "Chat uses Claude or Codex. Open a draft, then use Model to choose an enabled Chat provider or open Familiar from the tray icon on your PC to sign in."}</div>
-      <div class="hint welcome-project"><b>Work on a project</b><br>
+      <div class="hint offer welcome-project"><b>Work on a project</b><br>
         ${projectStarts.length ? `Use ${projectStarts.join(" or ")} to choose a project folder. The project picker also lists other familiars.` : "No provider is ready yet. Open Familiar from the tray icon on your PC to sign in before starting a project."}
         Use Model to see the available models. Check Your familiars below before sending.${noProjects ? `<br><span class="welcome-noprojects">No project folders yet — add one in Familiar on your PC (tray → Open Familiar → Projects).</span>` : ""}</div>
-      <div class="hint welcome-continue"><b>Continue a conversation</b><br>
+      <div class="hint offer welcome-continue"><b>Continue a conversation</b><br>
         Pick a quest or desktop conversation on the left. Familiar asks before sending your first message to a desktop conversation.</div>
       <div class="hint welcome-tutorial"><span class="link" data-act="${attr({ type: "tutorial" })}"><span class="ag ag-familiar">◆</span> Replay A Familiar Face</span> · the practice quest: one request to approve, and nothing runs.</div>
       <div class="hint"><b>Your familiars</b></div>
@@ -591,7 +606,13 @@ function renderTracker(lines: TrackerLine[]) {
 function renderToasts(m: RenderModel) {
   const html = m.toasts
     .slice(-3)
-    .map((t) => `<div class="toast ${t.kind}">${esc(t.text)}</div>`)
+    .map((t) => {
+      // The moment: the painted seal (cracked on a failure) over the title, and the hub's rewards line when it sent one
+      // (`sub`: counts and cost only, never a name; read defensively, a hub without it draws no line).
+      if (t.kind !== "done" && t.kind !== "error") return `<div class="toast ${t.kind}">${esc(t.text)}</div>`;
+      const sub = (t as { sub?: string }).sub;
+      return `<div class="toast ${t.kind}"><img class="seal" src="assets/${t.kind === "done" ? "seal-128" : "seal-cracked-128"}.png" alt=""><div class="t">${esc(t.text)}</div>${sub ? `<div class="sub">${esc(sub)}</div>` : ""}</div>`;
+    })
     .join("");
   if (els.toasts.innerHTML !== html) els.toasts.innerHTML = html;
 }

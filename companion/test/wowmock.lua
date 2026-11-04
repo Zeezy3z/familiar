@@ -3,6 +3,7 @@
 -- WoW: Forever API surface (test/fixtures/wow-api.json).
 
 MOCK = {
+  textureOk = true, -- false: the client refuses a texture path (SetTexture returns false, GetTexture nil)
   time = 100, cursor = { 700, 500 }, shift = false, ctrl = false,
   timers = {}, frames = {}, events = {}, chat = {},
   methodsCalled = {}, missingGlobals = {}, usedGlobals = {},
@@ -103,6 +104,11 @@ Methods.ClearFocus = function(self) self.__focus = false; fire(self, "OnEditFocu
 Methods.IsMouseOver = function(self) return MOCK.mouseOver == self end
 Methods.GetFrameLevel = function(self) return self.__level end
 Methods.SetFrameLevel = function(self, l) self.__level = l end
+Methods.SetTexture = function(self, path)
+  self.__texture = path
+  return MOCK.textureOk ~= false
+end
+Methods.GetTexture = function(self) if MOCK.textureOk ~= false then return self.__texture end end
 Methods.SetColorTexture = function(self, r, g, b, a) self.__color = { r, g, b, a or 1 } end
 -- BackdropTemplateMixin: a different backdrop is re-applied with an opaque white colour.
 Methods.SetBackdrop = function(self, info)

@@ -8,6 +8,8 @@ A quest log for your coding agents, inside World of Warcraft: Forever.
 
 ## Familiar in one minute
 
+<img src="docs/media/familiar.png" align="right" width="128" alt="The familiar: a small violet imp with gold horns, green eyes and a rolled scroll">
+
 * **What it is:** a quest log for your coding agents, inside WoW: Forever.
 * **How you use it:** open it with `/fam` or the minimap imp. Your first run puts a short tutorial
   quest, "A Familiar Face", in the log. Pick a project (a "zone"), type what you want, press Enter.
@@ -17,6 +19,8 @@ A quest log for your coding agents, inside World of Warcraft: Forever.
   signed in on your PC.
 * **What it never does:** press keys or click in the game, read game memory, talk to Blizzard's
   servers, or send anything to the Familiar author.
+
+*Original art for Familiar.*
 
 > **Beta.** This is version 0.3.0, a beta tested on a small number of PCs. Expect rough edges and
 > please [report bugs](https://github.com/Zeezy3z/familiar/issues/new/choose).

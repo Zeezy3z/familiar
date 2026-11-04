@@ -25,8 +25,7 @@ function Minimap_.Init()
   background:SetSize(24, 24)
   background:SetPoint("CENTER")
   local icon = btn:CreateTexture(nil, "ARTWORK")
-  icon:SetTexture("Interface\\Icons\\Spell_Shadow_SummonImp")
-  icon:SetTexCoord(0.05, 0.95, 0.05, 0.95) -- drop the spell icon's own square bevel
+  ns.SetIcon(icon) -- our own round face; the game's imp, trimmed of its square bevel, if the client refuses it
   icon:SetSize(18, 18)
   icon:SetPoint("CENTER")
   local border = btn:CreateTexture(nil, "OVERLAY")

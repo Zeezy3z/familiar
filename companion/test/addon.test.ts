@@ -948,3 +948,57 @@ describe("UX round 3: keys, text size, combat, tracker", () => {
     expect(Number(vm.run(`return NS.Tracker.frame.__border[4]`))).toBeGreaterThan(0);
   });
 });
+
+describe("minimap and title icons", () => {
+  // The two icon textures are the Texture children of the minimap button and of the main window.
+  const iconPaths = (state: LuaVM) =>
+    state.run(`
+      local out = {}
+      for _, f in ipairs(MOCK.frames) do
+        local p = f.__parent
+        if f.__kind == "Texture" and p and (p.__name == "FamiliarMinimapButton" or p.__name == "FamiliarFrame") and f.__texture
+            and (f.__texture == NS.ICON or f.__texture == NS.ICON_FALLBACK) then
+          out[#out + 1] = p.__name .. "=" .. f.__texture
+        end
+      end
+      table.sort(out)
+      return table.concat(out, "|")`);
+  const diagLine = (state: LuaVM) => {
+    state.run(`MOCK.chat = {} SlashCmdList.FAMILIAR("diag")`);
+    return state.run(`return table.concat(MOCK.chat, "|")`).split("|").find((l) => l.includes("icon:")) ?? "";
+  };
+
+  it("minimap and title icons use the addon's own texture and fall back to the game's imp when the client refuses it", () => {
+    const own = draftBoot();
+    const ownPath = own.run(`return NS.ICON`);
+    expect(ownPath).toBe("Interface\\AddOns\\Familiar\\media\\familiar");
+    expect(own.run(`return NS.iconSource`)).toBe("own");
+    expect(iconPaths(own)).toBe(`FamiliarFrame=${ownPath}|FamiliarMinimapButton=${ownPath}`);
+    expect(diagLine(own)).toMatch(/icon: own$/);
+
+    const refused = draftBoot(`MOCK.textureOk = false`);
+    const fallback = refused.run(`return NS.ICON_FALLBACK`);
+    expect(fallback).toBe("Interface\\Icons\\Spell_Shadow_SummonImp");
+    expect(refused.run(`return NS.iconSource`)).toBe("fallback");
+    expect(iconPaths(refused)).toBe(`FamiliarFrame=${fallback}|FamiliarMinimapButton=${fallback}`);
+    expect(diagLine(refused)).toMatch(/icon: fallback \(game imp\)$/);
+  });
+
+  it("SetIcon reports which texture it left on the widget", () => {
+    const state = draftBoot();
+    expect(state.run(`local t = UIParent:CreateTexture() return NS.SetIcon(t) .. "|" .. t:GetTexture()`)).toBe("own|" + state.run(`return NS.ICON`));
+    expect(state.run(`MOCK.textureOk = false local t = UIParent:CreateTexture() local r = NS.SetIcon(t) MOCK.textureOk = true return r .. "|" .. t.__texture`)).toBe(
+      "fallback|" + state.run(`return NS.ICON_FALLBACK`),
+    );
+  });
+
+  it("ships the texture as a 64x64 32-bit TGA the client can load", () => {
+    const tga = fs.readFileSync(path.join(ADDON_DIR, "media", "familiar.tga"));
+    expect(tga[1]).toBe(0); // no colour map
+    expect([2, 10]).toContain(tga[2]); // uncompressed or RLE true-colour
+    expect([tga.readUInt16LE(12), tga.readUInt16LE(14)]).toEqual([64, 64]);
+    expect(tga[16]).toBe(32);
+    expect(tga[17] & 0x0f).toBe(8); // 8 alpha bits
+    if (tga[2] === 2) expect(tga.length).toBeGreaterThanOrEqual(18 + tga[0] + 64 * 64 * 4); // all pixel rows present
+  });
+});

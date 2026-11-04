@@ -48,6 +48,8 @@ jobs:
           fail() { echo "::error::$1"; exit 1; }
           [ "$(cut -d/ -f1 <<< "$entries" | sort -u)" = Familiar ] || fail "zip must have the single root folder Familiar/"
           grep -qx 'Familiar/Familiar.toc' <<< "$entries" || fail "Familiar/Familiar.toc missing"
+          # Not a TOC entry, so the TOC check below would not notice it missing.
+          grep -qx 'Familiar/media/familiar.tga' <<< "$entries" || fail "Familiar/media/familiar.tga missing"
           ! grep -E '^Familiar/(addon|companion|docs)/' <<< "$entries" || fail "non-addon folders leaked into the zip"
           unzip -p "$zip" Familiar/Familiar.toc | tr -d '\r' | grep -v -e '^#' -e '^[[:space:]]*$' | tr '\' '/' |
             while read -r f; do grep -qx "Familiar/$f" <<< "$entries" || fail "TOC lists $f but the zip lacks it"; done

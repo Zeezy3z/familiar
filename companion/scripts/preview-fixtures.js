@@ -6,7 +6,9 @@
   const long = scenario === "long" || scenario === "handoff-long" || externalLong;
   const approval = scenario.startsWith("approval");
   const history = scenario.startsWith("history-");
-  const welcome = scenario === "welcome" || scenario === "welcome-unready" || scenario === "welcome-noprojects";
+  // welcome: linked, quests that are idle (the quest giver's idle face); -empty: no quests (asleep);
+  // -working: one running (working); -unlinked / -unready: puzzled; -noprojects: a fresh install with no folders yet.
+  const welcome = ["welcome", "welcome-unready", "welcome-noprojects", "welcome-empty", "welcome-unlinked", "welcome-working"].includes(scenario);
   // Round 4 control-panel scenarios (the status fields are the ones the hub serves; the panel renders them).
   const doctorStrip = scenario === "doctor-strip";
   const updateAvailable = scenario === "update-available";
@@ -18,7 +20,7 @@
   const moment = scenario === "quest-complete" || scenario === "quest-failed";
   const handlers = {};
   const calls = [];
-  const linked = ["welcome", "welcome-noprojects", "projects-empty", "projects-some", "update-available", "linked", "paused", "running", "approval", "finished", "interrupted", "desktop", "tutorial", "stream-safe", "quest-complete", "quest-failed"].includes(scenario);
+  const linked = ["welcome", "welcome-noprojects", "welcome-empty", "welcome-working", "projects-empty", "projects-some", "update-available", "linked", "paused", "running", "approval", "finished", "interrupted", "desktop", "tutorial", "stream-safe", "quest-complete", "quest-failed"].includes(scenario);
   const state = {
     build: scenario === "build-unavailable" ? { commit: null, dirty: null } : scenario === "build-dirty" ? { ...window.previewBuild, dirty: true } : window.previewBuild,
     work: { working: scenario === "running" || scenario === "build-running" ? 1 : 0,
@@ -112,7 +114,8 @@
   }
   if (moment) {
     model.raidWarnings = true;
-    model.toasts = [scenario === "quest-complete" ? { kind: "done", text: "Quest Complete · Quest log", at: 1 } : { kind: "error", text: "Quest Failed · Quest log", at: 1 }];
+    // The hub's rewards line (hub/rewards.ts) rides on the done toast; a failure here has none.
+    model.toasts = [scenario === "quest-complete" ? { kind: "done", text: "Quest Complete · Quest log", sub: "3/3 objectives · 2 edits · $0.21", at: 1 } : { kind: "error", text: "Quest Failed · Quest log", at: 1 }];
   }
   if (welcome) {
     const unready = scenario === "welcome-unready";
@@ -131,8 +134,9 @@
     ];
     model.detail = { kind: "welcome", linked, linkedChar: linked ? "Preview Rogue" : undefined, backends,
       chat: { ...backends.find(b => b.id === state.chat.agent), model: state.chat.model, act: { type: "newIn", key: "chats" } },
-      counts: { total: 0, running: 0, approval: 0 }, zones: scenario === "welcome-noprojects" ? 0 : 2 };
-    model.target = { text: "Nothing selected - choose Chat, a project quest, or a conversation on the left", warn: true };
+      counts: { total: scenario === "welcome-empty" || scenario === "welcome-noprojects" ? 0 : 2, running: scenario === "welcome-working" ? 1 : 0, approval: 0 },
+      zones: scenario === "welcome-noprojects" ? 0 : 2 };
+    model.target = { text: "Nothing selected — pick a quest, or + Chat / + Claude.", warn: true };
     model.keys.mode = undefined;
     model.list.rows = [{ kind: "zone", key: "chats", text: "Chats" },
       { kind: "hint", key: "chat-hint", text: "Ask anything: + Chat or /fam ask", act: { type: "newIn", key: "chats" } }];

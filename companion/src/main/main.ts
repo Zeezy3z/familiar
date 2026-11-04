@@ -51,6 +51,7 @@ import { devEnabled, serveDevHooks } from "./dev-hooks";
 import { changedConfigKeys, describeAddonMessage, describeOverlayAction, diagnosticsText, logLine, redact, rotateLog } from "./log-file";
 import { linkDoctor } from "./doctor";
 import { trayNoticeFor } from "./notices";
+import { paintBadge, trayBadgeFor, type TrayBadge } from "./tray-badge";
 import { checkUpdate, isReleasesUrl, type CheckUpdate } from "./update";
 
 const VERSION = "0.3.0";
@@ -256,7 +257,29 @@ function createControl() {
   control.on("closed", () => (control = null));
 }
 
-function trayIcon() {
+/** The familiar's face with the state badge (tray-badge.ts) painted onto each representation: 16 px
+ * and, where tray@2x.png loaded with it, 32 px (Electron picks that one on high-DPI displays). */
+const trayIcons = new Map<TrayBadge, Electron.NativeImage>();
+function trayIcon(badge: TrayBadge = "none") {
+  const cached = trayIcons.get(badge);
+  if (cached) return cached;
+  const base = trayArt();
+  let icon = base;
+  if (badge !== "none") {
+    icon = nativeImage.createEmpty();
+    for (const scaleFactor of [1, 2]) {
+      const buffer = base.toBitmap({ scaleFactor });
+      const size = Math.round(Math.sqrt(buffer.length / 4));
+      if (!size || size * size * 4 !== buffer.length) continue;
+      icon.addRepresentation({ scaleFactor, width: size, height: size, buffer: paintBadge(buffer, size, badge) });
+    }
+    if (icon.isEmpty()) icon = base;
+  }
+  trayIcons.set(badge, icon);
+  return icon;
+}
+
+function trayArt() {
   // The familiar's face (dist/assets/tray.png + tray@2x.png); the drawn orb only if the art is missing.
   const art = nativeImage.createFromPath(path.join(DIST, "assets", "tray.png"));
   if (!art.isEmpty()) return art;
@@ -279,7 +302,7 @@ function trayIcon() {
 
 function createTray() {
   tray = new Tray(trayIcon());
-  tray.setToolTip("Familiar");
+  refreshTray();
   const menu = () =>
     Menu.buildFromTemplate([
       { label: "Open Familiar", click: () => createControl() },
@@ -753,7 +776,7 @@ function noticeFor(x: Toast) {
 let requestsWaiting = false;
 function surfaceRequests() {
   requestsWaiting = true;
-  tray?.setToolTip("Familiar: a request is waiting on your PC");
+  refreshTray();
   if (control && !control.isDestroyed()) return void control.flashFrame(true);
   const fresh = hub.pendingRequests().filter((r) => r.cut && !noticed.has(noticeKey(r.thread, r.requestId)));
   if (!fresh.length) return;
@@ -765,13 +788,26 @@ function surfaceRequests() {
 function settleRequests() {
   if (!requestsWaiting || hub.pendingRequests().some((r) => r.cut)) return;
   requestsWaiting = false;
-  tray?.setToolTip("Familiar");
+  refreshTray();
   if (control && !control.isDestroyed()) control.flashFrame(false);
+}
+
+/** The tray's badge and tooltip follow the work (counts only, never a name; tray-badge.ts). */
+let trayShown = { badge: "none" as TrayBadge, tooltip: "" };
+function refreshTray() {
+  if (!tray) return;
+  // activity().working also counts quests waiting on you; the tray counts those once, under "waiting on you".
+  const work = hub ? { working: [...hub.threads.values()].filter((t) => t.status === "running").length, approvals: activity(hub).approvals } : null;
+  const next = trayBadgeFor(work, requestsWaiting);
+  if (next.badge !== trayShown.badge) tray.setImage(trayIcon(next.badge));
+  if (next.tooltip !== trayShown.tooltip) tray.setToolTip(next.tooltip);
+  trayShown = next;
 }
 
 function pushAll() {
   if (!hub) return;
   settleRequests();
+  refreshTray();
   lastModel = buildModel(hub, { linked: linked(), fps: captureStats.fps ?? 0 });
   overlay?.webContents.send("model", lastModel);
   if (layout) overlay?.webContents.send("layout", layout);
