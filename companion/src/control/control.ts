@@ -1,7 +1,7 @@
 // Desktop control panel: three setup steps, the essentials, "Requests waiting" (every pending approval), the
 // Projects card, and one Advanced section. Text that came from an agent, the game or the network is only ever
 // set with textContent (or esc() inside a template), never as markup.
-import { approveKeyStatus, claudeLine, journey } from "./journey";
+import { approveKeyStatus, claudeLine, journey, portraitFor } from "./journey";
 import { buildPresentation, restartGuidance, updateLine, versionMismatch } from "./build";
 import type { ControlBridge } from "../shared/bridge";
 const bridge = window.familiar as ControlBridge;
@@ -21,6 +21,8 @@ function render(s: any) {
   text("journey-title", j.title);
   $("journey-title").className = j.level;
   text("journey-text", j.text);
+  const portrait = `assets/${portraitFor(s, j.current)}-192.png`;
+  if ($("portrait").getAttribute("src") !== portrait) $("portrait").setAttribute("src", portrait);
   $("journey-steps").innerHTML = j.steps.map((step, i) => `<li${i === j.current ? ' class="cur" aria-current="step"' : ""}><b class="${step.done ? "ok" : ""}">${i + 1} ${esc(step.label)}${step.done ? " ✓" : ""}</b><span class="hint${step.level === "warn" ? " warn" : ""}">${esc(step.text)}</span></li>`).join("");
   const next = $("journey-action") as HTMLAnchorElement;
   next.hidden = !j.action;
@@ -449,7 +451,9 @@ function renderProjects(value: unknown) {
   const p = projectsOf(value);
   $("projects").hidden = !p; // an older main process has no folder commands (and reports a plain count)
   if (!p) return;
-  placeProjects(!p.explicit.length && !p.roots.length);
+  const none = !p.explicit.length && !p.roots.length;
+  placeProjects(none);
+  text("project-lead", none ? "Give me a folder and I'll have somewhere to go. " : "");
   text("project-history", p.history > 0 ? ` Found from your agents so far: ${p.history}.` : "");
   const row = (label: string, path: string) => `<div class="prov"><span class="g">▪</span><span class="n">${label}</span><span class="d">${esc(path)}</span><span class="a"><button class="small" type="button" data-remove="${esc(path)}" aria-label="Remove ${esc(path)}">✕</button></span></div>`;
   setHtml($("project-rows"), [...p.explicit.map((x) => row("Project", x)), ...p.roots.map((x) => row("Projects in", x))].join(""), ["remove"]);

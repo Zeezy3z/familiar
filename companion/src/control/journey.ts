@@ -19,6 +19,7 @@ export interface JourneyStatus {
   chat?: { agent?: string };
   doctor?: DoctorStatus | null;
   claude?: ClaudeStatus | null;
+  work?: { working?: number } | null;
 }
 
 /** The Claude row of the Familiars card (and step 1) while Claude Code is not on disk; null once it is there. */
@@ -36,6 +37,14 @@ export function claudeLine(c?: ClaudeStatus | null): { state: "missing" | "downl
   }
   if (c?.state === "missing") return { state: "missing", level: "muted", text: "Claude Code isn't downloaded yet. Click Retry to download it (about 112 MB).", retry: "Retry" };
   return null;
+}
+
+/** Which painted portrait the header shows (dist/assets/<name>-192.png); `current` is journey().current. */
+export function portraitFor(s: JourneyStatus, current: number): "idle" | "working" | "puzzled" {
+  if (current === 2) return "puzzled"; // the Link step is the one undone
+  if (claudeLine(s.claude)?.state === "downloading") return "working";
+  if (current === -1 && typeof s.work?.working === "number" && s.work.working > 0) return "working";
+  return "idle";
 }
 
 export function journey(s: JourneyStatus) {
@@ -70,13 +79,13 @@ export function journey(s: JourneyStatus) {
   if (!enabled.length) return guide("Choose your familiar", "Use an installed agent below. You can add more familiars whenever you like.", "warn", "providers");
   if (!prepared && !ready && !unknownSignIn) return guide("Check your familiar’s sign-in", "Use Sign in below, or complete setup in the agent’s own tool. A saved sign-in is checked again when the agent starts.", "warn", "providers");
   if (!s.install && !s.linked) return guide("Familiar couldn't find World of Warcraft", "Start WoW: Forever once so Familiar can see its folder, then choose Reinstall addon under Advanced → Link details. If it still isn't found, Open config and set wowRoot and wowFlavor to _forever_.", "warn", "config");
-  if (!s.game) return guide("Your familiars are waiting for WoW", "Open WoW in Windowed or Windowed (Fullscreen). Familiar stays in the tray while you’re away; agents start when WoW opens.", "muted");
+  if (!s.game) return guide("I'm waiting for WoW.", "Open WoW in Windowed or Windowed (Fullscreen). Familiar stays in the tray while you’re away; agents start when WoW opens.", "muted");
   if (s.game.minimized || s.game.foreground === false) return guide("Return to your WoW window", "The Glass waits while WoW is minimized or in the background. Return to the game when you’re ready.", "muted");
   if (s.capture?.error) return guide("The Runestrip needs attention", "Capture reported an error. Check Advanced → Link details, keep WoW visible, and make sure its coloured strip is uncovered.", "warn");
-  if (!s.linked) return guide("Looking for the game link", "The coloured dots top-left are how Familiar talks to your PC. Enable Familiar in AddOns and type /fam. Restart WoW once after first installation. If the dots are covered, /fam strip tr moves them to the top-right.", "warn");
+  if (!s.linked) return guide("I can't see the game yet.", "The coloured dots top-left are how Familiar talks to your PC. Enable Familiar in AddOns and type /fam. Restart WoW once after first installation. If the dots are covered, /fam strip tr moves them to the top-right.", "warn");
   if (!ready) return guide("Linked; waiting for a familiar", "The game link is working. Check the agent status below before sending a message.", "warn", "providers");
   if (s.layout?.ui === false) return guide("Your game UI is hidden", "Show the game UI again when you want to read Familiar’s live replies.", "muted");
-  if (!s.layout?.panel) return guide("Your familiars are ready", `Type /fam or click the minimap imp to open your Quest Log. Pick an existing conversation to continue.${chatReady ? " Use + Chat for a quick question." : " " + startHint}`, "ok");
+  if (!s.layout?.panel) return guide("Ready when you are.", `Type /fam or click the minimap imp to open your Quest Log. Pick an existing conversation to continue.${chatReady ? " Use + Chat for a quick question." : " " + startHint}`, "ok");
   return guide("Linked. Your next quest awaits.", `Pick a conversation to continue. ${startHint} Enter sends; Shift+Enter adds a line. Approvals appear in the conversation.`, "ok");
 }
 

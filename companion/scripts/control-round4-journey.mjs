@@ -45,12 +45,33 @@ export async function controlRound4Journey(page, origin, width, snapshot = async
   const openLink = () => page.evaluate(() => { document.getElementById('advanced').open = true; document.querySelector('.diagnostics').open = true; });
   const localError = group => page.locator(group).evaluate(el => el.previousElementSibling?.matches('[data-action-feedback]') ? el.previousElementSibling.textContent : '');
 
+  // ---- The familiar's portrait in the header follows the journey ----
+  const portrait = () => page.evaluate(() => {
+    const img = document.getElementById('portrait'), h1 = document.querySelector('header h1');
+    return { src: img.getAttribute('src'), loaded: img.complete && img.naturalWidth > 0, alt: img.getAttribute('alt'), w: img.getBoundingClientRect().width, h: img.getBoundingClientRect().height,
+      radius: getComputedStyle(img).borderRadius, ring: getComputedStyle(img).boxShadow !== 'none', beforeTitle: img.parentElement === h1.parentElement && !!(img.compareDocumentPosition(h1) & Node.DOCUMENT_POSITION_FOLLOWING) };
+  });
+  const face = async () => (await portrait()).src.replace('assets/', '');
+  await open();
+  let now = await portrait();
+  check('portrait: linked shows the idle familiar, round with a hairline ring, before the title and decorative', now.src === 'assets/idle-192.png' && now.loaded && now.alt === ''
+    && now.w === 56 && now.h === 56 && now.radius === '50%' && now.ring && now.beforeTitle);
+  const title = () => page.locator('#journey-title').textContent();
+  await status({ 'work.working': 2 });
+  check('portrait: a quest running on a finished journey makes it work', await face() === 'working-192.png');
+  await status({ 'work.working': 0 });
+  check('portrait: back to idle when nothing is running', await face() === 'idle-192.png');
+  await status({ game: null });
+  check('portrait: waiting for WoW is still idle, in the familiar\'s voice', await face() === 'idle-192.png' && await title() === "I'm waiting for WoW.");
+  await open();
+
   // ---- Link Doctor and "Save what Familiar sees" ----
   await open();
   const doctor = 'Familiar sees the game but no coloured strip in its top-left corner. In game: is Familiar ticked in AddOns? Type /fam strip — it should say TOPLEFT.';
   await status({ linked: false, layout: null, doctor: { step: 'strip', level: 'warn', text: doctor } });
   const link = () => page.locator('.steps li').nth(2).evaluate(li => { const h = li.querySelector('.hint'); return { text: h.textContent, warn: h.classList.contains('warn'), done: !!li.querySelector('b.ok') }; });
-  let now = await link();
+  now = await link();
+  check('portrait: the Link step undone makes it puzzled, and the title says so above the doctor\'s sentence', await face() === 'puzzled-192.png' && await title() === "I can't see the game yet.");
   check('doctor: the Link step says why the link is not up, in the doctor\'s words and warn colour', now.text === doctor && now.warn && !now.done);
   await openLink();
   check('doctor: Link details repeat the sentence', (await page.locator('#link').textContent()).includes('Link doctor') && (await page.locator('#link').textContent()).includes('no coloured strip'));
@@ -82,6 +103,7 @@ export async function controlRound4Journey(page, origin, width, snapshot = async
   const claude = () => page.locator('#providers .prov').first().evaluate(row => ({ text: row.querySelector('.d').textContent, bar: row.querySelector('progress')?.getAttribute('value') ?? null, button: row.querySelector('[data-retry]')?.textContent ?? null, markup: !!row.querySelector('.d img') }));
   await status({ 'providers.0.installed': false, 'providers.0.enabled': false, 'providers.0.signedIn': null, 'providers.0.detail': 'Not downloaded yet', claude: { state: 'downloading', pct: 43, mb: 112 } });
   let row = await claude();
+  check('portrait: while Claude Code downloads it works', await face() === 'working-192.png');
   check('claude: the row shows progress, with a bar and nothing to click', row.text === 'Downloading Claude Code · 43 % of 112 MB' && row.bar === '43' && row.button === null);
   const cardUp = () => page.evaluate(() => !document.getElementById('advanced').contains(document.getElementById('familiars')));
   check('claude: while it downloads the card sits above Advanced, though another agent is ready', await cardUp());
@@ -116,11 +138,14 @@ export async function controlRound4Journey(page, origin, width, snapshot = async
   let where = await place();
   check('projects: with no folder yet the card sits between the steps and the essentials, outside Advanced', where.visible && !where.inAdvanced && where.above && where.below
     && JSON.stringify(where.buttons) === JSON.stringify(['Add a project folder…', 'Add a folder of projects…']) && where.rows.length === 0);
+  const lead = () => page.locator('#projects .hint').first().textContent();
+  check('projects: with no folder the hint starts in the familiar\'s voice and keeps today\'s sentence', (await lead()).startsWith("Give me a folder and I'll have somewhere to go. Zones in your Quest Log are project folders."));
   await snapshot(`control-${width}-projects-empty`);
   await openAdvanced();
   await page.locator('#b-project-add').click();
   await page.waitForFunction(() => document.querySelectorAll('#project-rows .prov').length === 1);
   where = await place();
+  check('projects: once a folder is added the lead sentence goes', (await lead()).startsWith('Zones in your Quest Log'));
   check('projects: Add a project folder asks main for a project and lists the answer; the card moves into Advanced', await sent() === '[{"cmd":"projectAdd","args":{"kind":"project"}}]'
     && JSON.stringify(where.rows) === JSON.stringify([['Project', 'C:\\work\\one']]) && where.inAdvanced
     && (await page.locator('#project-result').textContent()).includes('C:\\work\\one'));

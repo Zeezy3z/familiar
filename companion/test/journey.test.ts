@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { approveKeyStatus, claudeLine, journey } from "../src/control/journey";
+import { approveKeyStatus, claudeLine, journey, portraitFor } from "../src/control/journey";
 import { threadState } from "../src/overlay/thread-state";
 import { approvalPreview } from "../src/overlay/approval-preview";
 import { buildPresentation, compareVersions, restartGuidance, updateLine, versionMismatch } from "../src/control/build";
@@ -41,7 +41,7 @@ describe("journey guidance for recoverable states", () => {
   });
   it("explains the restart, Familiar Sync and the coloured dots while the game link is missing", () => {
     const j = journey({ ...linked, linked: false, layout: null });
-    expect(j.title).toBe("Looking for the game link");
+    expect(j.title).toBe("I can't see the game yet.");
     expect(j.title + j.text).not.toContain("Runestrip");
     expect(j.text).toContain("The coloured dots top-left are how Familiar talks to your PC.");
     expect(j.text).toContain("/fam strip tr moves them to the top-right");
@@ -76,7 +76,7 @@ describe("journey guidance for recoverable states", () => {
   });
   it("lets an installed custom ACP provider verify unknown sign-in when WoW starts", () => {
     const j = journey({ install: {}, providers: [{ ...prepared, id: "custom", signedIn: undefined, canLogin: false }] });
-    expect(j.title).toBe("Your familiars are waiting for WoW");
+    expect(j.title).toBe("I'm waiting for WoW.");
     expect(j.steps[0].text).toContain("not yet verified");
   });
   it("guides Hermes-only setups without suggesting disabled providers or Chat", () => {
@@ -86,6 +86,26 @@ describe("journey guidance for recoverable states", () => {
       expect(j.text).toContain("/fam hermes <message>");
       expect(j.text).not.toMatch(/\+ Claude|\+ Codex|\+ Chat/);
     }
+  });
+});
+
+describe("the familiar's voice and portrait", () => {
+  it("speaks the titles that are about its own state; the texts under them stay literal", () => {
+    expect(journey({ ...linked, game: null }).title).toBe("I'm waiting for WoW.");
+    expect(journey({ ...linked, layout: { panel: false } }).title).toBe("Ready when you are.");
+    expect(journey({ ...linked, layout: { panel: false } }).text).toContain("click the minimap imp to open your Quest Log");
+    expect(journey(linked).title).toBe("Linked. Your next quest awaits.");
+    expect(journey({ ...linked, providers: [], backends: {} }).title).toBe("Choose your familiar");
+  });
+  it("picks the portrait from the journey, the Claude download and the work in the status", () => {
+    const at = (s: Parameters<typeof journey>[0]) => portraitFor(s, journey(s).current);
+    expect(at(linked)).toBe("idle");
+    expect(at({ ...linked, linked: false, layout: null })).toBe("puzzled");
+    expect(at({ ...linked, work: { working: 1 } })).toBe("working");
+    expect(at({ ...linked, work: { working: 0 } })).toBe("idle");
+    expect(at({ ...linked, providers: [], backends: {}, claude: { state: "downloading", pct: 43 } })).toBe("working");
+    expect(at({ ...linked, providers: [], backends: {}, claude: { state: "failed" } })).toBe("idle");
+    expect(at({ ...linked, linked: false, layout: null, work: { working: 2 } })).toBe("puzzled"); // an unlinked game is not "working"
   });
 });
 
