@@ -29,8 +29,11 @@ export interface Config {
   followDesktopArchive: boolean;
   /** Desktop threads listed per zone before a "+N more" row. */
   externalPerZone: number;
-  /** Chimes when a quest finishes, needs approval or fails. */
+  /** Cues (synthesized in the Glass) when a quest starts, needs approval, is approved, completes,
+   * a chat answers, or a turn fails. Off: nothing is sent to the Glass. */
   sound: boolean;
+  /** Master volume of the cues, 0-100 (/fam sound 0-100, the panel's slider); see clampVolume. */
+  soundVolume: number;
   speak: boolean;
   /** Defer ordinary completion notifications until the player returns. Approvals/errors remain. */
   quiet: boolean;
@@ -90,6 +93,7 @@ export const DEFAULT_CONFIG: Config = {
   followDesktopArchive: true,
   externalPerZone: 6,
   sound: true,
+  soundVolume: 70,
   speak: false,
   quiet: false,
   privateMode: false,
@@ -143,6 +147,12 @@ export function peekConfig(): Config {
   return { ...DEFAULT_CONFIG };
 }
 
+/** The one rule for soundVolume: a finite number, rounded and kept in 0-100; anything else is
+ * undefined (config load falls back to the default, /fam sound and the panel ignore it). */
+export function clampVolume(v: unknown): number | undefined {
+  return typeof v === "number" && Number.isFinite(v) ? Math.min(100, Math.max(0, Math.round(v))) : undefined;
+}
+
 export function loadConfig(log: (line: string) => void = () => {}): Config {
   const p = path.join(appDataDir(), "config.json");
   let user: Partial<Config> = {};
@@ -160,7 +170,8 @@ export function loadConfig(log: (line: string) => void = () => {}): Config {
       writeFileAtomic(p, JSON.stringify(DEFAULT_CONFIG, null, 2));
     }
   }
-  return { ...DEFAULT_CONFIG, ...user, exclude: [...new Set([...(DEFAULT_CONFIG.exclude), ...(user.exclude ?? [])])] };
+  return { ...DEFAULT_CONFIG, ...user, exclude: [...new Set([...(DEFAULT_CONFIG.exclude), ...(user.exclude ?? [])])],
+    soundVolume: clampVolume(user.soundVolume) ?? DEFAULT_CONFIG.soundVolume };
 }
 
 export function saveConfig(c: Config) {

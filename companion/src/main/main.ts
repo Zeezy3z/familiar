@@ -17,8 +17,8 @@ import type { AgentBackend, Mode } from "../agents/types";
 import { MODES } from "../agents/types";
 import { resolveCommand } from "../agents/which";
 import { claudeDownloadError, claudeHome, claudeRoute, claudeStatus, companionDir, downloadClaude, type ClaudeFetch } from "../agents/claude-download";
-import { appDataDir, DEFAULT_CONFIG, loadConfig, saveConfig } from "../hub/config";
-import { FONT_MAX, FONT_MIN, Hub, type Toast } from "../hub/hub";
+import { appDataDir, clampVolume, DEFAULT_CONFIG, loadConfig, saveConfig } from "../hub/config";
+import { FONT_MAX, FONT_MIN, Hub, soundMessage, type Toast } from "../hub/hub";
 import { buildModel } from "../hub/viewmodel";
 import { activity } from "../hub/activity";
 import { isIssueUrl, suggestionUrl, type SuggestVersions } from "../hub/suggest";
@@ -816,7 +816,7 @@ function pushAll() {
 }
 
 function uiSettings() {
-  return { fontScale: cfg.fontScale, sound: cfg.sound, raidWarnings: cfg.raidWarnings !== false, quiet: !!cfg.quiet, privateMode: !!cfg.privateMode,
+  return { fontScale: cfg.fontScale, sound: cfg.sound, soundVolume: cfg.soundVolume, raidWarnings: cfg.raidWarnings !== false, quiet: !!cfg.quiet, privateMode: !!cfg.privateMode,
     streamSafe: !!cfg.privateMode && !!cfg.blurTranscript, defaultMode: cfg.defaultMode, approveKey: cfg.approveKey ?? "", trayNotices: cfg.trayNotices !== false };
 }
 
@@ -1117,7 +1117,11 @@ app.whenReady().then(async () => {
     if (isIssueUrl(url)) shell.openExternal(url).catch((e) => log(`[open] ${e}`));
   };
   hub.suggestVersions = suggestVersions;
-  hub.onSound = (k) => cfg.sound && overlay?.webContents.send("sound", k);
+  // The Glass plays every cue, panel-made approvals included; no overlay (WoW closed), no sound.
+  hub.onSound = (k) => {
+    const m = soundMessage(cfg, k);
+    if (m) overlay?.webContents.send("sound", m);
+  };
   hub.onSpeak = (t) => overlay?.webContents.send("speak", t);
   hub.onCutRequest = surfaceRequests;
   hub.onToast = noticeFor;
@@ -1242,9 +1246,10 @@ app.whenReady().then(async () => {
         sendStatus();
         return true;
       case "uiSettings": {
-        const a = (args ?? {}) as { fontScale?: number; sound?: boolean; raidWarnings?: boolean; quiet?: boolean; privateMode?: boolean; streamSafe?: boolean; defaultMode?: string; approveKey?: string; trayNotices?: boolean };
+        const a = (args ?? {}) as { fontScale?: number; sound?: boolean; soundVolume?: number; raidWarnings?: boolean; quiet?: boolean; privateMode?: boolean; streamSafe?: boolean; defaultMode?: string; approveKey?: string; trayNotices?: boolean };
         if (typeof a.fontScale === "number" && isFinite(a.fontScale)) cfg.fontScale = Math.min(FONT_MAX, Math.max(FONT_MIN, a.fontScale));
         if (typeof a.sound === "boolean") cfg.sound = a.sound;
+        cfg.soundVolume = clampVolume(a.soundVolume) ?? cfg.soundVolume; // 0-100; a non-number is ignored
         if (typeof a.raidWarnings === "boolean") cfg.raidWarnings = a.raidWarnings;
         if (typeof a.trayNotices === "boolean") cfg.trayNotices = a.trayNotices;
         if (typeof a.quiet === "boolean") hub.setQuiet(a.quiet);

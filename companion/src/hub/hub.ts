@@ -18,7 +18,7 @@ import {
   ThreadInfo,
   TodoItem,
 } from "../agents/types";
-import { appDataDir, Config, isExcluded, normPath } from "./config";
+import { appDataDir, clampVolume, Config, DEFAULT_CONFIG, isExcluded, normPath } from "./config";
 import { redact } from "../main/log-file";
 import { NO_PROOF, Proof } from "../main/physical";
 import { storageCode, ThreadStore } from "./storage";
@@ -223,6 +223,17 @@ export function setFontScale(cur: number, arg = ""): number | undefined {
   return Math.round(Math.min(FONT_MAX, Math.max(FONT_MIN, s)) * 10) / 10;
 }
 
+/** The six sound cues (round 6 §3, pinned). Lane G's `src/shared/cues.ts` owns this union; until it
+ * is on main the same union lives here, to become `import type { Cue } from "../shared/cues"`. */
+export type Cue = "accepted" | "approval" | "approved" | "done" | "reply" | "error";
+
+/** What main sends the Glass for a cue (IPC "sound"): nothing while Sounds is off; `volume` is the
+ * master gain 0..1 (soundVolume / 100, a hand-edited value held to clampVolume's rule). */
+export function soundMessage(c: Pick<Config, "sound" | "soundVolume">, kind: Cue): { kind: Cue; volume: number } | undefined {
+  if (!c.sound) return undefined;
+  return { kind, volume: (clampVolume(c.soundVolume) ?? DEFAULT_CONFIG.soundVolume) / 100 };
+}
+
 /** Where a cut request is approved, said on its approval toast. */
 export const CUT_TOAST = "Open Familiar on your PC to approve";
 
@@ -271,7 +282,9 @@ export class Hub {
   private threadStore: ThreadStore;
   get storage() { return this.threadStore.warning; }
   notice?: { text: string; at: number };
-  onSound: (kind: "done" | "approval" | "error") => void = () => {};
+  /** A cue for the Glass (main: soundMessage). Notices wait out a fight; the player's own cues
+   * (accepted, approved) play at once or not at all (see sound()). */
+  onSound: (kind: Cue) => void = () => {};
   onConfigChanged: (c: Config) => void = () => {};
   onSpeak: (text: string) => void = () => {};
   /** A request too long for the in-game card is waiting (main: flash the panel / a tray notice). */
@@ -774,7 +787,15 @@ export class Hub {
       case "warnings": {
         const c = this.cfg();
         const field = k === "sound" ? "sound" : "raidWarnings";
-        const a = (arg ?? "").toLowerCase();
+        const a = (arg ?? "").trim().toLowerCase();
+        // "/fam sound 0-100" sets the volume (clamped), not the switch.
+        const volume = k === "sound" && /^\d+%?$/.test(a) ? clampVolume(parseInt(a, 10)) : undefined;
+        if (volume !== undefined) {
+          c.soundVolume = volume;
+          this.onConfigChanged(c);
+          this.toast(`Sound volume ${volume}%`, "info");
+          break;
+        }
         c[field] = a === "on" ? true : a === "off" ? false : !c[field];
         this.onConfigChanged(c);
         if (k === "sound") this.toast(c.sound ? "Sounds on." : "Sounds off.", "info");
@@ -1373,6 +1394,7 @@ export class Hub {
     }
     settle(e, d === "allow" ? "approved" : d === "allowAlways" ? "always" : "denied");
     this.lastDecisionAt = Date.now();
+    if (grants) this.sound("approved"); // the stamp, either origin; Deny is silent (no reward, no reproach)
     if (t.kind === "tutorial") this.play(t, tutorialDecide(t, grants, uid)); // the practice card: nothing runs
     else this.backends[t.agent].respondApproval(t.id, requestId, d);
     this.dropToasts((x) => x.kind === "approval" && x.threadId === t.id);
@@ -1555,6 +1577,7 @@ export class Hub {
     this.view.collapsed.delete(t.projectKey);
     // Every start is visible on the Glass, so one another addon makes can't pass unnoticed.
     this.toast(`Started: ${t.title} (${this.projectName(t)})`, "info", t.id, `${agentName(t.agent)} quest started`);
+    this.sound("accepted");
     for (const x of this.threads.values()) if (x.kind === "tutorial") this.play(x, tutorialSetOut(x));
     return t;
   }
@@ -1832,7 +1855,7 @@ export class Hub {
             // and cost go in the rewards line under it (rewards.ts).
             const moment = t.kind === "chat" ? "Answer ready" : "Quest Complete";
             this.toast(`${moment} · ${t.title}`, "done", t.id, moment, undefined, rewards(t));
-            if (!this.cfg().quiet) this.sound("done");
+            if (!this.cfg().quiet) this.sound(t.kind === "chat" ? "reply" : "done");
             if (!this.cfg().quiet && !this.cfg().privateMode && this.cfg().speak && last) this.speak(`${agentName(t.agent)} finished in ${this.projectName(t)}. ${firstSentence(last.text, 200)}`);
           }
         }
@@ -1881,8 +1904,11 @@ export class Hub {
     this.held = this.held.filter((x) => !drop(x));
   }
 
-  private sound(kind: "done" | "approval" | "error") {
-    if (!this.combat) this.onSound(kind); // in a fight: one chime for what was held, when it ends
+  /** In a fight nothing plays. The notices (approval, done, reply, error) wait as their held toasts,
+   * and setCombat(false) plays one cue for them; the player's own cues (accepted, approved) are
+   * dropped, never held: a stamp after the fight would read as the game doing something. */
+  private sound(kind: Cue) {
+    if (!this.combat) this.onSound(kind);
   }
 
   private speak(text: string) {
@@ -1914,6 +1940,9 @@ export class Hub {
     if (!held.length) return;
     const count = (k: Toast["kind"]) => held.filter((x) => x.kind === k).length;
     const kind = count("approval") ? "approval" : count("error") ? "error" : "done";
+    // The cue: approval > error > done, and a chat's answer keeps its own (reply) when only answers were held.
+    const answers = held.every((x) => x.kind !== "done" || this.threads.get(x.threadId ?? "")?.kind === "chat");
+    const cue: Cue = kind === "done" && answers ? "reply" : kind;
     if (held.length === 1) {
       this.show(held[0]);
       if (speech) this.onSpeak(speech);
@@ -1928,7 +1957,7 @@ export class Hub {
       this.show({ id: this.toastSeq++, text, kind, at: Date.now(), generic: text }); // names nothing
       if (speech) this.onSpeak(text.replace(/ · /g, ", "));
     }
-    this.onSound(kind);
+    this.onSound(cue);
     this.changed("toast");
   }
 
