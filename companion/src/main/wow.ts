@@ -1,5 +1,6 @@
-// WoW install discovery, addon installation (junction to this repo) and the native snapshot
-// (FamiliarSync) the addon loads at login / reload.
+// WoW install discovery, addon installation (junction to this repo, or a marked copy from the
+// installed app) and the native snapshot (FamiliarSync) the addon loads at login / reload.
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { Config, writeFileAtomic } from "../hub/config";
@@ -207,41 +208,110 @@ function sameDir(a: string, b: string): boolean {
   return norm(a) === norm(b);
 }
 
-/** Junction Interface/AddOns/Familiar -> repo addon, and create the FamiliarSync data addon. */
-export function installAddon(install: WowInstall, repoAddonDir: string): InstallResult {
+/** Link mode: junction to `repoAddonDir`, re-pointing a stale or broken junction or replacing our
+ * marked copy; any other real folder is left alone. */
+function linkAddon(link: string, repoAddonDir: string, messages: string[]): boolean {
+  let st: fs.Stats | undefined;
+  try {
+    st = fs.lstatSync(link); // never follows the link: a dangling junction still shows up
+  } catch {
+    /* nothing there */
+  }
+  if (st?.isSymbolicLink()) {
+    let target = "";
+    try {
+      target = fs.readlinkSync(link);
+    } catch {
+      /* unreadable reparse point */
+    }
+    if (target && fs.existsSync(link) && sameDir(target, repoAddonDir)) return false;
+    fs.unlinkSync(link);
+    messages.push(target && fs.existsSync(target) ? `Re-pointed Familiar link (was ${target}).` : "Removed a broken Familiar link.");
+  } else if (st?.isDirectory() && readMarker(link)) {
+    // The installed app's copy (copy mode): a source run takes over with its live link.
+    fs.rmSync(link, { recursive: true, force: true });
+    messages.push("Replaced the installed app's Familiar copy with a link.");
+  } else if (st) {
+    messages.push("Interface/AddOns/Familiar is a real folder; leaving it alone (remove it to use the live repo copy).");
+    return false;
+  }
+  fs.symlinkSync(repoAddonDir, link, "junction");
+  messages.push(`Linked ${link} -> ${repoAddonDir}`);
+  return true;
+}
+
+/** Marks Interface/AddOns/Familiar as a copy the installed companion made (copy mode). */
+export const MANAGED_MARKER = ".familiar-managed";
+
+/** What a copy holds: the TOC's ## Version, and a digest of every file (any change recopies). */
+function addonStamp(dir: string): { version: string; digest: string } {
+  const hash = createHash("sha256");
+  const walk = (rel: string) => {
+    for (const e of fs.readdirSync(path.join(dir, rel), { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1))) {
+      const r = rel ? `${rel}/${e.name}` : e.name;
+      if (e.isDirectory()) walk(r);
+      else if (r !== MANAGED_MARKER) hash.update(r + "\0").update(fs.readFileSync(path.join(dir, r))).update("\0");
+    }
+  };
+  walk("");
+  const toc = fs.readFileSync(path.join(dir, "Familiar.toc"), "utf8");
+  return { version: /^## Version:\s*(\S+)/m.exec(toc)?.[1] ?? "?", digest: hash.digest("hex") };
+}
+
+function readMarker(dir: string): { version?: string; digest?: string } | null {
+  try {
+    const m = JSON.parse(fs.readFileSync(path.join(dir, MANAGED_MARKER), "utf8"));
+    return m && typeof m === "object" ? m : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Copy mode: replace a junction (from a source run) or an outdated marked copy with a fresh copy;
+ * a folder without our marker (addon manager, manual install) is never touched. */
+function copyAddon(target: string, srcDir: string, messages: string[]): boolean {
+  let st: fs.Stats | undefined;
+  try {
+    st = fs.lstatSync(target);
+  } catch {
+    /* nothing there */
+  }
+  const stamp = addonStamp(srcDir);
+  let old: ReturnType<typeof readMarker> = null;
+  if (st && !st.isSymbolicLink()) {
+    old = st.isDirectory() ? readMarker(target) : null;
+    if (!old) {
+      messages.push("Interface/AddOns/Familiar was not installed by Familiar (an addon manager or a manual copy); leaving it alone. Remove it to let Familiar install its own copy.");
+      return false;
+    }
+    if (old.digest === stamp.digest) return false;
+  }
+  // Build the new copy beside the old one, then swap, so a failure never leaves half an addon.
+  const next = target + ".familiar-new";
+  fs.rmSync(next, { recursive: true, force: true });
+  fs.cpSync(srcDir, next, { recursive: true });
+  fs.writeFileSync(path.join(next, MANAGED_MARKER), JSON.stringify(stamp) + "\n");
+  if (st?.isSymbolicLink()) fs.unlinkSync(target);
+  else if (st) fs.rmSync(target, { recursive: true, force: true });
+  fs.renameSync(next, target);
+  if (st?.isSymbolicLink()) messages.push(`Replaced the Familiar link with a copy at ${target}`);
+  else if (old) messages.push(`Updated the Familiar addon at ${target} (${old.version ?? "?"} -> ${stamp.version})`);
+  else messages.push(`Copied the Familiar addon to ${target}`);
+  return true;
+}
+
+/**
+ * Install Interface/AddOns/Familiar and create the FamiliarSync data addon. "link" (source runs):
+ * a junction to the repo's addon, so edits show on /reload. "copy" (installed app): a copy carrying
+ * MANAGED_MARKER, refreshed when the installed addon changes.
+ */
+export function installAddon(install: WowInstall, repoAddonDir: string, mode: "link" | "copy" = "link"): InstallResult {
   const messages: string[] = [];
   let changed = false;
   try {
     fs.mkdirSync(install.addons, { recursive: true });
     const link = path.join(install.addons, "Familiar");
-    let needLink = true;
-    let st: fs.Stats | undefined;
-    try {
-      st = fs.lstatSync(link); // never follows the link: a dangling junction still shows up
-    } catch {
-      /* nothing there */
-    }
-    if (st?.isSymbolicLink()) {
-      let target = "";
-      try {
-        target = fs.readlinkSync(link);
-      } catch {
-        /* unreadable reparse point */
-      }
-      if (target && fs.existsSync(link) && sameDir(target, repoAddonDir)) needLink = false;
-      else {
-        fs.unlinkSync(link);
-        messages.push(target && fs.existsSync(target) ? `Re-pointed Familiar link (was ${target}).` : "Removed a broken Familiar link.");
-      }
-    } else if (st) {
-      needLink = false;
-      messages.push("Interface/AddOns/Familiar is a real folder; leaving it alone (remove it to use the live repo copy).");
-    }
-    if (needLink) {
-      fs.symlinkSync(repoAddonDir, link, "junction");
-      changed = true;
-      messages.push(`Linked ${link} -> ${repoAddonDir}`);
-    }
+    changed = mode === "copy" ? copyAddon(link, repoAddonDir, messages) : linkAddon(link, repoAddonDir, messages);
     const sync = path.join(install.addons, "FamiliarSync");
     fs.mkdirSync(sync, { recursive: true });
     const toc = path.join(sync, "FamiliarSync.toc");
@@ -273,7 +343,8 @@ export function installAddon(install: WowInstall, repoAddonDir: string): Install
   }
 }
 
-/** Remove what installAddon created: the Familiar link (never a real folder) and FamiliarSync. */
+/** Remove what installAddon created: the Familiar link or our marked copy (never another folder)
+ * and FamiliarSync. */
 export function uninstallAddon(install: WowInstall): string[] {
   const messages: string[] = [];
   const link = path.join(install.addons, "Familiar");
@@ -281,6 +352,9 @@ export function uninstallAddon(install: WowInstall): string[] {
     if (fs.lstatSync(link).isSymbolicLink()) {
       fs.unlinkSync(link);
       messages.push(`Removed the Familiar link at ${link}.`);
+    } else if (readMarker(link)) {
+      fs.rmSync(link, { recursive: true, force: true });
+      messages.push(`Removed the Familiar addon copy at ${link}.`);
     } else messages.push(`${link} is a real folder; left in place.`);
   } catch {
     /* no link */

@@ -51,6 +51,44 @@ import { changedConfigKeys, describeAddonMessage, describeOverlayAction, diagnos
 
 const VERSION = "0.1.1";
 
+// ---- installed build (electron-builder) --------------------------------------------------------
+// Packaged-only: a source run (electron.exe <companion dir>, via boot.cjs) skips all of this.
+const PACKAGED = app.isPackaged;
+/** The addon the companion installs: the repo's copy, or the installer's under resources\. */
+const REPO_ADDON = PACKAGED ? path.join(process.resourcesPath, "addon", "Familiar") : path.resolve(__dirname, "..", "..", "addon", "Familiar");
+/** The SDK resolves claude.exe inside app.asar, where spawn fails (ENOENT); asarUnpack puts the
+ * real file in app.asar.unpacked. Source runs keep the SDK's own lookup. */
+const BUNDLED_CLAUDE = PACKAGED ? path.join(process.resourcesPath, "app.asar.unpacked", "node_modules", "@anthropic-ai", "claude-agent-sdk-win32-x64", "claude.exe") : undefined;
+if (PACKAGED) {
+  delete process.env.FAMILIAR_DEV; // dev/test hooks never exist in an installed build
+  // The source run's Chromium profile (%APPDATA%\<package.json name>), so both hold the same
+  // single-instance lock and never run side by side, and Chromium's caches stay out of the
+  // %APPDATA%\Familiar config folder (the packaged default, from productName).
+  app.setPath("userData", path.join(app.getPath("appData"), "familiar-companion"));
+  app.setAppUserModelId("io.github.zeezy3z.familiar"); // = appId in electron-builder.yml
+  if (process.argv.includes("--self-test")) selfTestAndExit();
+}
+
+/** `Familiar.exe --self-test` (CI, on win-unpacked): before the log, the lock, the addon install
+ * and the startup entry. Prints the checks to stdout and exits 0 (all ok) or 1. */
+function selfTestAndExit(): never {
+  let ok = false;
+  let lines: string[];
+  try {
+    const appRoot = path.resolve(__dirname, "..");
+    const { selfTest } = require(path.join(appRoot, "self-test.cjs"));
+    ({ ok, lines } = selfTest({ appRoot, addonDir: REPO_ADDON, claudeExe: BUNDLED_CLAUDE }));
+  } catch (e: any) {
+    lines = ["FAIL self-test: " + (e?.stack ?? e)];
+  }
+  try {
+    fs.writeSync(1, [`Familiar ${VERSION} self-test`, ...lines, ok ? "PASS" : "FAIL"].join("\n") + "\n");
+  } catch {
+    /* no stdout: the exit code still says it */
+  }
+  process.exit(ok ? 0 : 1);
+}
+
 // ---- never show Electron error dialogs; log instead ------------------------------------------
 const logFile = path.join(appDataDir(), "familiar.log");
 rotateLog(logFile);
@@ -88,7 +126,6 @@ app.on("second-instance", () => {
 
 const ROOT = path.resolve(__dirname, ".."); // companion/
 const DIST = __dirname;
-const REPO_ADDON = path.resolve(ROOT, "..", "addon", "Familiar");
 
 let overlay: BrowserWindow | null = null;
 let capture: BrowserWindow | null = null;
@@ -752,8 +789,10 @@ function sendStatus() {
 function applyLoginItem() {
   if (devEnabled()) return;
   try {
-    // Named "Familiar" in Task Manager > Startup (unnamed, Electron uses its generic app id).
-    app.setLoginItemSettings({ openAtLogin: cfg.launchAtLogin, path: process.execPath, args: [path.resolve(ROOT), "--background"], name: "Familiar" });
+    // Named "Familiar" in Task Manager > Startup (unnamed, Electron uses its generic app id). Same
+    // name installed or not, so an installed Familiar takes over a source run's entry.
+    const args = PACKAGED ? ["--background"] : [path.resolve(ROOT), "--background"];
+    app.setLoginItemSettings({ openAtLogin: cfg.launchAtLogin, path: process.execPath, args, name: "Familiar" });
     removeLegacyLoginItem();
   } catch (e) {
     log("[login-item] " + e);
@@ -802,7 +841,9 @@ function doInstall(force: boolean) {
   }
   const check = interfaceCheck(install, tocInterfaces(path.join(REPO_ADDON, "Familiar.toc")));
   log(`[wow] flavor ${install.flavor} product ${install.product ?? "?"} version ${install.version ?? "?"} iface ${install.iface ?? "?"} (${install.source}): ${check.text}`);
-  const r = installAddon(install, REPO_ADDON);
+  // Installed: a marked copy (a junction into the install folder would dangle after uninstall and
+  // let addon managers write through it). Source run: a junction to the live repo copy.
+  const r = installAddon(install, REPO_ADDON, PACKAGED ? "copy" : "link");
   installNotes = check.level === "warn" ? [check.text, ...r.messages] : r.messages;
   for (const m of r.messages) log("[install] " + m);
   if (force && !r.changed) log("[install] addon already installed at " + install.addons);
@@ -818,7 +859,9 @@ async function uninstall() {
     defaultId: 1,
     cancelId: 1,
     message: "Remove Familiar from this PC?",
-    detail: "Removes the Windows startup entry, the addon link in WoW and FamiliarSync. Your agents' sign-ins and your project files are not touched. Delete the Familiar folder yourself afterwards.",
+    detail: PACKAGED
+      ? "Removes the Windows startup entry, the Familiar addon in WoW and FamiliarSync. Your agents' sign-ins and your project files are not touched. Then remove Familiar in Windows Settings > Apps."
+      : "Removes the Windows startup entry, the addon link in WoW and FamiliarSync. Your agents' sign-ins and your project files are not touched. Delete the Familiar folder yourself afterwards.",
     checkboxLabel: "Also delete settings, logs and saved quests (%APPDATA%\\Familiar)",
   });
   if (response !== 0) return;
@@ -839,7 +882,7 @@ async function uninstall() {
 // ---- boot ---------------------------------------------------------------------------------------
 app.whenReady().then(async () => {
   log(`[boot] Familiar companion ${VERSION} (Electron ${process.versions.electron})`);
-  const claude = new ClaudeBackend({ log, version: VERSION, executable: cfg.claudeExecutable, defaultModel: cfg.claudeModel });
+  const claude = new ClaudeBackend({ log, version: VERSION, executable: cfg.claudeExecutable || BUNDLED_CLAUDE, defaultModel: cfg.claudeModel });
   const codex = new CodexBackend({ log, version: VERSION, exe: cfg.codexExe });
   const backends: Record<string, AgentBackend> = { claude, codex };
   // Agent Client Protocol agents (Hermes, Grok Build, anything added under "providers" in

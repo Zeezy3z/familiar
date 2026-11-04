@@ -1,0 +1,62 @@
+# Packaged Familiar (per-user NSIS installer, x64). Build from companion/:
+#   npm run dist                                         unsigned installer in release/ (local testing only)
+#   npm run build && npx electron-builder --win --dir    release/win-unpacked, then: Familiar.exe --self-test
+# Unsigned installers are never published: .github/workflows/installer.yml builds and uploads one only
+# when signing is configured (docs/releasing.md, "Signed installer").
+appId: io.github.zeezy3z.familiar # = app.setAppUserModelId in src/main/main.ts
+productName: Familiar
+copyright: Copyright © 2026 Zeezy3z
+directories:
+  output: release
+  buildResources: build # build/icon.ico (node build/make-icon.mjs)
+extraMetadata:
+  # Not boot.cjs: the package has no src/, so boot.cjs would think dist/ is stale and rebuild on every start.
+  main: dist/main.js
+npmRebuild: false # koffi (N-API prebuilt) and the Claude SDK (prebuilt claude.exe) need no native rebuild
+nodeGypRebuild: false
+asar: true
+# Production node_modules are added automatically; the patterns below only add our files and prune.
+files:
+  - package.json
+  - self-test.cjs
+  - dist/**/*
+  - "!dist/fakewow*" # FakeWoW test harness, never loaded by main
+  - "!dist/build-info.json" # offline-inspection copy; main.js embeds the build identity
+  - "!node_modules/@fontsource/**" # build.mjs copies the one woff2 into dist/assets
+  - "!node_modules/koffi/{vendor,doc}/**" # keep koffi/src: src/koffi/src/static.cjs is runtime code
+  - "!node_modules/**/*.{md,markdown,map,d.ts,d.mts}"
+asarUnpack:
+  - node_modules/@koromix/koffi-win32-x64/** # koffi.node must be a real file to load
+  - node_modules/@anthropic-ai/claude-agent-sdk-win32-x64/** # claude.exe must be a real file to spawn
+extraResources:
+  - from: ../addon/Familiar
+    to: addon/Familiar # process.resourcesPath\addon\Familiar, copied into WoW by the companion
+    filter: ["**/*"]
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  icon: build/icon.ico
+  executableName: Familiar
+  artifactName: Familiar-Setup-${version}.${ext}
+  signtoolOptions:
+    # One SHA-256 pass per file (Azure Artifact Signing does not dual-sign). The signing hook itself,
+    # build/sign.cjs, and the publisher name are passed only by installer.yml; without them
+    # electron-builder logs "no code signing certificate configured, signing is skipped".
+    signingHashAlgorithms: [sha256]
+nsis:
+  oneClick: true
+  perMachine: false # %LOCALAPPDATA%\Programs\Familiar, HKCU only, no UAC
+  allowElevation: false
+  packElevateHelper: false
+  deleteAppDataOnUninstall: false # %APPDATA%\Familiar holds config, saved quests and the log: never wiped
+  createDesktopShortcut: false
+  createStartMenuShortcut: true
+  shortcutName: Familiar
+  runAfterFinish: true
+  include: build/installer.nsh # uninstall also removes the "start with Windows" entry
+publish:
+  - provider: github
+    owner: Zeezy3z
+    repo: familiar
+    releaseType: release

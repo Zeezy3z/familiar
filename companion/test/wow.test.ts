@@ -215,6 +215,87 @@ describe("installAddon", () => {
     expect(fs.readFileSync(path.join(real, "Familiar.toc"), "utf8")).toBe("## Interface: 16001\n");
   });
 
+  // Copy mode is what the installed app uses (main.ts: PACKAGED); link mode stays the source-run default.
+  const MARKER = ".familiar-managed";
+  /** A changeable copy of the repo addon, standing in for resources\addon\Familiar. */
+  function installedAddon() {
+    const src = path.join(dir("fam-res-"), "Familiar");
+    fs.cpSync(REPO_ADDON, src, { recursive: true });
+    return src;
+  }
+
+  it("copy mode copies the addon with a version marker, and a second install is a no-op", () => {
+    const src = installedAddon();
+    const addons = path.join(dir(), "Interface", "AddOns");
+    const r = installAddon(fakeInstall(addons), src, "copy");
+    expect(r).toMatchObject({ ok: true, changed: true });
+    const target = path.join(addons, "Familiar");
+    expect(fs.lstatSync(target).isSymbolicLink()).toBe(false);
+    expect(fs.readFileSync(path.join(target, "Familiar.toc"), "utf8")).toBe(fs.readFileSync(REPO_TOC, "utf8"));
+    const pkg = JSON.parse(fs.readFileSync(path.resolve(__dirname, "..", "package.json"), "utf8"));
+    expect(JSON.parse(fs.readFileSync(path.join(target, MARKER), "utf8")).version).toBe(pkg.version);
+    expect(tocInterfaces(path.join(addons, "FamiliarSync", "FamiliarSync.toc"))).toEqual(tocInterfaces(REPO_TOC));
+    expect(installAddon(fakeInstall(addons), src, "copy")).toMatchObject({ ok: true, changed: false, messages: [] });
+    expect(fs.existsSync(target + ".familiar-new")).toBe(false);
+  });
+
+  it("copy mode refreshes its own copy when the installed addon changes, dropping removed files", () => {
+    const src = installedAddon();
+    const addons = path.join(dir(), "Interface", "AddOns");
+    installAddon(fakeInstall(addons), src, "copy");
+    const target = path.join(addons, "Familiar");
+    fs.writeFileSync(path.join(target, "Stale.lua"), "-- from an older version\n");
+    fs.appendFileSync(path.join(src, "Core.lua"), "\n-- next version\n");
+    const r = installAddon(fakeInstall(addons), src, "copy");
+    expect(r.changed).toBe(true);
+    expect(r.messages.some((m) => m.startsWith("Updated the Familiar addon"))).toBe(true);
+    expect(fs.readFileSync(path.join(target, "Core.lua"), "utf8")).toMatch(/-- next version\n$/);
+    expect(fs.existsSync(path.join(target, "Stale.lua"))).toBe(false);
+  });
+
+  it("copy mode replaces a source run's junction with a copy and leaves the junction's target alone", () => {
+    const src = installedAddon();
+    const addons = path.join(dir(), "Interface", "AddOns");
+    installAddon(fakeInstall(addons), REPO_ADDON); // the source run's junction
+    const r = installAddon(fakeInstall(addons), src, "copy");
+    expect(r.ok).toBe(true);
+    expect(r.messages.some((m) => m.startsWith("Replaced the Familiar link with a copy"))).toBe(true);
+    const target = path.join(addons, "Familiar");
+    expect(fs.lstatSync(target).isSymbolicLink()).toBe(false);
+    expect(fs.existsSync(path.join(target, MARKER))).toBe(true);
+    expect(fs.existsSync(path.join(REPO_ADDON, MARKER))).toBe(false); // nothing written through the old link
+    expect(fs.existsSync(REPO_TOC)).toBe(true);
+  });
+
+  it("copy mode leaves a folder without its marker alone (addon manager / manual install)", () => {
+    const addons = path.join(dir(), "Interface", "AddOns");
+    const real = path.join(addons, "Familiar");
+    fs.mkdirSync(real, { recursive: true });
+    fs.writeFileSync(path.join(real, "Familiar.toc"), "## Interface: 16001\n");
+    const r = installAddon(fakeInstall(addons), installedAddon(), "copy");
+    expect(r.ok).toBe(true);
+    expect(r.messages.some((m) => m.includes("not installed by Familiar"))).toBe(true);
+    expect(fs.readdirSync(real)).toEqual(["Familiar.toc"]);
+    expect(fs.readFileSync(path.join(real, "Familiar.toc"), "utf8")).toBe("## Interface: 16001\n");
+  });
+
+  it("a source run's link mode takes over the installed app's marked copy", () => {
+    const addons = path.join(dir(), "Interface", "AddOns");
+    installAddon(fakeInstall(addons), installedAddon(), "copy");
+    const r = installAddon(fakeInstall(addons), REPO_ADDON);
+    expect(r.messages).toContain("Replaced the installed app's Familiar copy with a link.");
+    expect(fs.realpathSync.native(path.join(addons, "Familiar")).toLowerCase()).toBe(fs.realpathSync.native(REPO_ADDON).toLowerCase());
+  });
+
+  it("uninstallAddon removes the installed app's marked copy", () => {
+    const addons = path.join(dir(), "Interface", "AddOns");
+    const install = fakeInstall(addons);
+    installAddon(install, installedAddon(), "copy");
+    expect(uninstallAddon(install).some((m) => m.startsWith("Removed the Familiar addon copy"))).toBe(true);
+    expect(fs.existsSync(path.join(addons, "Familiar"))).toBe(false);
+    expect(fs.existsSync(path.join(addons, "FamiliarSync"))).toBe(false);
+  });
+
   it("uninstallAddon removes the link and FamiliarSync but never a real folder", () => {
     const addons = path.join(dir(), "Interface", "AddOns");
     const install = fakeInstall(addons);

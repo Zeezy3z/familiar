@@ -2,6 +2,7 @@
 node_modules/
 companion/dist/
 companion/out/
+companion/release/
 *.log
 .DS_Store
 Thumbs.db

@@ -67,3 +67,42 @@ SHA-256 digest for every uploaded release asset and shows it next to the asset o
 (also `gh release view vX.Y.Z --json assets` and the REST API's `digest` field). Verify with
 `sha256sum` (or `Get-FileHash` on Windows). The automatic source archive is not an uploaded asset
 and has no published digest.
+
+## Signed installer
+
+[`installer.yml`](../.github/workflows/installer.yml) runs on every `v*` tag and on manual dispatch.
+It always packages the companion (`companion/electron-builder.yml`) and runs
+`Familiar.exe --self-test` on the result, but publishes nothing unsigned. It builds, signs and
+uploads the per-user NSIS installer only when the repository variable `SIGNING_READY` is `true`.
+Signing uses Azure Artifact Signing through GitHub OIDC, so there is no Azure secret key.
+`companion/build/sign.cjs` signs everything except the bundled `claude.exe`, which keeps
+Anthropic's signature. The job then checks both signatures.
+
+To turn it on:
+
+1. In Azure, create an Artifact Signing account and certificate profile and finish identity
+   validation. Create an app registration and give it the *Artifact Signing Certificate Profile
+   Signer* role on the profile. Add a federated credential for GitHub Actions with entity type
+   *Environment*, name `signing`, for this repository.
+2. In GitHub, create the environment `signing` and limit it to `v*` tags (add `main` as well if
+   you want manual signing runs).
+3. Add these repository secrets: `AZURE_TENANT_ID` and `AZURE_CLIENT_ID` (the app registration).
+4. Add these repository variables:
+   * `AZURE_SIGNING_ENDPOINT`: the account's regional endpoint, for example
+     `https://eus.codesigning.azure.net/`.
+   * `AZURE_SIGNING_ACCOUNT`: the Artifact Signing account name.
+   * `AZURE_SIGNING_PROFILE`: the certificate profile name.
+   * `SIGNING_PUBLISHER`: the certificate's subject CN, exactly as it appears. Choose it once:
+     once in-app updates exist, changing it breaks them for installed users.
+5. Run the workflow once by hand with `SIGNING_READY` unset to confirm the self-test passes. Then
+   set `SIGNING_READY` to `true`. A manual run signs and verifies but uploads nothing; the next
+   tag adds `Familiar-Setup-X.Y.Z.exe`, its `.blockmap`, `latest.yml` and a `SHA256SUMS.txt` line.
+
+The installer job waits for `release.yml` to create the release first. If you re-run
+`release.yml` for a tag, it rewrites `SHA256SUMS.txt` without the installer line, so re-run the
+installer job afterwards.
+
+Local unsigned build, for testing only (never publish its output): from `companion/`, run
+`npm run build`, then `npx electron-builder --win --dir`, then
+`release\win-unpacked\Familiar.exe --self-test` from Git Bash. Don't start the packaged app
+normally on a machine you use: it writes the startup entry and the WoW AddOns folder.
