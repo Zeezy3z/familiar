@@ -2,7 +2,7 @@
 ## Title: Familiar
 ## Notes: Talk to your Claude Code and Codex agents without leaving the game. Needs the Familiar companion app on your PC.
 ## Author: Zeezy3z
-## Version: 0.5.0
+## Version: 0.6.0
 ## X-License: MIT
 ## X-Website: https://github.com/Zeezy3z/familiar
 ## IconTexture: Interface\Icons\Ability_Hunter_Pet_Owl
