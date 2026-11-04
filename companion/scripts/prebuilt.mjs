@@ -25,7 +25,7 @@ const tar = join(system32, "tar.exe"); // Windows' bsdtar writes and reads .zip 
 const ELECTRON = "companion/node_modules/electron/dist/electron.exe";
 /** What Run Familiar.cmd, boot.cjs and the release checks rely on. */
 const REQUIRED = ["Run Familiar.cmd", "addon/Familiar/Familiar.toc", "companion/package-lock.json", "companion/.prebuilt",
-  "companion/boot.cjs", "companion/self-test.cjs", "companion/fetch-claude.cjs", "companion/dist/main.js", ELECTRON];
+  "companion/boot.cjs", "companion/self-test.cjs", "companion/fetch-claude.cjs", "companion/dist/main.js", "companion/dist/claude-pins.json", ELECTRON];
 /** Anthropic's proprietary packages under companion/node_modules/@anthropic-ai/: the Claude Agent
  * SDK and its Claude Code binary packages. (@anthropic-ai/sdk, the MIT API client, stays.) */
 const CLAUDE = /^claude-agent-sdk(-|$)/;

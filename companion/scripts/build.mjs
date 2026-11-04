@@ -1,13 +1,15 @@
 // Bundles the companion: main + per-window preloads (node/cjs), renderers (browser/iife), and copies static files.
+//   node scripts/build.mjs [out dir, default dist/]
 import { build } from "esbuild";
 import { cpSync, mkdirSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { createRequire } from "node:module";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildDefine, buildIdentity } from "./build-identity.mjs";
 import { common, preloadBuilds } from "./bundles.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const dist = join(root, "dist");
+const dist = process.argv[2] ? resolve(process.argv[2]) : join(root, "dist");
 const identity = buildIdentity(join(root, ".."));
 mkdirSync(join(dist, "assets"), { recursive: true });
 
@@ -29,4 +31,8 @@ cpSync(join(root, "node_modules/@fontsource/marcellus/files/marcellus-latin-400-
 // For offline inspection / safe previews. The running main process uses its embedded literal,
 // never this file, which may be replaced by a later build while that process is still running.
 writeFileSync(join(dist, "build-info.json"), JSON.stringify(identity));
+// What the installed app downloads on first run (fetch-claude.cjs pinsFrom): it has no
+// package-lock.json, and its only platform is win32-x64 (electron-builder.yml).
+const { pinned } = createRequire(import.meta.url)("../fetch-claude.cjs");
+writeFileSync(join(dist, "claude-pins.json"), JSON.stringify(pinned(root, "win32", "x64").map(({ dir, ...pin }) => pin), null, 2) + "\n");
 console.log("built", dist);

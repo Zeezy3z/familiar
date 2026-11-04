@@ -1,6 +1,7 @@
 name: Windows installer
 # Packages the companion with electron-builder (companion/electron-builder.yml).
-# * package: always. Builds release/win-unpacked and runs its --self-test. Publishes nothing.
+# * package: always. Builds release/win-unpacked, checks it holds no Anthropic Claude package (the
+#   installed app downloads Claude Code on first run) and runs its --self-test. Publishes nothing.
 # * signed: only when the repository variable SIGNING_READY is 'true'. Builds the NSIS installer,
 #   signs it with Azure Artifact Signing, verifies the signatures and, for a v* tag, adds the
 #   installer to that tag's GitHub release (created by release.yml).
@@ -43,8 +44,16 @@ jobs:
       # electron-builder downloads Electron itself (@electron/get, checksum-verified).
       - name: Package (dir)
         run: npx electron-builder --win --dir --publish never
+      # Neither the Claude Agent SDK nor Claude Code, as files or inside app.asar; the pins the
+      # first-run download reads (dist/claude-pins.json) are there.
+      - name: No Claude Agent SDK or Claude Code in the package
+        run: node scripts/installer-check.mjs release/win-unpacked
+      # A fresh runner has no %LOCALAPPDATA%\Familiar\claude: Claude Code must be "not downloaded yet".
       - name: Self-test the packaged app
-        run: release/win-unpacked/Familiar.exe --self-test
+        run: |
+          out=$(release/win-unpacked/Familiar.exe --self-test)
+          echo "$out"
+          grep -q '^skip Claude Code' <<< "$out" || { echo "::error::self-test: expected Claude Code to be skipped (not downloaded yet)"; exit 1; }
 
   signed:
     needs: package
@@ -97,12 +106,11 @@ jobs:
       #   1. upload release/win-unpacked as an artifact (actions/upload-artifact) and submit it with
       #      signpath/github-action-submit-signing-request (secret SIGNPATH_API_TOKEN, plus the
       #      organization id, project slug and signing policy as variables). The SignPath artifact
-      #      configuration must sign Familiar.exe and must NOT include
-      #      claude-agent-sdk-win32-x64\claude.exe (already signed by Anthropic);
+      #      configuration must sign Familiar.exe;
       #   2. build the installer from the signed folder (electron-builder --win nsis --prepackaged
       #      <signed win-unpacked> --publish never) and submit Familiar-Setup-*.exe the same way.
       #      The uninstaller NSIS generates in step 2 is not signed on that route.
-      # Keep the self-test, verification and upload steps; SIGNING_PUBLISHER becomes the CN of
+      # Keep the package check, self-test, verification and upload steps; SIGNING_PUBLISHER becomes the CN of
       # SignPath's certificate.
       - name: Azure sign-in (OIDC)
         uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
@@ -113,7 +121,7 @@ jobs:
       - name: Install the TrustedSigning PowerShell module
         shell: pwsh
         run: Install-Module -Name TrustedSigning -RequiredVersion 0.5.8 -Repository PSGallery -Scope CurrentUser -Force
-      # build/sign.cjs signs each file through Invoke-TrustedSigning and skips claude.exe.
+      # build/sign.cjs signs each file through Invoke-TrustedSigning (and refuses any Claude Agent SDK file).
       - name: Package and sign (NSIS)
         run: |
           npx electron-builder --win --publish never \
@@ -121,8 +129,13 @@ jobs:
             "-c.win.signtoolOptions.publisherName=$FAMILIAR_SIGN_PUBLISHER"
       # ---- end of signing -------------------------------------------------------------------------
 
+      - name: No Claude Agent SDK or Claude Code in the signed package
+        run: node scripts/installer-check.mjs release/win-unpacked
       - name: Self-test the signed app
-        run: release/win-unpacked/Familiar.exe --self-test
+        run: |
+          out=$(release/win-unpacked/Familiar.exe --self-test)
+          echo "$out"
+          grep -q '^skip Claude Code' <<< "$out" || { echo "::error::self-test: expected Claude Code to be skipped (not downloaded yet)"; exit 1; }
       - name: Verify signatures
         shell: pwsh
         run: |
@@ -139,11 +152,6 @@ jobs:
             if ($n -cne $env:FAMILIAR_SIGN_PUBLISHER) { throw "$f is signed by '$n', expected SIGNING_PUBLISHER" }
             "${f}: $n"
           }
-          # Must still carry Anthropic's own signature, not ours.
-          $claude = 'release\win-unpacked\resources\app.asar.unpacked\node_modules\@anthropic-ai\claude-agent-sdk-win32-x64\claude.exe'
-          $n = Signer $claude
-          if ($n -cne 'Anthropic, PBC') { throw "claude.exe is signed by '$n', expected 'Anthropic, PBC'" }
-          "${claude}: $n"
 
       - name: Add the installer to the release
         if: startsWith(github.ref, 'refs/tags/v')

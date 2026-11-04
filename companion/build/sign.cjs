@@ -1,10 +1,11 @@
 // electron-builder `win.signtoolOptions.sign` hook: Azure Artifact Signing (formerly Trusted
 // Signing), called once per file electron-builder signs (Familiar.exe, the NSIS installer and
-// uninstaller, and every .exe under app.asar.unpacked). Passed only by .github/workflows/installer.yml
+// uninstaller, and any .exe under app.asar.unpacked). Passed only by .github/workflows/installer.yml
 // (-c.win.signtoolOptions.sign=./build/sign.cjs); local builds stay unsigned.
 //
-// claude.exe (claude-agent-sdk-win32-x64) is skipped: it is already signed by Anthropic, PBC, and
-// signing it again would replace that signature with ours. installer.yml checks it afterwards.
+// The package holds no Anthropic code (electron-builder.yml; the app downloads Claude Code on first
+// run). A Claude Agent SDK file here means the build bundled it again: signing stops, rather than
+// ship Anthropic's code or put our signature on their claude.exe.
 //
 // Needs, from the workflow: an Azure sign-in (azure/login with GitHub OIDC; the TrustedSigning
 // module's DefaultAzureCredential picks up the Azure CLI session), the TrustedSigning PowerShell
@@ -14,15 +15,12 @@
 const { execFileSync } = require("node:child_process");
 const path = require("node:path");
 
-const SKIP = /[\\/]claude-agent-sdk-win32-x64[\\/]/i;
+const CLAUDE = /[\\/]claude-agent-sdk(-[^\\/]*)?[\\/]/i;
 
 module.exports = async function sign(config) {
   const file = config.path;
   if (config.hash && config.hash !== "sha256") return; // one SHA-256 pass (signingHashAlgorithms)
-  if (SKIP.test(file)) {
-    console.log(`  sign: skip ${path.basename(file)} (keeps its Anthropic signature)`);
-    return;
-  }
+  if (CLAUDE.test(file)) throw new Error(`sign.cjs: refusing ${path.basename(file)}: the installer must not bundle Anthropic's Claude Agent SDK (${file})`);
   if (process.env.FAMILIAR_SIGN_DRY_RUN === "1") {
     console.log(`  sign: DRY RUN, would sign ${file}`);
     return;
