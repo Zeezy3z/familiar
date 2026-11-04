@@ -25,3 +25,53 @@ export function restartGuidance(work?: Partial<RestartActivity> | null) {
   }
   return { title: "Restart between messages", text: "No working quests or pending requests are shown right now. Finish any message you are starting and check that the Quest Log has settled before choosing Quit.", level: "muted" };
 }
+
+// ---- versions: the addon/app mismatch line and the "Check for updates" result ---------------------------
+
+const SEMVER = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/;
+const parseVersion = (v: unknown) => { const m = typeof v === "string" ? SEMVER.exec(v.trim()) : null; return m ? { core: [+m[1], +m[2], +m[3]], pre: m[4]?.split(".") } : null; };
+const shown = (v: string) => v.trim().replace(/^v/, "");
+
+/** Semver order of two release strings (a "v" prefix is fine); undefined when either is not a version. */
+export function compareVersions(a: unknown, b: unknown): -1 | 0 | 1 | undefined {
+  const x = parseVersion(a), y = parseVersion(b);
+  if (!x || !y) return undefined;
+  for (let i = 0; i < 3; i++) if (x.core[i] !== y.core[i]) return x.core[i] < y.core[i] ? -1 : 1;
+  if (!x.pre || !y.pre) return x.pre === y.pre ? 0 : x.pre ? -1 : 1; // a release outranks its own prerelease
+  for (let i = 0; i < Math.max(x.pre.length, y.pre.length); i++) {
+    const p = x.pre[i], q = y.pre[i];
+    if (p === undefined || q === undefined) return p === undefined ? -1 : 1;
+    if (p === q) continue;
+    const [pn, qn] = [/^\d+$/.test(p), /^\d+$/.test(q)];
+    if (pn && qn) return +p < +q ? -1 : 1;
+    return pn !== qn ? (pn ? -1 : 1) : p < q ? -1 : 1;
+  }
+  return 0;
+}
+
+/** Header line when the addon and the app differ. The addon's version comes from the game (any addon can draw
+ * that strip), so only a plain version string is ever shown; "dev" (a clone) and anything else say nothing. */
+export function versionMismatch(app: unknown, addon: unknown): { text: string } | null {
+  const order = compareVersions(addon, app);
+  if (!order) return null; // equal, or not versions at all
+  const [a, v] = [shown(String(addon)), shown(String(app))];
+  return { text: order === 1 ? `App ${v} is behind addon ${a}. Update the app from the Releases page.` : `Addon ${a} is behind app ${v}. Update it with WowUp or the release zip.` };
+}
+
+/** The line under "Check for updates". `url` is shown as a link only when it is a Familiar release page. */
+export function updateLine(r: { current?: string; latest?: string; url?: string; prerelease?: boolean; error?: string } | null | undefined):
+  { level: "ok" | "warn" | "muted"; text: string; open?: string } {
+  if (!r || typeof r !== "object") return { level: "warn", text: "Couldn't reach GitHub (no network?)" };
+  if (r.error) return { level: "warn", text: `Couldn't reach GitHub (no network?) · ${String(r.error).slice(0, 160)}` };
+  if (typeof r.latest !== "string" || !r.latest.trim()) return { level: "warn", text: "GitHub didn't name a latest release." };
+  const [current, latest] = [shown(String(r.current ?? "")), shown(r.latest)];
+  const beta = r.prerelease ? " (beta)" : "";
+  const order = compareVersions(latest, current);
+  if (order === 1 || (order === undefined && latest !== current)) {
+    const ok = typeof r.url === "string" && /^https:\/\/github\.com\/Zeezy3z\/familiar\/releases(\/|$)/.test(r.url);
+    return { level: "warn", text: `${latest} is out${beta}`, open: ok ? r.url : undefined };
+  }
+  return order === -1
+    ? { level: "muted", text: `You're on ${current}, ahead of the latest release${beta} (${latest}).` }
+    : { level: "ok", text: `You're on ${current}, the latest${beta}.` };
+}

@@ -21,9 +21,10 @@
     --bg:#0b0a0d; --card:#15131a; --field:#1d1a22;
   }
   body { margin: 0; background: var(--bg); color: var(--text); font: var(--fs-md) var(--sans); }
-  header { padding: calc(var(--u)*2.8) calc(var(--u)*3.6) calc(var(--u)*1.6); display: flex; align-items: baseline; gap: calc(var(--u)*2.4); border-bottom: 1px solid var(--line-soft); }
+  header { padding: calc(var(--u)*2.8) calc(var(--u)*3.6) calc(var(--u)*1.6); display: flex; flex-wrap: wrap; align-items: baseline; gap: calc(var(--u)*.8) calc(var(--u)*2.4); border-bottom: 1px solid var(--line-soft); }
   h1 { font-family: var(--display); color: var(--gold); font-weight: normal; margin: 0; font-size: var(--fs-xl); text-shadow: var(--shadow); }
   .ver { color: var(--muted); }
+  #vermismatch[hidden] { display: none; }
   #build-id { box-sizing: border-box; width: 100%; background: var(--bg); border: 1px solid var(--line); color: var(--text); padding: calc(var(--u)*1.2); font: var(--fs-sm) var(--mono); }
   main { padding: calc(var(--u)*2.4) calc(var(--u)*3.6); display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: calc(var(--u)*2.4); max-width: 1000px; margin: auto; }
   .card { background: var(--card); border: 1px solid var(--line-soft); border-radius: 4px; padding: calc(var(--u)*2) calc(var(--u)*2.4); }
@@ -51,6 +52,12 @@
   .prov .a { display: flex; gap: calc(var(--u)*1.2); align-items: center; white-space: nowrap; }
   .prov.off .n, .prov.off .g { opacity: .45; }
   button.small { padding: 2px 8px; font-size: 12px; }
+  button.linklike { background: none; border: none; box-shadow: none; padding: 0; font: inherit; color: var(--gold); text-decoration: underline; }
+  progress { display: block; width: 100%; height: 6px; margin-top: 4px; accent-color: var(--gold); }
+  .res.ok { color: var(--ok); } .res.warn { color: var(--warn); }
+  #projects[hidden] { display: none; }
+  #project-rows:empty { display: none; }
+  #project-rows .prov .d { user-select: all; }
   textarea, select, input[type="text"] { background: var(--field); color: var(--text); border: 1px solid var(--gold-dim); border-radius: var(--r-btn); padding: 3px 6px; }
   button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, a:focus-visible, summary:focus-visible, pre:focus-visible { outline: 2px solid var(--gold); outline-offset: 3px; }
   button:disabled { opacity: .6; cursor: wait; }
@@ -66,30 +73,35 @@
   .steps b { display: block; font-weight: 600; margin-bottom: 3px; color: var(--muted); }
   .steps li.cur b { color: var(--text); }
   .steps b.ok { color: var(--ok); }
+  .steps .hint.warn { color: var(--warn); }
   #journey-action { display: inline-block; margin-top: calc(var(--u)*2); }
   #journey-action[hidden] { display: none; }
   #all-set { margin: calc(var(--u)*2) 0 0; color: var(--ok); }
   #all-set[hidden] { display: none; }
   #step-slot { margin-top: calc(var(--u)*2.4); }
-  #step-slot:empty, #adv-familiars:empty { display: none; }
+  #step-slot:empty, #adv-familiars:empty, #adv-projects:empty { display: none; }
   #journey .card { background: transparent; border-width: 1px 0 0; border-radius: 0; padding: calc(var(--u)*2) 0 0; }
   #feedback:empty { display: none; }
   #feedback { margin: 0; padding: calc(var(--u)*1.6) calc(var(--u)*2.4); border: 1px solid var(--line); }
   [data-action-feedback] { margin: calc(var(--u)*1.6) 0; padding: calc(var(--u)*1.2) calc(var(--u)*1.6); border: 1px solid var(--err); background: #211114; }
   [data-action-feedback]:empty { display: none; }
 
-  /* Requests waiting on your PC: cut approvals are decided here, with the whole text in front of you. */
+  /* Requests waiting: every pending approval is decided here, with the whole text in front of you. */
   #requests { border-color: var(--warn); background: linear-gradient(120deg, #2a1708, var(--card)); }
   #requests h2 { color: var(--warn); font-size: 18px; }
   #requests[hidden] { display: none; }
   .req { padding: calc(var(--u)*2) 0 0; margin-top: calc(var(--u)*2); border-top: 1px solid var(--line); }
   .req:first-child { border-top: none; margin-top: 0; }
+  .req-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: calc(var(--u)*.8) calc(var(--u)*1.6); }
   .req h3 { margin: 0; font-family: var(--display); font-weight: normal; font-size: 16px; color: var(--text); overflow-wrap: anywhere; }
+  .badge { border: 1px solid var(--warn); border-radius: var(--r-btn); padding: 0 6px; font-size: 12px; color: var(--warn); white-space: nowrap; }
+  .badge[hidden] { display: none; }
   .req-meta { margin: 2px 0 calc(var(--u)*1.2); }
   .req-full { margin: 0; padding: calc(var(--u)*1.6); max-height: min(50vh, 420px); overflow: auto; background: var(--bg); border: 1px solid var(--line); border-radius: var(--r); font: var(--fs-sm) var(--mono); line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); }
   button.always { background: transparent; border: 1px dashed var(--line); box-shadow: none; margin-left: auto; }
   .req-msg { margin: calc(var(--u)*1.2) 0 0; }
   .req-msg:empty { display: none; }
+  .req-full:empty::before { content: "No more detail came with this request."; color: var(--muted); }
 
   /* Essentials: always visible. */
   .ess { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: calc(var(--u)*2.4); }
@@ -116,11 +128,11 @@
 </style>
 </head>
 <body>
-<header><h1>Familiar</h1><span class="ver" id="ver"></span><span id="linkbadge"></span><span id="modebadge" class="warn" hidden></span></header>
+<header><h1>Familiar</h1><span class="ver" id="ver"></span><span id="vermismatch" class="warn" role="status" hidden></span><span id="linkbadge"></span><span id="modebadge" class="warn" hidden></span></header>
 <main>
   <section class="card wide" id="requests" aria-labelledby="requests-title" hidden>
-    <h2 id="requests-title">Requests waiting on your PC</h2><span class="sr" id="requests-live" role="status"></span>
-    <div class="hint">Too long for the in-game card. The whole request is here. Nothing happens until you click. This panel shows real names even with Hide names or Stream-safe on: it is on your PC, not on stream.</div>
+    <h2 id="requests-title">Requests waiting</h2><span class="sr" id="requests-live" role="status"></span>
+    <div class="hint">Everything your familiars are waiting on. Approve here or in the game — in the game only a request shown in full can be approved. Nothing happens until you click. Real names are shown even with Hide names or Stream-safe on: this window is on your PC, not on stream.</div>
     <div id="requests-list"></div>
   </section>
   <section class="card wide" id="journey" aria-labelledby="journey-title">
@@ -138,6 +150,13 @@
     </div>
   </section>
   <p class="wide" id="feedback" role="status"></p>
+  <section class="card wide" id="projects" aria-labelledby="projects-title" hidden>
+    <h2 id="projects-title">Projects</h2>
+    <div class="hint">Zones in your Quest Log are project folders. Folders your agents already worked in are listed automatically.<span id="project-history"></span></div>
+    <div id="project-rows"></div>
+    <div class="btns"><button id="b-project-add" type="button">Add a project folder…</button><button id="b-root-add" type="button">Add a folder of projects…</button></div>
+    <p class="hint" id="project-result" role="status"></p>
+  </section>
   <section class="card wide" id="essentials"><h2>In game</h2>
     <div class="ess">
       <div><b>Text size</b><div><select id="ui-font" aria-label="In-game text size" aria-describedby="ui-font-hint"></select></div>
@@ -155,6 +174,7 @@
         <section class="card" id="familiars"><h2>Familiars</h2><div id="providers"></div>
           <div class="kv" id="agents"></div></section>
       </div>
+      <div id="adv-projects"></div>
       <section class="card" id="chat-card"><h2>Chat defaults</h2>
         <div class="prov" id="chatset"><span class="g">✉</span><span class="n">Chat</span>
           <span class="d">Claude or Codex for the in-game Chats zone (no project; web search only)<span id="chat-status" class="hint" role="status" style="display:block"></span></span>
@@ -167,7 +187,9 @@
           <div>Approve key</div><div><input type="text" id="ui-approve-key" maxlength="24" spellcheck="false" autocomplete="off" placeholder="F9" aria-label="Approve key (as bound in WoW, e.g. F9 or CTRL-F9)" aria-describedby="approve-key-status"><div class="hint">1. In WoW: Esc → Options → Keybindings → AddOns → Familiar → Approve pending request. 2. Type the same key here (F9 or CTRL-F9). Familiar checks it was really pressed; without it, approve by clicking the card or the Approve button.</div>
             <div class="hint" id="approve-key-status" role="status"><span id="approve-key-line"></span> <span id="approve-key-warn" class="warn"></span></div></div>
           <div>Quiet play</div><div><label class="hint"><input type="checkbox" id="ui-quiet"> Keep ordinary completion notifications quiet until I turn this off</label><div class="hint">Replies wait in your catch-up notes when you open /fam. Approvals and failures keep their attention cues; agents continue working.</div></div>
-          <div>Notices</div><div><label class="hint"><input type="checkbox" id="ui-raid"> As raid warnings (big, mid-screen); off: small, in the Familiar window</label></div>
+          <div>Notices</div><div><label class="hint"><input type="checkbox" id="ui-raid"> As raid warnings (big, mid-screen); off: small, in the Familiar window</label>
+            <label class="hint" style="display:block"><input type="checkbox" id="ui-tray" aria-describedby="ui-tray-hint"> Windows notice when a request is waiting and WoW isn't in front</label>
+            <div class="hint" id="ui-tray-hint">A small notice from the tray icon; click it to open this panel. It stays generic with Hide names or Stream-safe on, and Windows quiet hours apply. Local only: nothing is sent anywhere.</div></div>
           <div>Hide names</div><div><label class="hint"><input type="checkbox" id="ui-private"> Hide names only, no blur: zones and quests become Project 1 / Quest #1</label><div class="hint">Replies, tool lines, approval cards and what you type stay visible on screen. Desktop threads are hidden, notices are generic and nothing is spoken. Stream-safe (above) does this and also blurs replies. Also /fam private on | off.</div></div>
         </div>
       </section>
@@ -180,12 +202,16 @@
         <input id="build-id" readonly aria-label="Copyable running build identity">
         <p><b id="restart-title"></b> <span class="hint" id="restart-state"></span></p>
         <p class="hint">Companion source updates take effect after a full Familiar restart. Once quests have settled, choose <b>Quit</b> from the tray, then open <b>Run Familiar.cmd</b>. Opening the launcher while Familiar runs only opens this panel. Reload config changes settings; it does not reload app code. Addon changes load on your next WoW launch or a user-initiated /reload.</p>
-        <div class="btns"><button id="b-config">Open config</button><button id="b-reload">Reload config</button><button id="b-logs">Open log file</button><button id="b-diag" title="Copies a redacted summary for a bug report; review it before posting.">Copy diagnostics</button><button id="b-refresh">Rescan desktop threads</button><button id="b-pause">Pause overlay</button>
+        <div class="btns"><button id="b-config">Open config</button><button id="b-reload">Reload config</button><button id="b-logs">Open log file</button><button id="b-diag" title="Copies a redacted summary for a bug report; review it before posting.">Copy diagnostics</button><button id="b-refresh">Rescan desktop threads</button><button id="b-pause">Pause overlay</button><button id="b-update" title="Makes one request to GitHub, only when you click">Check for updates</button>
           <label class="hint"><input type="checkbox" id="c-login"> Start Familiar when I sign in to Windows</label></div>
-        <p class="hint"><b>Copy diagnostics</b> copies a redacted summary for a bug report; review it before posting.</p>
+        <p class="hint" id="update-result" role="status"></p>
+        <p class="hint"><b>Check for updates</b> asks GitHub for the latest release once, when you click. Familiar never checks by itself. <b>Copy diagnostics</b> copies a redacted summary for a bug report; review it before posting.</p>
       </section>
       <details class="diagnostics"><summary>Link details &amp; troubleshooting</summary><div class="diagnostic-grid">
-        <section class="card"><h2>Runestrip link</h2><div class="kv" id="link"></div></section>
+        <section class="card"><h2>Runestrip link</h2><div class="kv" id="link"></div>
+          <div class="btns"><button id="b-snapshot" type="button" title="Saves a small picture of the top-left corner of the game window">Save what Familiar sees</button></div>
+          <p class="hint">Saves a picture of only the top-left 320×32 pixels of the game window, where the strip is drawn, so you can see what Familiar sees. It stays on your PC.</p>
+          <p class="hint" id="snapshot-result" role="status"></p></section>
         <section class="card"><h2>World of Warcraft</h2><div class="kv" id="game"></div></section>
         <section class="card wide"><h2>Addon</h2><div class="kv" id="addon"></div><ul id="notes" class="hint"></ul>
           <div class="btns"><button id="b-install">Reinstall addon</button><button id="b-toast">Test overlay</button></div>

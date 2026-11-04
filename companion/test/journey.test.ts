@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { approveKeyStatus, journey } from "../src/control/journey";
+import { approveKeyStatus, claudeLine, journey } from "../src/control/journey";
 import { threadState } from "../src/overlay/thread-state";
 import { approvalPreview } from "../src/overlay/approval-preview";
-import { buildPresentation, restartGuidance } from "../src/control/build";
+import { buildPresentation, compareVersions, restartGuidance, updateLine, versionMismatch } from "../src/control/build";
 import type { DetailModel } from "../src/hub/viewmodel";
 
 const prepared = { id: "codex", label: "Codex", glyph: "◇", enabled: true, installed: true, signedIn: true, detail: "Sign-in found", canLogin: true };
@@ -86,6 +86,83 @@ describe("journey guidance for recoverable states", () => {
       expect(j.text).toContain("/fam hermes <message>");
       expect(j.text).not.toMatch(/\+ Claude|\+ Codex|\+ Chat/);
     }
+  });
+});
+
+describe("Link Doctor line in the Link step", () => {
+  const stuck = { ...linked, linked: false, layout: null };
+  const strip = { step: "strip", level: "warn", text: "Familiar sees the game but no coloured strip in its top-left corner." };
+  it("replaces the fixed Link text while the link is not up, and keeps its level", () => {
+    expect(journey({ ...stuck, doctor: strip }).steps[2]).toEqual({ label: "Link", done: false, text: strip.text, level: "warn" });
+    expect(journey({ ...stuck, doctor: { step: "game", level: "muted", text: "WoW isn't open." } }).steps[2]).toMatchObject({ level: "muted" });
+  });
+  it("falls back to the fixed wording without a doctor, with an empty one, or with the doctor's ok line", () => {
+    const fixed = journey(stuck).steps[2].text;
+    expect(fixed).toContain("tick Familiar and Familiar Sync");
+    for (const doctor of [undefined, null, { step: "strip", text: "  " }, { step: "ok", level: "ok", text: "Game link working." }])
+      expect(journey({ ...stuck, doctor }).steps[2].text).toBe(fixed);
+  });
+  it("says Game link working once linked, whatever the doctor last said", () => {
+    expect(journey({ ...linked, doctor: strip }).steps[2]).toEqual({ label: "Link", done: true, text: "Game link working" });
+  });
+});
+
+describe("Claude Code download in the Agents step and the Familiars card", () => {
+  const none = { ...linked, providers: [{ ...prepared, id: "claude", label: "Claude", installed: false, enabled: false, signedIn: undefined }], backends: {} };
+  it("words the three states and says nothing once it is on disk", () => {
+    expect(claudeLine({ state: "downloading", pct: 43, mb: 112 })).toMatchObject({ state: "downloading", text: "Downloading Claude Code · 43 % of 112 MB", pct: 43, retry: "" });
+    expect(claudeLine({ state: "downloading" })?.text).toBe("Downloading Claude Code…");
+    expect(claudeLine({ state: "downloading", pct: 250, mb: -1 })).toMatchObject({ text: "Downloading Claude Code · 100 %", pct: 100 });
+    expect(claudeLine({ state: "failed", error: "no response from the npm registry for 60 s" })).toMatchObject({ level: "warn", retry: "Retry",
+      text: "Claude Code couldn't be downloaded (no response from the npm registry for 60 s). Other agents still work." });
+    expect(claudeLine({ state: "failed" })?.text).toBe("Claude Code couldn't be downloaded. Other agents still work.");
+    expect(claudeLine({ state: "missing" })).toMatchObject({ retry: "Download" });
+    for (const c of [undefined, null, { state: "present" }, { state: "bogus" }]) expect(claudeLine(c)).toBeNull();
+  });
+  it("tells a first-run player with only Claude that it is downloading, not that they must pick an agent", () => {
+    const j = journey({ ...none, game: null, claude: { state: "downloading", pct: 10, mb: 112 } });
+    expect(j.title).toBe("Downloading Claude Code");
+    expect(j.steps[0]).toMatchObject({ done: false, text: "Downloading Claude Code · 10 % of 112 MB" });
+    const failed = journey({ ...none, claude: { state: "failed", error: "offline" } });
+    expect(failed).toMatchObject({ title: "Claude Code couldn't be downloaded", action: "providers", level: "warn" });
+    expect(failed.text).toContain("Use Retry on the Familiars card");
+    expect(journey({ ...none, claude: { state: "present" } }).title).toBe("Choose your familiar");
+  });
+  it("leaves a working agent alone while Claude downloads", () => {
+    expect(journey({ ...linked, claude: { state: "downloading", pct: 5 } }).level).toBe("ok");
+  });
+});
+
+describe("addon and app versions", () => {
+  it("orders versions like semver, a release above its own prerelease", () => {
+    expect(compareVersions("0.2.0", "0.10.0")).toBe(-1);
+    expect(compareVersions("v1.0.0", "1.0.0")).toBe(0);
+    expect(compareVersions("1.0.0", "1.0.0-beta.2")).toBe(1);
+    expect(compareVersions("1.0.0-beta.2", "1.0.0-beta.11")).toBe(-1);
+    expect(compareVersions("1.0.0-alpha", "1.0.0-beta")).toBe(-1);
+    expect(compareVersions("1.0.0-beta", "1.0.0-beta.1")).toBe(-1);
+    expect(compareVersions("dev", "1.0.0")).toBeUndefined();
+    expect(compareVersions("1.0.0", "0.1.0 · synthetic preview")).toBeUndefined();
+  });
+  it("shows a mismatch line only for two real versions that differ, naming the one that is behind", () => {
+    expect(versionMismatch("0.2.0", "0.2.0")).toBeNull();
+    expect(versionMismatch("0.2.0", "dev")).toBeNull();
+    expect(versionMismatch("0.2.0", undefined)).toBeNull();
+    expect(versionMismatch("0.2.0", "<b>0.1.0</b>")).toBeNull(); // the game's text is only ever shown when it is a plain version
+    expect(versionMismatch("0.2.0", "0.1.1")?.text).toBe("Addon 0.1.1 is behind app 0.2.0. Update it with WowUp or the release zip.");
+    expect(versionMismatch("0.2.0", "0.3.0")?.text).toBe("App 0.2.0 is behind addon 0.3.0. Update the app from the Releases page.");
+  });
+  it("words the update check, linking only a Familiar release page", () => {
+    const url = "https://github.com/Zeezy3z/familiar/releases/tag/v0.3.0";
+    expect(updateLine({ current: "0.2.0", latest: "v0.3.0", url })).toEqual({ level: "warn", text: "0.3.0 is out", open: url });
+    expect(updateLine({ current: "0.2.0", latest: "v0.3.0-beta.1", url, prerelease: true }).text).toBe("0.3.0-beta.1 is out (beta)");
+    expect(updateLine({ current: "0.2.0", latest: "v0.2.0", url })).toEqual({ level: "ok", text: "You're on 0.2.0, the latest." });
+    expect(updateLine({ current: "0.3.0", latest: "v0.2.0" })).toMatchObject({ level: "muted", text: "You're on 0.3.0, ahead of the latest release (0.2.0)." });
+    expect(updateLine({ current: "0.2.0", latest: "v0.3.0", url: "https://evil.example/releases" }).open).toBeUndefined();
+    expect(updateLine({ current: "0.2.0", latest: "v0.3.0", url: "https://github.com/Zeezy3z/familiar-evil/releases" }).open).toBeUndefined();
+    expect(updateLine({ error: "ENOTFOUND" })).toMatchObject({ level: "warn", text: expect.stringContaining("Couldn't reach GitHub (no network?)") });
+    expect(updateLine(undefined).text).toBe("Couldn't reach GitHub (no network?)");
+    expect(updateLine({ current: "0.2.0" }).level).toBe("warn");
   });
 });
 

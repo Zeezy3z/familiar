@@ -1,6 +1,8 @@
-// Desktop control panel: three setup steps, the essentials, "Requests waiting on your PC", and one Advanced section.
-import { approveKeyStatus, journey } from "./journey";
-import { buildPresentation, restartGuidance } from "./build";
+// Desktop control panel: three setup steps, the essentials, "Requests waiting" (every pending approval), the
+// Projects card, and one Advanced section. Text that came from an agent, the game or the network is only ever
+// set with textContent (or esc() inside a template), never as markup.
+import { approveKeyStatus, claudeLine, journey } from "./journey";
+import { buildPresentation, restartGuidance, updateLine, versionMismatch } from "./build";
 import type { ControlBridge } from "../shared/bridge";
 const bridge = window.familiar as ControlBridge;
 
@@ -19,7 +21,7 @@ function render(s: any) {
   text("journey-title", j.title);
   $("journey-title").className = j.level;
   text("journey-text", j.text);
-  $("journey-steps").innerHTML = j.steps.map((step, i) => `<li${i === j.current ? ' class="cur" aria-current="step"' : ""}><b class="${step.done ? "ok" : ""}">${i + 1} ${esc(step.label)}${step.done ? " ✓" : ""}</b><span class="hint">${esc(step.text)}</span></li>`).join("");
+  $("journey-steps").innerHTML = j.steps.map((step, i) => `<li${i === j.current ? ' class="cur" aria-current="step"' : ""}><b class="${step.done ? "ok" : ""}">${i + 1} ${esc(step.label)}${step.done ? " ✓" : ""}</b><span class="hint${step.level === "warn" ? " warn" : ""}">${esc(step.text)}</span></li>`).join("");
   const next = $("journey-action") as HTMLAnchorElement;
   next.hidden = !j.action;
   next.dataset.action = j.action ?? "";
@@ -38,6 +40,9 @@ function render(s: any) {
   if (familiarsInStep && j.action === "providers") next.hidden = true; // the card is already right below
   placeFamiliars(familiarsInStep);
   $("ver").textContent = `v${s.version}`;
+  const mismatch = versionMismatch(s.version, s.addon?.addon);
+  $("vermismatch").hidden = !mismatch;
+  text("vermismatch", mismatch?.text ?? "");
   const build = buildPresentation(s.version, s.build);
   text("build-summary", build.summary);
   const buildId = $("build-id") as HTMLInputElement;
@@ -50,6 +55,7 @@ function render(s: any) {
   const c = s.capture ?? {};
   $("link").innerHTML = kv([
     ["Status", s.linked ? "Linked" : s.game ? "Searching for the game link…" : "Waiting for WoW", s.linked ? "ok" : "warn"],
+    ...(typeof s.doctor?.text === "string" && s.doctor.text ? [["Link doctor", s.doctor.text, s.doctor.level === "ok" ? "ok" : s.doctor.level === "warn" ? "warn" : "muted"] as [string, unknown, string]] : []),
     ["Capture", c.fps ? `${c.fps} fps · ${c.frameW}×${c.frameH}` : "—"],
     ["Frames", `${c.decoded ?? 0} decoded · ${c.crc ?? 0} crc · ${c.missed ?? 0} missed`],
     ["Messages", `${c.msgs ?? 0} received${s.lastMsgAgo != null ? ` · last ${Math.round(s.lastMsgAgo / 1000)}s ago` : ""}`],
@@ -78,7 +84,7 @@ function render(s: any) {
       .filter(([id]) => (s.providers ?? []).find((p: any) => p.id === id)?.enabled !== false)
       .map(([id, x]): [string, unknown, string] => [x?.label ?? (s.providers ?? []).find((p: any) => p.id === id)?.label ?? id, be(x), x?.ready ? "ok" : x?.error ? "err" : ""]),
     ["Quests", s.threads],
-    ["Zones", s.projects],
+    ...(typeof s.projects === "number" ? [["Zones", s.projects] as [string, unknown]] : []), // newer builds list them on the Projects card
   ]);
   const a = s.addon ?? {};
   $("addon").innerHTML = kv([
@@ -90,30 +96,42 @@ function render(s: any) {
   ($("c-login") as HTMLInputElement).checked = !!s.launchAtLogin;
   renderUi(s.ui);
   renderRequests(s.requests, s.providers ?? []);
-  renderProviders(s.providers ?? [], s.backends ?? {});
+  renderProjects(s.projects);
+  renderProviders(s.providers ?? [], s.backends ?? {}, s.claude);
   renderChat(s);
   ($("onboard") as HTMLElement).hidden = !!s.providersChosen;
   $("notes").innerHTML = (s.installNotes ?? []).map((n: string) => `<li>${esc(n)}</li>`).join("");
 }
 
-// The Familiars card lives under the step strip while step 1 needs it, and in Advanced afterwards.
-function placeFamiliars(inStep: boolean) {
-  const card = $("familiars");
-  const target = $(inStep ? "step-slot" : "adv-familiars");
+// Moving a card drops focus from anything inside it; put it back (a no-op while Advanced is closed).
+function moveCard(card: HTMLElement, target: Element, put: () => void) {
   if (card.parentElement === target) return;
   const active = card.contains(document.activeElement) ? document.activeElement as HTMLElement : null;
-  target.append(card);
-  active?.focus(); // moving a node drops focus; put it back (a no-op while Advanced is closed)
+  put();
+  active?.focus();
+}
+// The Familiars card lives under the step strip while step 1 needs it, and in Advanced afterwards.
+function placeFamiliars(inStep: boolean) {
+  const target = $(inStep ? "step-slot" : "adv-familiars");
+  moveCard($("familiars"), target, () => target.append($("familiars")));
+}
+// The Projects card sits above the essentials until a folder has been added, then moves into Advanced.
+function placeProjects(onTop: boolean) {
+  const target = onTop ? $("essentials").parentElement! : $("adv-projects");
+  moveCard($("projects"), target, () => (onTop ? $("essentials").before($("projects")) : target.append($("projects"))));
 }
 
-// Requests waiting on your PC: approvals the game card cannot show in full. Shapes per the round-3 spec
-// (status.requests[] and the "decide" command are the hub lane's). Only a real click or key press decides.
-interface PanelRequest { thread: string; questTitle: string; project: string; agent: string; requestId: string; title: string; full: string; canAlways: boolean; at: number }
+// Requests waiting: every pending approval, with the whole text before the buttons (status.requests[] and the
+// "decide" command are the hub lane's). A request the game card shows only in part is marked. Only a real click
+// or key press decides.
+interface PanelRequest { thread: string; questTitle: string; project: string; agent: string; requestId: string; title: string; detail?: string; full?: string; cut?: boolean; canAlways: boolean; at: number }
 const DECISIONS: [decision: string, label: string, done: string][] = [["allow", "Approve", "Approved"], ["deny", "Deny", "Denied"], ["allowAlways", "Always (this quest)", "Approved for this quest"]];
 const SETTLE_MS = 800; // a row that just appeared ignores clicks briefly, so a layout shift cannot land one on it
 const requestRows = new Map<string, HTMLElement>();
 let requestSeq = 0;
-const validRequest = (r: any): r is PanelRequest => !!r && typeof r.thread === "string" && typeof r.requestId === "string" && typeof r.full === "string";
+// The whole text: `full` when the game card cuts it, the card's own text otherwise. A cut request with no `full` is not listed.
+const requestText = (r: PanelRequest) => (r.cut === true ? r.full : r.full ?? r.detail);
+const validRequest = (r: any): r is PanelRequest => !!r && typeof r.thread === "string" && typeof r.requestId === "string" && typeof requestText(r) === "string";
 
 function buildRequest(r: PanelRequest): HTMLElement {
   const id = `req-${++requestSeq}`;
@@ -134,15 +152,19 @@ function buildRequest(r: PanelRequest): HTMLElement {
     btns.append(b);
   }
   setTimeout(() => { if (!row.dataset.sent) btns.querySelectorAll("button").forEach((b) => (b.disabled = false)); }, SETTLE_MS);
+  const head = make("div", "req-head");
+  const badge = make("span", "badge", { hidden: "" });
+  badge.textContent = "Too long for the in-game card";
+  head.append(make("h3", "req-title", { id: `${id}-title` }), badge);
   // The whole text comes first; the buttons follow it.
-  row.append(make("h3", "req-title", { id: `${id}-title` }), make("p", "hint req-meta"), make("pre", "req-full", { id: `${id}-full`, tabindex: "0", "aria-label": "The full request" }), btns, make("p", "req-msg", { role: "status" }));
+  row.append(head, make("p", "hint req-meta"), make("pre", "req-full", { id: `${id}-full`, tabindex: "0", "aria-label": "The full request" }), btns, make("p", "req-msg", { role: "status" }));
   return row;
 }
 
 function renderRequests(list: unknown, providers: any[]) {
   const rows = (Array.isArray(list) ? list : []).filter(validRequest).sort((a, b) => (a.at ?? 0) - (b.at ?? 0));
   $("requests").hidden = !rows.length;
-  text("requests-live", rows.length ? `${rows.length} request${rows.length === 1 ? "" : "s"} waiting on your PC` : "");
+  text("requests-live", rows.length ? `${rows.length} request${rows.length === 1 ? "" : "s"} waiting` : "");
   const host = $("requests-list");
   const seen = new Set<string>();
   for (const r of rows) {
@@ -155,7 +177,9 @@ function renderRequests(list: unknown, providers: any[]) {
     const set = (sel: string, value: string) => { const el = row!.querySelector(sel)!; if (el.textContent !== value) el.textContent = value; };
     set(".req-title", r.title || "Request");
     set(".req-meta", [agent, r.project, r.questTitle].filter(Boolean).join(" · ") + since);
-    set(".req-full", r.full); // left alone while unchanged, so a reader's scroll position stays put
+    set(".req-full", requestText(r)!); // left alone while unchanged, so a reader's scroll position stays put
+    row.dataset.cut = r.cut === true ? "1" : "";
+    row.querySelector<HTMLElement>(".badge")!.hidden = r.cut !== true;
     row.querySelector<HTMLElement>("[data-decide=allowAlways]")!.hidden = !r.canAlways;
   }
   for (const [key, row] of requestRows) if (!seen.has(key)) { row.remove(); requestRows.delete(key); }
@@ -197,14 +221,17 @@ $("requests-list").addEventListener("click", async (e) => {
 });
 
 // One row per agent: installed? signed in? used in Familiar? — plus Install / Sign in buttons.
-function renderProviders(list: any[], backends: Record<string, any>) {
+function renderProviders(list: any[], backends: Record<string, any>, claude?: unknown) {
   const html = list
     .map((p) => {
       const be = backends[p.id];
-      const state = !p.installed
+      const dl = p.id === "claude" ? claudeLine(claude as any) : null; // the in-app Claude Code download, until it is on disk
+      const state = dl ? `<span class="${dl.level}">${esc(dl.text)}</span>${dl.state === "downloading" ? `<progress aria-label="Claude Code download"${dl.pct != null ? ` max="100" value="${dl.pct}"` : ""}></progress>` : ""}`
+        : !p.installed
         ? `<span class="muted">${esc(p.detail)}</span>${p.installCommand ? ` — <code>${esc(p.installCommand)}</code>` : ""}`
         : `<span class="${p.signedIn === false ? "warn" : "ok"}">${esc(p.detail)}</span>${be?.error && p.enabled ? ` <span class="err">· ${esc(be.error)}</span>` : ""}`;
       const actions = [
+        dl?.retry ? `<button class="small" data-retry="claude">${esc(dl.retry)}</button>` : "",
         !p.installed && p.installUrl ? `<button class="small" data-install="${esc(p.id)}">Install…</button>` : "",
         p.installed && p.canLogin ? `<button class="small" data-login="${esc(p.id)}">${p.signedIn ? "Sign in again" : "Sign in"}</button>` : "",
         `<label class="hint"><input type="checkbox" data-enable="${esc(p.id)}" aria-label="Use ${esc(p.label)} in Familiar" ${p.enabled ? "checked" : ""} ${p.installed ? "" : "disabled"}> Use</label>`,
@@ -212,16 +239,7 @@ function renderProviders(list: any[], backends: Record<string, any>) {
       return `<div class="prov ${p.enabled ? "" : "off"}"><span class="g">${esc(p.glyph)}</span><span class="n">${esc(p.label)}</span><span class="d">${state}</span><span class="a">${actions}</span></div>`;
     })
     .join("");
-  const el = $("providers");
-  if (el.dataset.html !== html) {
-    const active = el.contains(document.activeElement) ? document.activeElement as HTMLElement : null;
-    const focusKey = active && ["install", "login", "enable"].find(key => active.dataset[key]);
-    const focusId = focusKey ? active!.dataset[focusKey] : undefined;
-    el.dataset.html = html;
-    el.innerHTML = html;
-    // A status tick may update a row while someone is using it with the keyboard.
-    if (focusKey) [...el.querySelectorAll<HTMLElement>(`[data-${focusKey}]`)].find(node => node.dataset[focusKey] === focusId)?.focus();
-  }
+  setHtml($("providers"), html, ["install", "login", "enable", "retry"]);
 }
 
 // Chat defaults: provider, model and effort (the in-game Model list changes them too).
@@ -271,6 +289,7 @@ $("providers").addEventListener("click", (e) => {
   const t = e.target as HTMLElement;
   if (t.dataset.install) act("Installation page opened", () => bridge.invoke("providerInstall", t.dataset.install));
   if (t.dataset.login) act("Sign-in window opened. Complete sign-in there; Familiar will check again.", () => bridge.invoke("providerLogin", t.dataset.login));
+  if (t.dataset.retry) act("Claude Code is downloading. Progress is on the Familiars card.", async () => { await bridge.invoke("claudeRetry"); await refreshStatus(); });
 });
 $("providers").addEventListener("change", (e) => {
   const t = e.target as HTMLInputElement;
@@ -304,9 +323,9 @@ function localFeedback(group: HTMLElement, message: string) {
   // The existing global status is the live announcement; this copy stays beside the action.
   if (el) el.textContent = message;
 }
-async function act(message: string, fn: () => unknown, local?: { group: HTMLElement; label: string }) {
+async function act(message: string | (() => string), fn: () => unknown, local?: { group: HTMLElement; label: string }) {
   if (local) localFeedback(local.group, "");
-  try { await fn(); feedback(message, "ok"); }
+  try { await fn(); feedback(typeof message === "function" ? message() : message, "ok"); }
   catch (e) {
     const reason = e instanceof Error ? e.message : String(e);
     feedback(local ? `${local.label} failed: ${reason}` : `Could not complete that action: ${reason}`, "err");
@@ -314,7 +333,7 @@ async function act(message: string, fn: () => unknown, local?: { group: HTMLElem
     await refreshStatus().catch(() => {});
   }
 }
-const btn = (id: string, message: string, fn: () => unknown) => $(id).addEventListener("click", async () => {
+const btn = (id: string, message: string | (() => string), fn: () => unknown) => $(id).addEventListener("click", async () => {
   const button = $(id) as HTMLButtonElement;
   const group = button.closest<HTMLElement>(".btns");
   const local = group ? { group, label: button.textContent?.trim() || id } : undefined;
@@ -370,11 +389,12 @@ function setModeWarn(v: string) {
   b.hidden = !risky(v);
   b.textContent = risky(v) ? `Default: ${v === "auto" ? "Auto" : "Accept edits"}` : "";
 }
-function renderUi(ui?: { fontScale: number; sound: boolean; raidWarnings: boolean; quiet?: boolean; privateMode?: boolean; streamSafe?: boolean; defaultMode?: string; approveKey?: string }) {
+function renderUi(ui?: { fontScale: number; sound: boolean; raidWarnings: boolean; trayNotices?: boolean; quiet?: boolean; privateMode?: boolean; streamSafe?: boolean; defaultMode?: string; approveKey?: string }) {
   if (!ui) return;
   if (document.activeElement !== fontSel) fontSel.value = String(Math.round(ui.fontScale * 10) / 10);
   ($("ui-sound") as HTMLInputElement).checked = ui.sound;
   ($("ui-raid") as HTMLInputElement).checked = ui.raidWarnings;
+  ($("ui-tray") as HTMLInputElement).checked = ui.trayNotices !== false; // on unless switched off
   ($("ui-quiet") as HTMLInputElement).checked = !!ui.quiet;
   ($("ui-private") as HTMLInputElement).checked = !!ui.privateMode;
   ($("ui-stream") as HTMLInputElement).checked = !!ui.streamSafe;
@@ -410,10 +430,91 @@ $("ui-mode").addEventListener("change", (e) => {
 $("ui-approve-key").addEventListener("input", showApproveKey);
 $("ui-approve-key").addEventListener("change", (e) => setUi({ approveKey: (e.target as HTMLInputElement).value }));
 $("ui-raid").addEventListener("change", (e) => setUi({ raidWarnings: (e.target as HTMLInputElement).checked }));
+$("ui-tray").addEventListener("change", (e) => {
+  const on = (e.target as HTMLInputElement).checked;
+  setUi({ trayNotices: on }, on ? "Windows notices on: you'll get one when a request is waiting and WoW isn't in front." : "Windows notices off");
+});
 btn("b-pause", "Overlay preference updated", async () => {
   paused = await bridge.invoke("pause", !paused);
   await refreshStatus();
 });
+// Projects: folders added by hand, folders of projects, and how many Familiar finds in the agents' history.
+interface ProjectsStatus { explicit: string[]; roots: string[]; history: number }
+const projectsOf = (v: any): ProjectsStatus | null =>
+  v && typeof v === "object" && Array.isArray(v.explicit) && Array.isArray(v.roots) && v.explicit.every((p: unknown) => typeof p === "string") && v.roots.every((p: unknown) => typeof p === "string")
+    ? { explicit: v.explicit, roots: v.roots, history: Number.isFinite(v.history) ? v.history : 0 } : null;
+function renderProjects(value: unknown) {
+  const p = projectsOf(value);
+  $("projects").hidden = !p; // an older main process has no folder commands (and reports a plain count)
+  if (!p) return;
+  placeProjects(!p.explicit.length && !p.roots.length);
+  text("project-history", p.history > 0 ? ` Found from your agents so far: ${p.history}.` : "");
+  const row = (label: string, path: string) => `<div class="prov"><span class="g">▪</span><span class="n">${label}</span><span class="d">${esc(path)}</span><span class="a"><button class="small" type="button" data-remove="${esc(path)}" aria-label="Remove ${esc(path)}">✕</button></span></div>`;
+  setHtml($("project-rows"), [...p.explicit.map((x) => row("Project", x)), ...p.roots.map((x) => row("Projects in", x))].join(""), ["remove"]);
+}
+// Replace a list's markup only when it changed, and give keyboard focus back to the same control afterwards:
+// a status tick may update a row while someone is using it with the keyboard.
+function setHtml(el: HTMLElement, html: string, focusKeys: string[]) {
+  if (el.dataset.html === html) return;
+  const active = el.contains(document.activeElement) ? document.activeElement as HTMLElement : null;
+  const focusKey = active && focusKeys.find(key => active.dataset[key]);
+  const focusId = focusKey ? active!.dataset[focusKey] : undefined;
+  el.dataset.html = html;
+  el.innerHTML = html;
+  if (focusKey) [...el.querySelectorAll<HTMLElement>(`[data-${focusKey}]`)].find(node => node.dataset[focusKey] === focusId)?.focus();
+}
+async function addFolder(kind: "project" | "root") {
+  const buttons = [$("b-project-add"), $("b-root-add")] as HTMLButtonElement[];
+  let added = "";
+  buttons.forEach((b) => (b.disabled = true)); // one folder dialog at a time
+  text("project-result", "");
+  await act(() => (added ? `Added ${added}` : "No folder was added."), async () => {
+    const r = await bridge.invoke("projectAdd", { kind });
+    if (r?.ok) { added = typeof r.path === "string" && r.path ? r.path : "the folder"; await refreshStatus(); }
+    else if (typeof r?.why === "string" && r.why) throw new Error(r.why);
+    text("project-result", added ? `Added ${added}. It is offered the next time you pick a project.` : "No folder was added.");
+  }, { group: $("b-project-add").closest<HTMLElement>(".btns")!, label: "Projects" });
+  buttons.forEach((b) => (b.disabled = false));
+}
+$("b-project-add").addEventListener("click", () => addFolder("project"));
+$("b-root-add").addEventListener("click", () => addFolder("root"));
+$("project-rows").addEventListener("click", (e) => {
+  const path = (e.target as HTMLElement).closest<HTMLElement>("[data-remove]")?.dataset.remove;
+  if (path) act(`Removed ${path}`, async () => {
+    const r = await bridge.invoke("projectRemove", { path });
+    await refreshStatus();
+    if (!r?.ok) throw new Error("that folder was not in your list any more");
+  });
+});
+
+// Save what Familiar sees: a small crop of the strip corner, written by the companion; named here, never shown.
+btn("b-snapshot", () => "", async () => { // the line under the button is the answer
+  text("snapshot-result", "");
+  const r = await bridge.invoke("captureSnapshot");
+  if (!r?.ok) throw new Error(typeof r?.why === "string" && r.why ? r.why : "Familiar has no picture of the game to save yet");
+  const name = typeof r.file === "string" ? r.file.split(/[\\/]/).pop() : "";
+  text("snapshot-result", `Saved ${name || "a picture"} in your Familiar folder (%APPDATA%\\Familiar). It shows the top-left 320×32 pixels of the game window; look at it before attaching it to a bug report.`);
+});
+
+// Check for updates: one request to GitHub, only on this click. The download page opens only on a second, explicit click.
+function showUpdate(result: unknown) {
+  const line = updateLine(result as any);
+  const el = $("update-result");
+  el.className = `hint res ${line.level === "muted" ? "" : line.level}`;
+  const lead = document.createElement(line.open ? "b" : "span");
+  lead.textContent = line.text;
+  el.replaceChildren(lead);
+  if (!line.open) return;
+  const open = document.createElement("button");
+  open.type = "button";
+  open.id = "b-open-release";
+  open.className = "linklike";
+  open.textContent = "Open the download page";
+  open.addEventListener("click", (e) => { if (e.isTrusted) act("Download page opened in your browser", () => bridge.invoke("openUrl", { url: line.open })); });
+  el.append(" · ", open);
+}
+btn("b-update", () => "", async () => { showUpdate(await bridge.invoke("checkUpdate")); }); // the result line is the answer
+
 btn("b-suggest", "Opened a pre-filled GitHub issue in your browser. Nothing is sent until you submit it there.", () =>
   bridge.invoke("suggest", ($("suggest-text") as HTMLTextAreaElement).value));
 
