@@ -857,7 +857,9 @@ try {
       await wheel(-10000);
       await snapshot(`${size}-${scenario}-pending-bottom`);
       check(`${size}/${scenario}: preview fits pane width`, await page.locator('#detail-scroll').evaluate(el => el.scrollWidth <= el.clientWidth + 1));
-      check(`${size}/${scenario}: decision controls match state`, await page.locator(action('decide')).count() === 2);
+      // A cut request can't be approved from the game: Deny is its only decision (UX round 3).
+      check(`${size}/${scenario}: decision controls match state`, await page.locator(action('decide')).count() === 1
+        && await page.locator(`${action('decide')}[data-act*='"decision":"deny"']`).count() === 1);
       check(`${size}/${scenario}: no automatic action`, await page.evaluate(() => window.preview.calls.length) === 0);
       check(`${size}/${scenario}: approval state unchanged`, await page.evaluate(() => window.preview.model.detail.entries[0].approval) === 'pending');
     }
