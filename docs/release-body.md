@@ -5,7 +5,7 @@
 
 **What it is:** a quest log for your coding agents, inside WoW: Forever.
 
-**How you use it:** open it with `/fam` or the minimap imp. Your first run puts a short tutorial quest, "A Familiar Face", in the log. Pick a project (a "zone"), type what you want, press Enter. The agent works while you play. A **?** means it replied. A **!** means it wants to do something and needs your OK: you'll see exactly what, and nothing happens until you click Approve.
+**How you use it:** open it with `/fam` or the minimap owl. Your first run puts a short tutorial quest, "A Familiar Face", in the log. Pick a project (a "zone"), type what you want, press Enter. The agent works while you play. A **?** means it replied. A **!** means it wants to do something and needs your OK: you'll see exactly what, and nothing happens until you click Approve.
 
 **What you need:** Windows 11, WoW: Forever in windowed mode, and Claude Code or Codex already signed in on your PC.
 

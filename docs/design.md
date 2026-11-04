@@ -49,7 +49,7 @@ or at login, and is the fallback when the Glass cannot be shown.
 
 ## 3. In-game experience
 
-**Window ("Familiar")** — WoW dialog chrome with the imp-familiar icon:
+**Window ("Familiar")** — WoW dialog chrome with the owl-familiar icon:
 
 * **Quest Log (left):** zones = projects, quests = threads (✦ Claude, ◈ Codex). Status glyphs
   (◌ working, ! needs approval, ✗ failed), unread dots, desktop-app threads shown dimmed under each

@@ -93,7 +93,7 @@ describe("the familiar's voice and portrait", () => {
   it("speaks the titles that are about its own state; the texts under them stay literal", () => {
     expect(journey({ ...linked, game: null }).title).toBe("I'm waiting for WoW.");
     expect(journey({ ...linked, layout: { panel: false } }).title).toBe("Ready when you are.");
-    expect(journey({ ...linked, layout: { panel: false } }).text).toContain("click the minimap imp to open your Quest Log");
+    expect(journey({ ...linked, layout: { panel: false } }).text).toContain("click the minimap owl to open your Quest Log");
     expect(journey(linked).title).toBe("Linked. Your next quest awaits.");
     expect(journey({ ...linked, providers: [], backends: {} }).title).toBe("Choose your familiar");
   });

@@ -8,10 +8,10 @@ A quest log for your coding agents, inside World of Warcraft: Forever.
 
 ## Familiar in one minute
 
-<img src="docs/media/familiar.png" align="right" width="128" alt="The familiar: a small violet imp with gold horns, green eyes and a rolled scroll">
+<img src="docs/media/familiar.png" align="right" width="128" alt="The familiar: a tawny owl scribe with amber eyes, teal wing tips and a scroll satchel">
 
 * **What it is:** a quest log for your coding agents, inside WoW: Forever.
-* **How you use it:** open it with `/fam` or the minimap imp. Your first run puts a short tutorial
+* **How you use it:** open it with `/fam` or the minimap owl. Your first run puts a short tutorial
   quest, "A Familiar Face", in the log. Pick a project (a "zone"), type what you want, press Enter.
   The agent works while you play. A **?** means it replied. A **!** means it wants to do something
   and needs your OK: you'll see exactly what, and nothing happens until you click Approve.
@@ -160,7 +160,7 @@ when I sign in to Windows**, or `/fam autostart on` in game.
 
 | | |
 |---|---|
-| `/fam` or the imp on the minimap | open the Familiar window |
+| `/fam` or the owl on the minimap | open the Familiar window |
 | `+ Claude` / `+ Codex` | pick a zone (project) → type your first message → Enter |
 | click a quest | open it; dimmed quests are desktop-app threads — send a message to continue them |
 | right-click a zone | start a quest there |

@@ -229,10 +229,10 @@ function Familiar_OnCompartmentClick(_, button)
 end
 
 -- The familiar's own face (media/familiar.tga, 64x64): the minimap button and the window title use it.
--- No file extension: the client tries .blp, then .tga. If the client refuses it, the game's imp is
+-- No file extension: the client tries .blp, then .tga. If the client refuses it, the game's owl icon is
 -- loaded by path exactly as before, so the worst case is the old look; /fam diag says which is in use.
 ns.ICON = "Interface\\AddOns\\Familiar\\media\\familiar"
-ns.ICON_FALLBACK = "Interface\\Icons\\Spell_Shadow_SummonImp"
+ns.ICON_FALLBACK = "Interface\\Icons\\Ability_Hunter_Pet_Owl"
 function ns.SetIcon(tex)
   local ok = tex:SetTexture(ns.ICON)
   if ok and tex:GetTexture() then ns.iconSource = "own"; return "own" end
@@ -464,7 +464,7 @@ SlashCmdList.FAMILIAR = function(input)
       end)
       names[i] = ok and desc or "?"
     end
-    ns.Print("icon: " .. (ns.iconSource == "own" and "own" or ns.iconSource == "fallback" and "fallback (game imp)" or "not drawn"))
+    ns.Print("icon: " .. (ns.iconSource == "own" and "own" or ns.iconSource == "fallback" and "fallback (game icon)" or "not drawn"))
     local mini = ns.Layout.prect(ns.Minimap.button)
     ns.Print(mini and ("minimap: %d,%d %d\195\151%d"):format(mini[1], mini[2], mini[3], mini[4]) or "minimap: hidden")
     ns.Print("under cursor: " .. (#names > 0 and table.concat(names, ", ") or "nothing"))

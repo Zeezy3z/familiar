@@ -102,7 +102,7 @@ export function journey(s: JourneyStatus) {
     : guide("I can't see the game yet.", "The coloured dots top-left are how Familiar talks to your PC. Enable Familiar in AddOns and type /fam. Restart WoW once after first installation. If the dots are covered, /fam strip tr moves them to the top-right.", "warn");
   if (!ready) return guide("Linked; waiting for a familiar", "The game link is working. Check the agent status below before sending a message.", "warn", "providers");
   if (s.layout?.ui === false) return guide("Your game UI is hidden", "Show the game UI again when you want to read Familiar’s live replies.", "muted");
-  if (!s.layout?.panel) return guide("Ready when you are.", `Type /fam or click the minimap imp to open your Quest Log. Pick an existing conversation to continue.${chatReady ? " Use + Chat for a quick question." : " " + startHint}`, "ok");
+  if (!s.layout?.panel) return guide("Ready when you are.", `Type /fam or click the minimap owl to open your Quest Log. Pick an existing conversation to continue.${chatReady ? " Use + Chat for a quick question." : " " + startHint}`, "ok");
   return guide("Linked. Your next quest awaits.", `Pick a conversation to continue. ${startHint} Enter sends; Shift+Enter adds a line. Approvals appear in the conversation.`, "ok");
 }
 

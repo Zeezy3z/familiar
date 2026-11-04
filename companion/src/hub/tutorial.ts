@@ -18,7 +18,7 @@ const OBJECTIVES = [
 ] as const;
 type Objective = (typeof OBJECTIVES)[number]["id"];
 
-const welcome = (char: string) => `Well met, ${char}. I'm your familiar — the imp on your minimap. Work you give me shows up here as a quest.
+const welcome = (char: string) => `Well met, ${char}. I'm your familiar — the owl on your minimap. Work you give me shows up here as a quest.
 
 Marks to know in the Quest Log:
 **?** a reply is waiting for you, like a turn-in.

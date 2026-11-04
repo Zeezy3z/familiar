@@ -54,7 +54,7 @@ versions may not use the Reserved Font Name "Marcellus".
 
 ## Other
 
-* World of Warcraft, its API and the `Interface\Icons\Spell_Shadow_SummonImp` icon referenced by
+* World of Warcraft, its API and the `Interface\Icons\Ability_Hunter_Pet_Owl` icon referenced by
   the addon are © Blizzard Entertainment. The icon is referenced by game path and is not included
   in this repository. Familiar is a fan project, not affiliated with or endorsed by Blizzard
   Entertainment.
