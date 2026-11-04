@@ -138,6 +138,25 @@ export interface View {
   picker?: boolean;
 }
 
+/** A pending approval as the control panel lists it ("Requests waiting"). */
+export interface PendingRequest {
+  thread: string;
+  questTitle: string;
+  project: string;
+  /** The agent's label ("Claude"). */
+  agent: string;
+  requestId: string;
+  title: string;
+  /** What the in-game card shows (a preview when `cut`). */
+  detail: string;
+  /** The whole request, when the in-game card shows only part of it. */
+  full?: string;
+  /** Too long for the in-game card: approved only here, never from the game. */
+  cut: boolean;
+  canAlways: boolean;
+  at: number;
+}
+
 export interface AddonInfo {
   addon?: string;
   build?: string;
@@ -249,6 +268,8 @@ export class Hub {
   onSpeak: (text: string) => void = () => {};
   /** A request too long for the in-game card is waiting (main: flash the panel / a tray notice). */
   onCutRequest: () => void = () => {};
+  /** This companion's version (main's VERSION), compared with the addon's on hello. */
+  version = "";
 
   constructor(
     public cfg: () => Config,
@@ -1264,14 +1285,14 @@ export class Hub {
     return { ok: true };
   }
 
-  /** Pending requests too long for the in-game card, whole, for the control panel's "Requests
-   * waiting on your PC". Real names: the panel is on the PC, not on stream. */
-  cutRequests() {
+  /** Pending requests for the control panel's "Requests waiting", whole. Real names: the panel is
+   * on the PC, not on stream. */
+  pendingRequests(): PendingRequest[] {
     return [...this.threads.values()].flatMap((t) =>
       t.entries
         .filter((e) => e.kind === "approval" && e.approval === "pending" && e.cut && e.requestId)
         .map((e) => ({ thread: t.id, questTitle: t.title, project: this.projectName(t), agent: agentName(t.agent), requestId: e.requestId!,
-          title: e.title ?? "", full: e.full ?? e.text, canAlways: !!e.canAlways, at: e.at })),
+          title: e.title ?? "", detail: e.text, ...(e.cut ? { full: e.full ?? e.text } : {}), cut: !!e.cut, canAlways: !!e.canAlways, at: e.at })),
     );
   }
 
@@ -1790,7 +1811,7 @@ export class Hub {
     this.held = [];
     this.heldSpeech = undefined;
     this.heldPcAlert = false;
-    if (pc && this.cutRequests().length) this.onCutRequest();
+    if (pc && this.pendingRequests().some((r) => r.cut)) this.onCutRequest();
     if (!held.length) return;
     const count = (k: Toast["kind"]) => held.filter((x) => x.kind === k).length;
     const kind = count("approval") ? "approval" : count("error") ? "error" : "done";

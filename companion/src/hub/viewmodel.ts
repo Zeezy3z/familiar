@@ -60,6 +60,8 @@ export type DetailModel =
       backends: ProviderView[];
       chat: ProviderView & { model?: string; act: Act };
       counts: { running: number; approval: number; total: number };
+      /** Project folders known (configured or from agent history); 0: nowhere to start a quest yet. */
+      zones: number;
     }
   | { kind: "pick"; agent: AgentKind }
   | {
@@ -461,6 +463,7 @@ function welcome(hub: Hub, linked: boolean): DetailModel {
       approval: threads.filter((t) => t.status === "approval").length,
       total: threads.length,
     },
+    zones: hub.projects.list().length,
   };
 }
 

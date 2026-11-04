@@ -2106,13 +2106,13 @@ describe("physical corroboration (any addon can forge strip messages)", () => {
     expect(card).toMatchObject({ cut: true, approval: "pending",
       refused: "Part of this request is hidden here. Approve it in full from Familiar's control panel on your PC, or Deny." });
     expect(JSON.stringify(detail)).not.toContain(full); // the Glass never gets the whole text
-    // "Requests waiting on your PC": the whole request with real names; a panel click decides it.
-    expect(hub.cutRequests()).toEqual([{ thread: id, questTitle: "long command", project: "familiar", agent: "Claude", requestId: "long",
-      title: "Allow Bash?", full, canAlways: true, at: expect.any(Number) }]);
+    // "Requests waiting": the whole request with real names; a panel click decides it.
+    expect(hub.pendingRequests()).toEqual([{ thread: id, questTitle: "long command", project: "familiar", agent: "Claude", requestId: "long",
+      title: "Allow Bash?", detail: full.slice(0, 4000) + "\n… (1005 characters omitted from this preview)", full, cut: true, canAlways: true, at: expect.any(Number) }]);
     expect(hub.decide(id, "long", "allow", "panel")).toEqual({ ok: true });
     expect(claude.decisions).toEqual([{ requestId: "long", d: "allow" }]);
     expect(hub.threads.get(id)!.entries.find((e) => e.requestId === "long")!.refused).toBeUndefined();
-    expect(hub.cutRequests()).toEqual([]);
+    expect(hub.pendingRequests()).toEqual([]);
     expect(hub.decide(id, "long", "allow", "panel")).toEqual({ ok: false, why: "no longer pending" });
     // Deny from the card needs no proof, cut or not.
     cut("long2");

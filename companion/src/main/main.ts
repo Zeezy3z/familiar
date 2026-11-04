@@ -16,6 +16,7 @@ import { providerSetup, startLogin } from "../agents/setup";
 import type { AgentBackend, Mode } from "../agents/types";
 import { MODES } from "../agents/types";
 import { resolveCommand } from "../agents/which";
+import { claudeStatus, companionDir } from "../agents/claude-download";
 import { appDataDir, DEFAULT_CONFIG, loadConfig, saveConfig } from "../hub/config";
 import { FONT_MAX, FONT_MIN, Hub } from "../hub/hub";
 import { buildModel } from "../hub/viewmodel";
@@ -48,12 +49,15 @@ import { findWowInstall, installAddon, interfaceCheck, SnapshotWriter, tocInterf
 import { RUNNING_BUILD } from "./build";
 import { devEnabled, serveDevHooks } from "./dev-hooks";
 import { changedConfigKeys, describeAddonMessage, describeOverlayAction, diagnosticsText, logLine, redact, rotateLog } from "./log-file";
+import { linkDoctor } from "./doctor";
+import type { CheckUpdate } from "./update";
 
 const VERSION = "0.2.0";
 
 // ---- installed build (electron-builder) --------------------------------------------------------
 // Packaged-only: a source run (electron.exe <companion dir>, via boot.cjs) skips all of this.
 const PACKAGED = app.isPackaged;
+companionDir.packaged = PACKAGED; // where Claude lives (claude-download.ts claudeHome)
 /** The addon the companion installs: the repo's copy, or the installer's under resources\. */
 const REPO_ADDON = PACKAGED ? path.join(process.resourcesPath, "addon", "Familiar") : path.resolve(__dirname, "..", "..", "addon", "Familiar");
 /** The SDK resolves claude.exe inside app.asar, where spawn fails (ENOENT); asarUnpack puts the
@@ -720,7 +724,7 @@ function surfaceRequests() {
 
 /** Nothing waits any more (decided, expired): stop asking for attention. */
 function settleRequests() {
-  if (!requestsWaiting || hub.cutRequests().length) return;
+  if (!requestsWaiting || hub.pendingRequests().some((r) => r.cut)) return;
   requestsWaiting = false;
   tray?.setToolTip("Familiar");
   if (control && !control.isDestroyed()) control.flashFrame(false);
@@ -738,7 +742,7 @@ function pushAll() {
 
 function uiSettings() {
   return { fontScale: cfg.fontScale, sound: cfg.sound, raidWarnings: cfg.raidWarnings !== false, quiet: !!cfg.quiet, privateMode: !!cfg.privateMode,
-    streamSafe: !!cfg.privateMode && !!cfg.blurTranscript, defaultMode: cfg.defaultMode, approveKey: cfg.approveKey ?? "" };
+    streamSafe: !!cfg.privateMode && !!cfg.blurTranscript, defaultMode: cfg.defaultMode, approveKey: cfg.approveKey ?? "", trayNotices: cfg.trayNotices !== false };
 }
 
 function statusSnapshot() {
@@ -762,18 +766,36 @@ function statusSnapshot() {
     wrongClient: wrongClient ? { exe: wrongClient.exe, dir: wrongClient.dir } : null,
     installNotes,
     threads: hub ? hub.threads.size : 0,
-    projects: hub ? hub.projects.list().length : 0,
+    projects: projectsStatus(),
     configPath: path.join(appDataDir(), "config.json"),
     launchAtLogin: cfg.launchAtLogin,
     ui: uiSettings(),
-    // "Requests waiting on your PC": cut requests in full (approved only here, via "decide").
-    requests: hub ? hub.cutRequests() : [],
+    // "Requests waiting": pending approvals in full (decided here via "decide"; cut ones only here).
+    requests: hub ? hub.pendingRequests() : [],
+    claude: claudeStatus(),
+    doctor: doctorNow(),
+    update: { app: VERSION, addon: hub?.addon.addon, mismatch: false, last: lastUpdateCheck },
     providers: providersNow(),
     providersChosen: cfg.providersChosen,
     chat: { agent: cfg.chatAgent, model: cfg.chatModel, effort: cfg.chatEffort },
     logPath: logFile,
   };
 }
+
+/** The Link Doctor's line for the status and Copy diagnostics (doctor.ts). */
+function doctorNow() {
+  const c = captureStats ?? {};
+  return linkDoctor({ game: !!game, minimized, foreground: !!game && (fg === game.key || fg === overlayKey), captureMode,
+    stats: { fps: c.fps ?? 0, crc: c.crc ?? 0, lock: c.lock, lastOk: c.lastOk ?? 0 }, startedAt: captureStartedAt, now: Date.now() });
+}
+
+/** Zones for the control panel's Projects card: the folders you added, and how many came from history. */
+function projectsStatus() {
+  return { explicit: [...cfg.projects], roots: [...cfg.projectRoots], history: 0 };
+}
+
+/** The last "Check for updates" answer (only ever from the player's click). */
+let lastUpdateCheck: CheckUpdate | undefined;
 
 /** Versions for "Suggest a change": no paths, names or logs. */
 function suggestVersions(): SuggestVersions {
@@ -918,6 +940,7 @@ app.whenReady().then(async () => {
     if (b) backends[id] = b;
   }
   hub = new Hub(() => cfg, backends, log);
+  hub.version = VERSION;
   // "Continue in <app>": only the agents' own app links, never an arbitrary URL.
   hub.openExternal = (url) => {
     if (/^(claude|codex):\/\//i.test(url)) shell.openExternal(url).catch((e) => log(`[open] ${e}`));
@@ -1045,10 +1068,11 @@ app.whenReady().then(async () => {
         sendStatus();
         return true;
       case "uiSettings": {
-        const a = (args ?? {}) as { fontScale?: number; sound?: boolean; raidWarnings?: boolean; quiet?: boolean; privateMode?: boolean; streamSafe?: boolean; defaultMode?: string; approveKey?: string };
+        const a = (args ?? {}) as { fontScale?: number; sound?: boolean; raidWarnings?: boolean; quiet?: boolean; privateMode?: boolean; streamSafe?: boolean; defaultMode?: string; approveKey?: string; trayNotices?: boolean };
         if (typeof a.fontScale === "number" && isFinite(a.fontScale)) cfg.fontScale = Math.min(FONT_MAX, Math.max(FONT_MIN, a.fontScale));
         if (typeof a.sound === "boolean") cfg.sound = a.sound;
         if (typeof a.raidWarnings === "boolean") cfg.raidWarnings = a.raidWarnings;
+        if (typeof a.trayNotices === "boolean") cfg.trayNotices = a.trayNotices;
         if (typeof a.quiet === "boolean") hub.setQuiet(a.quiet);
         if (typeof a.privateMode === "boolean") hub.setPrivate(a.privateMode);
         if (typeof a.streamSafe === "boolean") hub.setStream(a.streamSafe);
@@ -1090,6 +1114,19 @@ app.whenReady().then(async () => {
         hub.openIssue(url);
         return true;
       }
+      // Round 4 commands (interfaces; filled in by the following changes).
+      case "claudeRetry":
+        return claudeStatus();
+      case "captureSnapshot":
+        return { ok: false, why: "Not available yet." };
+      case "projectAdd":
+        return { ok: false, why: "Not available yet." };
+      case "projectRemove":
+        return { ok: false };
+      case "checkUpdate":
+        return { current: VERSION, error: "Not available yet." } satisfies CheckUpdate;
+      case "openUrl":
+        return undefined;
       case "testToast":
         hub.toast("Familiar overlay test — if you can read this over WoW, the Glass works.", "info");
         return true;
