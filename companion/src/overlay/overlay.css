@@ -26,6 +26,9 @@
      growing chrome would take the reading lines and wrap narrow header rows. Content that
      scrolls (entries, cards, markdown) keeps --u. */
   --u-fixed:min(var(--u), 4px);
+  /* Motion: state changes · arrivals (toast, card, seal, badge) · the moment settling; nothing longer, nothing loops but the caret.
+     control.html carries the same three; test/motion.test.ts checks both files. */
+  --m-fast: 150ms; --m-arrive: 350ms; --m-settle: 600ms;
 }
 
 html, body {
@@ -247,6 +250,10 @@ body.short-detail .welcome .portrait { display: none; }
 #status.lvl-ok::before { color: var(--ok); }
 #status.lvl-warn::before { content: "▲ "; color: var(--warn); }
 #status.lvl-off::before { content: "○ "; color: var(--muted); }
+/* Alerts muted / Stream-safe on / Hide names on are chips after the words (overlay.ts), not part of them. When the bar is
+   narrow the words give way (an ellipsis) and the chips stay: they are what the streamer needs to see. */
+#status .st-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.chip { flex: none; margin-left: .6em; padding: 0 .55em; border: 1px solid var(--line); border-radius: 1em; font-size: .9em; color: var(--gold-dim); }
 
 /* ---- tracker ---- */
 #tracker { padding: calc(var(--u) * 0.5) var(--u); overflow: hidden; }
@@ -268,21 +275,35 @@ body.short-detail .welcome .portrait { display: none; }
 #mode-label > span { font-size: var(--fs-sm); white-space: nowrap; } /* overlay.ts fits it to the rect */
 #mode-label.hot { color: var(--warn); border-color: var(--warn); }
 
+/* ---- the familiar calls from the minimap (round 6 §2.2) ---- */
+/* The element is the addon's minimap button rect (overlay.ts places it; no rect, no badge) and paints nothing
+   itself: the mark sits at its top-right, a little outside it, and is a picture only (no hit rect, no hover).
+   "!" = a request waits (the card's orange), "?" = a reply waits (the turn-in's gold). */
+#mini-badge { position: absolute; pointer-events: none; }
+#mini-badge::after { content: attr(data-glyph); position: absolute; right: -12%; top: -12%;
+  width: calc(var(--mini) * .42); height: calc(var(--mini) * .42); min-width: 12px; min-height: 12px;
+  border-radius: 50%; background: rgba(9, 8, 11, .92); box-shadow: 0 0 0 1px var(--gold-dim), 0 0 4px #000;
+  display: flex; align-items: center; justify-content: center;
+  font-family: var(--display); font-weight: 700; font-size: calc(var(--mini) * .34); line-height: 1; text-shadow: var(--shadow); }
+#mini-badge.pop::after { animation: toastIn var(--m-arrive) ease-out; } /* a new mark arrives like a toast, once (overlay.ts) */
+#mini-badge[data-glyph="!"]::after { color: var(--warn); }
+#mini-badge[data-glyph="?"]::after { color: var(--gold); }
+
 /* ---- toasts ---- */
 /* Above the panes' sticky quest header (z-index 2), which otherwise covers a raid warning. */
 #toasts { position: absolute; z-index: 10; left: 0; right: 0; top: 14%; display: flex; flex-direction: column; align-items: center; gap: var(--u); pointer-events: none; }
-.toast { font-family: var(--display); font-size: max(15px, 2.1vh); color: var(--gold); background: rgba(0, 0, 0, 0.55); padding: calc(var(--u) * 0.75) calc(var(--u) * 3.25); border-bottom: 1px solid rgba(255, 209, 0, 0.5); border-radius: var(--r-btn); text-shadow: 0 0 2px #000, 0 0 5px #000; max-width: 70vw; text-align: center; animation: toastIn 0.35s ease-out; }
+.toast { font-family: var(--display); font-size: max(15px, 2.1vh); color: var(--gold); background: rgba(0, 0, 0, 0.55); padding: calc(var(--u) * 0.75) calc(var(--u) * 3.25); border-bottom: 1px solid rgba(255, 209, 0, 0.5); border-radius: var(--r-btn); text-shadow: 0 0 2px #000, 0 0 5px #000; max-width: 70vw; text-align: center; animation: toastIn var(--m-arrive) ease-out; }
 .toast.approval::before { content: "! "; }
 .toast.approval { color: var(--warn); }
 .toast.info { color: var(--text); font-size: max(13px, 1.7vh); }
 /* Quest Complete / Quest Failed: the moment. The painted seal (cracked on failure) above the title, a
    rewards line under it, a plain rule below; gold (or red) glow. The seal is an <img> (overlay.ts). */
 .toast.done, .toast.error { font-size: max(18px, 2.6vh); letter-spacing: 0.04em; min-width: 14em; padding: var(--u) calc(var(--u) * 6);
-  background: radial-gradient(ellipse at center, rgba(0, 0, 0, 0.7) 35%, rgba(0, 0, 0, 0.35) 58%, rgba(0, 0, 0, 0) 74%); border-bottom: 0; animation: settle 0.6s ease-out;
+  background: radial-gradient(ellipse at center, rgba(0, 0, 0, 0.7) 35%, rgba(0, 0, 0, 0.35) 58%, rgba(0, 0, 0, 0) 74%); border-bottom: 0; animation: settle var(--m-settle) ease-out;
   text-shadow: 0 0 2px #000, 0 0 6px rgba(255, 209, 0, 0.55), 0 0 14px rgba(255, 170, 0, 0.3); }
 .toast.error { color: var(--err); text-shadow: 0 0 2px #000, 0 0 6px rgba(255, 90, 79, 0.55), 0 0 14px rgba(255, 60, 40, 0.3); }
 .toast .seal { display: block; width: 2.2em; height: 2.2em; margin: 0 auto calc(var(--u) * 0.75); }
-.toast.done .seal { animation: stamp 350ms ease-out; }
+.toast.done .seal { animation: stamp var(--m-arrive) ease-out; }
 .toast .sub { margin-top: calc(var(--u) * 0.5); font-family: var(--sans); font-size: 0.62em; letter-spacing: normal; color: var(--text-dim); text-shadow: 0 0 2px #000, 0 0 5px #000, 0 0 9px #000; }
 .toast.done::after, .toast.error::after { content: ""; display: block; height: 1px; margin-top: var(--u); background: linear-gradient(90deg, transparent, var(--gold-dim) 22%, var(--gold-dim) 78%, transparent); }
 .toast.error::after { background: linear-gradient(90deg, transparent, var(--err) 22%, var(--err) 78%, transparent); }
@@ -302,10 +323,20 @@ body.short-detail .welcome .portrait { display: none; }
 @keyframes stamp { from { transform: scale(1.35); filter: brightness(1.9); } 30% { filter: brightness(1); } to { transform: none; } }
 
 /* ---- Stream-safe: blur what was said, never what you approve ---- */
-body.blur .entry.user .body, body.blur .entry.assistant .body, body.blur .entry.reasoning, body.blur .tool-line .tsum, body.blur .tout,
-body.blur .obj, body.blur .tl-a, body.blur .catch-excerpt, body.blur .confirm pre, body.blur .held pre { filter: blur(6px); transition: filter 0.15s; }
-body.blur .entry.revealed .body, body.blur .entry.reasoning.revealed { filter: none; }
+body.blur .entry.user .body, body.blur .entry.assistant .body, body.blur .entry.reasoning .body, body.blur .tool-line .tsum, body.blur .tout,
+body.blur .obj, body.blur .tl-a, body.blur .catch-excerpt, body.blur .confirm pre, body.blur .held pre { filter: blur(7px) saturate(.5); transition: filter var(--m-fast); }
+body.blur .entry.revealed .body { filter: none; }
 body.blur .card .approval-preview, body.blur .entry.approval .card { filter: none; }
+/* The curtain (round 6 §2.3): a violet gauze with a gold edge over the blurred text, so it reads as drawn on purpose,
+   not as a smear. The veil is the entry's own ::after, outside the filtered text, so its edge stays crisp, and
+   pointer-events: none lets the reveal click reach the text; a reveal lifts it for as long as the text is clear. A tool's
+   output is itself the blurred element, so it sits in a wrapper (.tout-veil, overlay.ts) that carries its veil. */
+body.blur .entry.user, body.blur .entry.assistant, body.blur .entry.reasoning, body.blur .objectives, body.blur .tout-veil { position: relative; }
+body.blur .entry.user::after, body.blur .entry.assistant::after, body.blur .entry.reasoning::after, body.blur .objectives::after, body.blur .tout-veil::after {
+  content: ""; position: absolute; inset: 0; pointer-events: none; border-radius: var(--r);
+  background: linear-gradient(180deg, rgba(44, 26, 70, .55), rgba(22, 12, 38, .62)); border-top: 1px solid rgba(201, 162, 39, .4); transition: opacity var(--m-fast); }
+body.blur .entry.revealed::after { opacity: 0; }
+body.blur .entry.approval::after { content: none; } /* nothing is drawn over a card, by rule */
 
 .hljs-keyword, .hljs-selector-tag, .hljs-built_in { color: #ff9d6c; }
 .hljs-string, .hljs-attr { color: #b5e08a; }

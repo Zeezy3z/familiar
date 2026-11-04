@@ -179,6 +179,7 @@ when I sign in to Windows**, or `/fam autostart on` in game.
 | `/fam <text>` | send to the selected quest without opening the window |
 | `/fam claude <text>` / `/fam codex <text>` | start a quest in the current zone |
 | `/fam stop` · `tracker` · `strip tr` · `quiet on` · `diag` · `reload` · `help` | stop the agent, toggle the tracker, move the strip, mute ordinary notices, print diagnostics, … |
+| `/fam sound on` · `off` · `0-100` | cues on or off, or set their volume (also in the control panel, under **In game** → **Sounds**) |
 | `/fam stream on` · `off` | Stream-safe: hide names and blur replies on the Glass (see [Streaming](#streaming)) |
 | `/fam private on` · `off` | hide names only: project and quest names (see [Streaming](#streaming)) |
 | `/fam draft discard` | clear this character's unfinished composer draft |
@@ -272,7 +273,8 @@ defaults.
 | `hermesBotSessions` | `false` | list Hermes's Telegram/Discord/Slack conversations too (their message text is then read from Hermes's local database) |
 | `chatAgent` / `chatModel` / `chatEffort` | `claude` / `haiku` / `medium` | defaults for Chats |
 | `externalDays`, `externalPerZone`, `followDesktopArchive` | `21`, `6`, `true` | which desktop threads are listed |
-| `sound`, `speak`, `quiet`, `raidWarnings`, `fontScale`, `toolDetail` | | notices and display |
+| `sound` / `soundVolume` | `true` / `70` | six short cues (quest started, needs your approval, approved, Quest Complete, answer ready, Quest Failed), made in code; volume 0-100. Also in the control panel and `/fam sound` |
+| `speak`, `quiet`, `raidWarnings`, `fontScale`, `toolDetail` | | notices and display |
 | `trayNotices` | `true` | a Windows notice when a request is waiting and WoW isn't in front (control panel → **Advanced** → **Notices**) |
 | `privateMode` | `false` | Hide names (streaming): generic project/quest names, no desktop threads, generic notices (see [Streaming](#streaming)) |
 | `blurTranscript` | `false` | blur replies, sent messages and tool lines on the Glass; set together with `privateMode` by **Stream-safe** (see [Streaming](#streaming)) |
@@ -329,9 +331,13 @@ until you submit it there.
 
 ### Streaming
 
+<img src="docs/media/stream-safe.png" alt="The Glass with Stream-safe on: replies blurred behind a dark veil, the approval card still readable" width="720">
+
+*Rendered from the real overlay with sample data.*
+
 * **Stream-safe (the one switch to use):** control panel → **In game** → **Stream-safe**, or
   `/fam stream on|off` in game. It hides names (see **Hide names only** below), blurs replies, your
-  sent messages, tool lines and objectives on the Glass, and turns speech off. Click a blurred reply
+  sent messages, tool lines and objectives on the Glass under a dark veil, and turns speech off. Click a blurred reply
   to read it for 8 seconds. **Approval cards are never blurred**: you must see what you approve.
   What you type in the box is still on screen while you type it, and the control panel is a
   separate window on your PC that shows real names and whole requests, so keep it out of the

@@ -1591,7 +1591,7 @@ describe("always-on companion and offline honesty", () => {
     const model = () => buildModel(hub, { linked: true, fps: 30 });
     expect(model().attention?.map(item => item.label).sort()).toEqual(["Needs approval", "Reply waiting", "Reply waiting", "Request expired"].sort());
     expect(hub.toasts.some(t => t.kind === "done")).toBe(false);
-    expect(sounds).toEqual(["approval", "approval"]);
+    expect(sounds).toEqual(["accepted", "accepted", "accepted", "approval", "accepted", "approval"]);
     expect(spoken).toEqual([]);
     hub.toasts = []; // Simulate toast expiry; the saved events remain.
     hub.action({ type: "select", id: ids[0] });
@@ -1634,7 +1634,7 @@ describe("always-on companion and offline honesty", () => {
       claude.emit({ type: "done", threadId: first, status: "completed" });
       codex.emit({ type: "approval", threadId: second, requestId: "r1", kind: "command", title: "Run?", detail: "npm test", canAlways: false });
       expect(hub.toasts).toEqual([]);
-      expect(sounds).toEqual([]);
+      expect(sounds).toEqual(["accepted", "accepted"]); // the two starts, before the fight
       expect(spoken).toEqual([]);
       // The card, the marker and the Approve glow are the model's, and keep updating.
       const m = buildModel(hub, { linked: true, fps: 30 });
@@ -1645,7 +1645,7 @@ describe("always-on companion and offline honesty", () => {
       hub.setCombat(false);
       expect(hub.toasts.at(-1)!.text).toBe("While you fought: 1 quest finished · 1 needs approval");
       expect(hub.toasts.some((t) => t.kind === "approval" && t.threadId === second)).toBe(true);
-      expect(sounds).toEqual(["approval"]);
+      expect(sounds).toEqual(["accepted", "accepted", "approval"]);
       expect(spoken).toEqual(["While you fought: 1 quest finished, 1 needs approval"]);
       // One held notice comes back as it was; one decided during the fight doesn't come back.
       hub.setCombat(true);
@@ -1655,10 +1655,115 @@ describe("always-on companion and offline honesty", () => {
       hub.setCombat(false);
       expect(hub.toasts.at(-1)).toMatchObject({ kind: "error", text: "Quest Failed · first" });
       expect(hub.toasts.filter((t) => t.kind === "approval" && t.threadId === second)).toEqual([]);
-      expect(sounds).toEqual(["approval", "error"]);
+      expect(sounds).toEqual(["accepted", "accepted", "approval", "error"]);
     } finally {
       cfg.speak = beforeSpeak;
     }
+  });
+
+  it("six cues: accepted on every start, reply for a chat, approved once Approve or Always settles; Deny and refusals are silent", async () => {
+    const sounds: string[] = [];
+    const at: { kind: string; toast?: string; card?: string }[] = [];
+    let card: { approval?: string } | undefined;
+    hub.onSound = (k) => {
+      sounds.push(k);
+      at.push({ kind: k, toast: hub.toasts.at(-1)?.text, card: card?.approval });
+    };
+    const ask = (id: string, requestId: string, more: Record<string, unknown> = {}) => {
+      claude.emit({ type: "approval", threadId: id, requestId, kind: "command", title: "Run?", detail: "npm test", canAlways: true, ...more } as AgentEvent);
+      card = hub.threads.get(id)!.entries.find((e) => e.requestId === requestId);
+    };
+    // A quest set out (after its Started toast), and a chat from /fam ask.
+    await hub.quick("claude", "@familiar ship it");
+    const quest = hub.view.selected!;
+    expect(sounds).toEqual(["accepted"]);
+    expect(at[0].toast).toMatch(/^Started: ship it/);
+    await hub.ask("is the hearth lit?");
+    const chat = hub.view.selected!;
+    expect(sounds).toEqual(["accepted", "accepted"]);
+    // Answer ready is the chat's own cue; Quest Complete stays done; a failure stays error.
+    claude.emit({ type: "done", threadId: chat, status: "completed" });
+    claude.emit({ type: "done", threadId: quest, status: "completed" });
+    claude.emit({ type: "done", threadId: quest, status: "failed", error: "boom" });
+    expect(sounds.slice(2)).toEqual(["reply", "done", "error"]);
+    sounds.length = 0;
+
+    // Approve and Always: the stamp comes after the entry is settled.
+    ask(quest, "r1");
+    hub.action({ type: "decide", thread: quest, requestId: "r1", decision: "allow" }, OK);
+    expect(at.at(-1)).toMatchObject({ kind: "approved", card: "approved" });
+    ask(quest, "r2");
+    hub.action({ type: "decide", thread: quest, requestId: "r2", decision: "allowAlways" }, OK);
+    expect(at.at(-1)).toMatchObject({ kind: "approved", card: "always" });
+    expect(sounds).toEqual(["approval", "approved", "approval", "approved"]);
+    sounds.length = 0;
+    // Deny and Deny-and-stop: silence.
+    ask(quest, "r3");
+    hub.action({ type: "decide", thread: quest, requestId: "r3", decision: "deny" });
+    ask(quest, "r4");
+    hub.decide(quest, "r4", "denyAndStop");
+    expect(sounds).toEqual(["approval", "approval"]);
+    sounds.length = 0;
+    // Refused approvals are silent: no proof, too fresh, a cut card from the game.
+    ask(quest, "r5");
+    hub.action({ type: "decide", thread: quest, requestId: "r5", decision: "allow" });
+    expect(card).toMatchObject({ approval: "pending", refused: { why: "proof" } });
+    hub.minCardAgeMs = 60_000;
+    expect(hub.decide(quest, "r5", "allow")).toEqual({ ok: false, why: "fresh" });
+    hub.minCardAgeMs = 0;
+    ask(quest, "r6", { cut: true, full: "npm test -- the whole request" });
+    expect(hub.decide(quest, "r6", "allow")).toEqual({ ok: false, why: "cut" });
+    expect(sounds).toEqual(["approval", "approval"]);
+    // The panel's Approve is the player's own too: the stamp plays (in the game window, main's job).
+    expect(hub.decide(quest, "r6", "allow", "panel")).toEqual({ ok: true });
+    expect(hub.decide(quest, "r5", "deny", "panel")).toEqual({ ok: true });
+    expect(sounds).toEqual(["approval", "approval", "approved"]);
+    sounds.length = 0;
+
+    // Quiet play mutes the chat's reply like the quest's done; notices that need the player stay.
+    await hub.key("quiet", "on");
+    try {
+      await hub.ask("and the chimney?");
+      claude.emit({ type: "done", threadId: chat, status: "completed" });
+      claude.emit({ type: "done", threadId: quest, status: "completed" });
+      ask(quest, "r7");
+      expect(sounds).toEqual(["approval"]);
+    } finally {
+      await hub.key("quiet", "off");
+    }
+  });
+
+  it("in a fight the player's own cues are dropped, never held; held notices come back as one summary cue", async () => {
+    const sounds: string[] = [];
+    hub.onSound = (k) => sounds.push(k);
+    await hub.quick("claude", "@familiar first");
+    const quest = hub.view.selected!;
+    await hub.ask("is the hearth lit?");
+    const chat = hub.view.selected!;
+    sounds.length = 0;
+    hub.setCombat(true);
+    // A start and an Approve mid-fight: no cue now, and none when the fight ends.
+    await hub.quick("codex", "@beta second");
+    claude.emit({ type: "approval", threadId: quest, requestId: "r1", kind: "command", title: "Run?", detail: "npm test", canAlways: false });
+    hub.action({ type: "decide", thread: quest, requestId: "r1", decision: "allow" }, OK);
+    expect(claude.decisions).toEqual([{ requestId: "r1", d: "allow" }]);
+    expect(sounds).toEqual([]);
+    hub.setCombat(false);
+    expect(sounds).toEqual([]); // the decided request's notice went with it; nothing else was held
+    // One held answer comes back as it was, with its own cue.
+    hub.setCombat(true);
+    claude.emit({ type: "done", threadId: chat, status: "completed" });
+    expect(sounds).toEqual([]);
+    hub.setCombat(false);
+    expect(hub.toasts.at(-1)).toMatchObject({ kind: "done", generic: "Answer ready" });
+    expect(sounds).toEqual(["reply"]);
+    // An answer and a finished quest: one summary, still Quest Complete's cue (approval > error > done).
+    hub.setCombat(true);
+    claude.emit({ type: "done", threadId: chat, status: "completed" });
+    claude.emit({ type: "done", threadId: quest, status: "completed" });
+    hub.setCombat(false);
+    expect(hub.toasts.at(-1)!.text).toBe("While you fought: 2 quests finished");
+    expect(sounds).toEqual(["reply", "done"]);
   });
 
   it("catch-up acknowledgments are bound to final content, including corrections under the same item ID", async () => {
@@ -1848,6 +1953,46 @@ describe("always-on companion and offline honesty", () => {
     // FamiliarSync carries it too: the addon sizes its quest-list rows by it at the next login / reload.
     expect(buildSnapshot(hub)).toContain("\n  fontScale = 1.6,\n");
     Object.assign(cfg, before);
+  });
+
+  it("/fam sound 0-100 sets the volume the Glass plays cues at; on | off | toggle still switch Sounds", async () => {
+    const { soundMessage } = await import("../src/hub/hub");
+    const before = { sound: cfg.sound, soundVolume: cfg.soundVolume };
+    let saved: any;
+    hub.onConfigChanged = (c) => (saved = { ...c });
+    try {
+      expect(cfg.soundVolume).toBe(70);
+      expect(soundMessage(cfg, "approval")).toEqual({ kind: "approval", volume: 0.7 });
+      await hub.key("sound", "40");
+      expect(cfg.soundVolume).toBe(40);
+      expect(saved.soundVolume).toBe(40);
+      expect(hub.toasts.at(-1)!.text).toBe("Sound volume 40%");
+      expect(soundMessage(cfg, "approved")).toEqual({ kind: "approved", volume: 0.4 });
+      await hub.key("sound", "140");
+      expect(cfg.soundVolume).toBe(100); // clamped
+      expect(hub.toasts.at(-1)!.text).toBe("Sound volume 100%");
+      await hub.key("sound", "0");
+      expect(cfg.soundVolume).toBe(0);
+      expect(cfg.sound).toBe(true); // a volume is not the switch
+      await hub.key("sound", "55%");
+      expect(cfg.soundVolume).toBe(55);
+      // The switch is unchanged: on | off, and anything else toggles.
+      await hub.key("sound", "");
+      expect(cfg.sound).toBe(false);
+      expect(hub.toasts.at(-1)!.text).toBe("Sounds off.");
+      expect(soundMessage(cfg, "done")).toBeUndefined(); // Sounds off: nothing is sent
+      await hub.key("sound", "on");
+      expect(cfg.sound).toBe(true);
+      await hub.key("sound", "loud");
+      expect(cfg.sound).toBe(false);
+      expect(cfg.soundVolume).toBe(55);
+      // A hand-edited volume that isn't a number in range never reaches the Glass as one.
+      cfg.sound = true;
+      expect(soundMessage({ ...cfg, soundVolume: "loud" as any }, "reply")).toEqual({ kind: "reply", volume: 0.7 });
+      expect(soundMessage({ ...cfg, soundVolume: 250 }, "reply")).toEqual({ kind: "reply", volume: 1 });
+    } finally {
+      Object.assign(cfg, before);
+    }
   });
 
   it("font size arguments", async () => {
@@ -2122,6 +2267,24 @@ describe("config.json", () => {
     saveConfig({ ...c, sound: false });
     expect(loadConfig(() => {}).sound).toBe(false);
     expect(fs.readdirSync(dir).filter((f) => f.startsWith("config.json")).sort()).toEqual(["config.json", aside[0]]);
+  });
+
+  it("a hand-edited soundVolume is kept in 0-100; anything that isn't a number is the default", () => {
+    const file = path.join(appData, "Familiar", "config.json");
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const load = (v: unknown) => {
+      fs.writeFileSync(file, JSON.stringify({ soundVolume: v }), "utf8");
+      return loadConfig(() => {}).soundVolume;
+    };
+    expect(load(40)).toBe(40);
+    expect(load(250)).toBe(100);
+    expect(load(-5)).toBe(0);
+    expect(load(33.6)).toBe(34);
+    expect(load("loud")).toBe(70);
+    expect(load(null)).toBe(70);
+    expect(load(true)).toBe(70);
+    fs.writeFileSync(file, JSON.stringify({ sound: false }), "utf8");
+    expect(loadConfig(() => {})).toMatchObject({ sound: false, soundVolume: 70 });
   });
 });
 
@@ -2431,7 +2594,7 @@ describe("A Familiar Face (the tutorial quest)", () => {
     expect(t.todos.map((x) => x.status)).toEqual(["completed", "completed", "pending"]);
     expect(t.entries.findLast((e) => e.kind === "assistant")!.text).toMatch(/^The hearth is lit/);
     expect(h.toasts.map((x) => x.text)).toContain("Quest Complete · A Familiar Face");
-    expect(sounds).toEqual(["approval", "done"]);
+    expect(sounds).toEqual(["approval", "approved", "done"]);
     expect([claude.sent, codex.sent, claude.decisions, codex.decisions]).toEqual([[], [], [], []]); // nothing ran
     await h.prompt("anything else?");
     expect(t.entries.findLast((e) => e.kind === "assistant")!.text).toMatch(/^Nothing more to teach/);

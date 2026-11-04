@@ -20,4 +20,8 @@ describe("DEFAULT_CONFIG", () => {
     expect(DEFAULT_CONFIG.wowRoot).toBe("C:\\Program Files (x86)\\World of Warcraft");
     expect(JSON.stringify({ ...DEFAULT_CONFIG, wowRoot: undefined })).not.toContain("C:\\\\");
   });
+
+  it("plays cues at volume 70 of 100 until the player picks another", () => {
+    expect(DEFAULT_CONFIG.soundVolume).toBe(70);
+  });
 });

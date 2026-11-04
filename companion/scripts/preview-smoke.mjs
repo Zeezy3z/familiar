@@ -957,8 +957,10 @@ try {
   const status = await page.evaluate(() => { const p = window.preview; p.model.private = true;
     p.model.attention = p.model.attention.map(item => ({ ...item, cwd: '' })); p.emit('model', { ...p.model });
     const el = document.getElementById('status'); return { text: el.textContent, dot: getComputedStyle(el, '::before').content,
-      meta: [...document.querySelectorAll('.catch-meta')].map(e => e.textContent).join('|') }; });
-  check('status: level dot then text, and Hide names is announced', status.dot.includes('●') && status.text.endsWith(' · Hide names on'));
+      meta: [...document.querySelectorAll('.catch-meta')].map(e => e.textContent).join('|'),
+      chip: [...el.querySelectorAll('.chip')].pop()?.textContent ?? '' }; });
+  // Round 6: Hide names is announced as the last status chip, not a text suffix.
+  check('status: level dot then text, and Hide names is announced', status.dot.includes('●') && status.chip === 'Hide names on');
   check('quiet: Hide names leaves the folder out of catch-up notes', status.meta.length > 0 && !status.meta.includes('C:\\preview'));
   const glyphs = await page.evaluate(() => { const p = window.preview, el = document.getElementById('status'), seen = {};
     for (const level of ['warn', 'off', 'ok']) { p.model.status = { ...p.model.status, level }; p.emit('model', { ...p.model }); seen[level] = getComputedStyle(el, '::before').content; }

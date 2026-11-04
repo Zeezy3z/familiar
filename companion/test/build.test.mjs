@@ -351,25 +351,44 @@ describe("dist/claude-pins.json", () => {
   }, 120_000);
 });
 
+// Width and height from a JPEG's first start-of-frame segment (baseline FFC0 or progressive FFC2).
+function jpegSize(bytes) {
+  if (bytes[0] !== 0xff || bytes[1] !== 0xd8) return null;
+  for (let i = 2; i + 9 < bytes.length; ) {
+    if (bytes[i] !== 0xff) { i++; continue; }
+    const marker = bytes[i + 1];
+    if (marker === 0xc0 || marker === 0xc2) return [bytes.readUInt16BE(i + 7), bytes.readUInt16BE(i + 5)];
+    i += marker === 0xd8 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7) ? 2 : 2 + bytes.readUInt16BE(i + 2);
+  }
+  return null;
+}
+
 // The painted art the Glass (and the control panel) load by relative path "assets/<name>": the
-// real build script into a temp folder. One file per expression, sized by CSS; the budget is round 5 §2.5.
+// real build script into a temp folder. One file per expression, sized by CSS; the budget is round 5 §2.5
+// (round 6 §2.5 adds the control panel's workshop header, the first JPEG).
 describe("dist/assets", () => {
   const PNGS = { "idle-192.png": 192, "working-192.png": 192, "asleep-192.png": 192, "puzzled-192.png": 192, "seal-128.png": 128, "seal-cracked-128.png": 128,
     "tray.png": 16, "tray@2x.png": 32 };
-  it("the build ships the six painted PNGs beside the tray icon, each the size named, and no other image, under 1 MB", () => {
+  const JPEGS = { "workshop-1600.jpg": [1600, 400] };
+  it("the build ships the six painted PNGs and the workshop header JPEG beside the tray icon, each the size named, and no other image, under 1 MB", () => {
     const out = mkdtempSync(join(tmpdir(), "familiar-assets-"));
     fixtures.push(out);
     const companionDir = fileURLToPath(new URL("..", import.meta.url));
     execFileSync(process.execPath, [join(companionDir, "scripts/build.mjs"), out], { cwd: companionDir, stdio: "ignore" });
     const assets = join(out, "assets");
-    const pngs = readdirSync(assets).filter((f) => /\.(png|jpe?g|gif|webp|svg|tga)$/i.test(f)).sort(); // nothing but these (header-banner.png never ships)
-    expect(pngs).toEqual(Object.keys(PNGS).sort());
+    const images = readdirSync(assets).filter((f) => /\.(png|jpe?g|gif|webp|svg|tga)$/i.test(f)).sort(); // nothing but these (header-banner.png never ships)
+    expect(images).toEqual([...Object.keys(PNGS), ...Object.keys(JPEGS)].sort());
     for (const [name, size] of Object.entries(PNGS)) {
       const bytes = readFileSync(join(assets, name));
       expect(bytes.subarray(1, 4).toString(), name).toBe("PNG");
       expect([bytes.readUInt32BE(16), bytes.readUInt32BE(20)], name).toEqual([size, size]); // IHDR width, height
     }
-    expect(pngs.reduce((n, f) => n + statSync(join(assets, f)).size, 0)).toBeLessThanOrEqual(1024 * 1024);
+    for (const [name, size] of Object.entries(JPEGS)) {
+      const bytes = readFileSync(join(assets, name));
+      expect([...bytes.subarray(0, 2)], name).toEqual([0xff, 0xd8]); // SOI
+      expect(jpegSize(bytes), name).toEqual(size); // SOF0/SOF2 width, height
+    }
+    expect(images.reduce((n, f) => n + statSync(join(assets, f)).size, 0)).toBeLessThanOrEqual(1024 * 1024);
     expect(existsSync(join(assets, "marcellus-latin-400-normal.woff2"))).toBe(true);
   }, 120_000);
 });

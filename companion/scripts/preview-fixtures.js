@@ -42,7 +42,7 @@
     update: updateAvailable ? { app: "0.2.0", addon: "0.3.0", mismatch: true } : { app: "0.2.0", addon: "0.2.0", mismatch: false },
     ...(doctorStrip ? { doctor: { step: "strip", level: "warn", text: "Familiar sees the game but no coloured strip in its top-left corner. In game: is Familiar ticked in AddOns? Type /fam strip — it should say TOPLEFT. If something covers that corner, /fam strip tr." } }
       : linked ? { doctor: { step: "ok", level: "ok", text: "Game link working." } } : {}),
-    ui: { fontScale: 1, sound: false, raidWarnings: false, quiet: scenario === "quiet", trayNotices: true }, chat: { agent: "claude", model: "haiku", effort: "medium" },
+    ui: { fontScale: 1, sound: false, soundVolume: 70, raidWarnings: false, quiet: scenario === "quiet", trayNotices: true }, chat: { agent: "claude", model: "haiku", effort: "medium" },
     providers: [
       { id: "claude", label: "Claude", glyph: "✦", installed: true, signedIn: scenario !== "setup", enabled: true, detail: scenario === "setup" ? "Not signed in" : "Sign-in found", canLogin: true },
       { id: "codex", label: "Codex", glyph: "◇", installed: true, signedIn: true, enabled: true, detail: "Sign-in found", canLogin: true },
@@ -196,6 +196,9 @@
     model.list.rows = [{ kind: "zone", key: "preview", text: "Preview project", count: 4 }, ...Object.values(quietDetails).map(d => ({ kind: "thread", key: d.id, text: d.title, agent: d.agent, status: d.status, selected: d.id === "r1", act: { type: "select", id: d.id } }))];
     model.tracker = [{ id: "r1", agent: "claude", title: "4 waiting for you", project: "Quiet play", status: "idle", activity: "/fam opens your saved catch-up notes" }];
   }
+  // waiting: the quest is idle and a reply waits for you (the Glass paints "?" on the minimap button, fixtureLayout.mini).
+  if (scenario === "waiting") model.attention = [{ thread: "preview", entry: "a1", revision: "fixture:a1", title: "Quest log", project: "Preview project", cwd: "C:\\preview", agent: "claude",
+    mode: "Ask first", label: "Reply waiting", excerpt: "I checked the spacing and the message target.", pending: false, at: 1 }];
   window.familiar = {
     on: (channel, cb) => { (handlers[channel] ||= []).push(cb); }, send: () => {}, action: a => {
       calls.push(a);
@@ -299,7 +302,9 @@
   if (!glass) setInterval(() => { window.preview.emit("status", state); }, 1000);
   if (glass) window.addEventListener("DOMContentLoaded", () => {
     const fixtureLayout = { scr: [1280, 800], px: 1.25, panel: true, native: false, drag: false, combat: false, ui: true, rowH: 24, list: [30, 100, 280, 500], detail: [320, 100, 650, 500], status: [30, 610, 940, 28],
-      keys: { mode: [828, 74, 64, 22] }, tracker: [990, 100, 270, 140] };
+      keys: { mode: [828, 74, 64, 22] }, tracker: [990, 100, 270, 140],
+      mini: [1180, 40, 31, 31] }; // the familiar's minimap button (round 6): the Glass paints its "!" / "?" mark from this rect
+    window.preview.layout = fixtureLayout;
     document.body.style.background = "#201c24";
     const label = document.createElement("p");
     label.textContent = "Synthetic Glass preview · no WoW process or agent calls";

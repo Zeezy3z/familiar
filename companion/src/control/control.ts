@@ -4,12 +4,15 @@
 import { approveKeyStatus, claudeLine, journey, portraitFor } from "./journey";
 import { buildPresentation, restartGuidance, updateLine, versionMismatch } from "./build";
 import type { ControlBridge } from "../shared/bridge";
+import { CUES, cueLabel, playCue } from "../shared/cues";
 const bridge = window.familiar as ControlBridge;
 
 const $ = (id: string) => document.getElementById(id)!;
 const esc = (s: unknown) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 const kv = (rows: [string, unknown, string?][]) => rows.map(([k, v, cls]) => `<div>${esc(k)}</div><div class="${cls ?? ""}">${esc(v)}</div>`).join("");
 const text = (id: string, value: string) => { if ($(id).textContent !== value) $(id).textContent = value; };
+// Replay the one-shot "arrive" slide on an element whose content just changed (reduced motion switches it off in CSS).
+const arrive = (el: HTMLElement) => { el.classList.remove("arrive"); void el.offsetWidth; el.classList.add("arrive"); };
 const feedback = (message: string, level: "ok" | "warn" | "err") => { $("feedback").textContent = message; $("feedback").className = `wide ${level}`; };
 
 let paused = false;
@@ -18,7 +21,7 @@ function render(s: any) {
   paused = !!s.overlay?.paused;
   $("b-pause").textContent = paused ? "Resume overlay" : "Pause overlay";
   const j = journey(s);
-  text("journey-title", j.title);
+  if ($("journey-title").textContent !== j.title) { text("journey-title", j.title); arrive($("journey-title")); }
   $("journey-title").className = j.level;
   text("journey-text", j.text);
   const portrait = `assets/${portraitFor(s, j.current)}-192.png`;
@@ -378,6 +381,30 @@ $("journey-action").addEventListener("click", (e) => {
 });
 
 // In game: text size, sounds, notices as raid warnings.
+// Sounds: a volume (sent when the slider is released, not on every tick) and a preview. Play a sample plays the six
+// cues in the panel itself, one per click, through the same playCue the Glass uses, so they can be heard without the game.
+const DEFAULT_VOLUME = 70;
+const volume = $("ui-volume") as HTMLInputElement;
+const SOUND_HINT = "Cues for quest started, needs your approval, approved, Quest Complete, answer ready and Quest Failed. Silent while a quest works. Also /fam sound on | off | 0-100.";
+function showVolume(v: number) { volume.value = String(v); text("ui-volume-out", volume.value); }
+function showSoundHint(on: boolean) { text("ui-sound-hint", on ? SOUND_HINT : SOUND_HINT + " Sounds are off in game."); }
+let audio: AudioContext | undefined;
+let sampleNext = 0;
+$("b-sound-sample").addEventListener("click", (e) => {
+  if (!e.isTrusted) return; // sound only ever follows a real click, never a script
+  const cue = CUES[sampleNext % CUES.length];
+  try {
+    audio ??= new AudioContext();
+    if (audio.state === "suspended") void audio.resume();
+    playCue(audio, cue, Number(volume.value) / 100);
+    sampleNext++;
+    text("sound-sample", `Played: ${cueLabel(cue)}`);
+  } catch {
+    text("sound-sample", "This window could not play the sample.");
+  }
+});
+volume.addEventListener("input", () => text("ui-volume-out", volume.value));
+volume.addEventListener("change", () => setUi({ soundVolume: Number(volume.value) }, `Sound volume ${volume.value}%`));
 const fontSel = $("ui-font") as HTMLSelectElement;
 for (let p = 80; p <= 160; p += 10) fontSel.add(new Option(`${p}%${p === 100 ? " (default)" : ""}`, String(p / 100)));
 // Display only: warn while the chosen default lets new quests act without asking.
@@ -393,10 +420,12 @@ function setModeWarn(v: string) {
   b.hidden = !risky(v);
   b.textContent = risky(v) ? `Default: ${v === "auto" ? "Auto" : "Accept edits"}` : "";
 }
-function renderUi(ui?: { fontScale: number; sound: boolean; raidWarnings: boolean; trayNotices?: boolean; quiet?: boolean; privateMode?: boolean; streamSafe?: boolean; defaultMode?: string; approveKey?: string }) {
+function renderUi(ui?: { fontScale: number; sound: boolean; soundVolume?: number; raidWarnings: boolean; trayNotices?: boolean; quiet?: boolean; privateMode?: boolean; streamSafe?: boolean; defaultMode?: string; approveKey?: string }) {
   if (!ui) return;
   if (document.activeElement !== fontSel) fontSel.value = String(Math.round(ui.fontScale * 10) / 10);
   ($("ui-sound") as HTMLInputElement).checked = ui.sound;
+  if (document.activeElement !== volume) showVolume(Number.isFinite(ui.soundVolume) ? ui.soundVolume! : DEFAULT_VOLUME); // an older main sends no volume
+  showSoundHint(ui.sound);
   ($("ui-raid") as HTMLInputElement).checked = ui.raidWarnings;
   ($("ui-tray") as HTMLInputElement).checked = ui.trayNotices !== false; // on unless switched off
   ($("ui-quiet") as HTMLInputElement).checked = !!ui.quiet;

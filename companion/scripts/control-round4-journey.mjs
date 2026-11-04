@@ -252,5 +252,61 @@ export async function controlRound4Journey(page, origin, width, snapshot = async
   await page.waitForFunction(() => window.preview.calls.some(c => c.cmd === 'uiSettings'));
   check('notices: unticking sends one trayNotices preference and the box stays off', JSON.stringify(await page.evaluate(() => window.preview.calls.filter(c => c.cmd === 'uiSettings').map(c => c.args))) === '[{"trayNotices":false}]'
     && !await page.locator('#ui-tray').isChecked());
+
+  // ---- Round 6: the workshop header ----
+  await open();
+  const band = await page.evaluate(async () => {
+    const h = document.querySelector('header'), r = h.getBoundingClientRect();
+    const status = await fetch('assets/workshop-1600.jpg').then(res => res.status, () => 0);
+    const img = await new Promise(done => { const i = new Image(); i.onload = () => done([i.naturalWidth, i.naturalHeight]); i.onerror = () => done([0, 0]); i.src = 'assets/workshop-1600.jpg'; });
+    return { bg: getComputedStyle(h).backgroundImage, status, img, height: r.height,
+      clipped: [...h.children].filter(c => c.getClientRects().length).some(c => { const b = c.getBoundingClientRect(); return b.right > r.right + 1 || b.left < r.left - 1; }),
+      overflow: h.scrollWidth > h.clientWidth + 1 };
+  });
+  check('header: the painted desk sits behind the title, the image is served (200) and decodes at 1600×400', band.bg.includes('workshop-1600.jpg') && band.status === 200 && band.img[0] === 1600 && band.img[1] === 400);
+  check('header: at least 112 px tall, and its badges wrap inside it at this width without clipping', band.height >= 112 && !band.clipped && !band.overflow);
+  await snapshot(`control-${width}-header`);
+
+  // ---- Round 6: Sounds ----
+  await open();
+  await page.evaluate(() => { // a counting stand-in for the Web Audio API: any node, any method; nothing is heard
+    const audio = window.__audio = { contexts: 0, nodes: 0 };
+    const node = () => { audio.nodes++; return new Proxy(function () {}, { get: (t, k) => k === 'then' ? undefined : k === 'length' ? 0 : node(), set: () => true, apply: () => node() }); };
+    window.AudioContext = class { constructor() { audio.contexts++; this.currentTime = 0; this.sampleRate = 44100; this.state = 'running'; this.destination = node(); }
+      resume() { return Promise.resolve(); } createBuffer() { return node(); } createOscillator() { return node(); } createGain() { return node(); } createBiquadFilter() { return node(); } createBufferSource() { return node(); } };
+  });
+  const audio = () => page.evaluate(() => ({ ...window.__audio }));
+  const uiCalls = () => page.evaluate(() => JSON.stringify(window.preview.calls.filter(c => c.cmd === 'uiSettings').map(c => c.args)));
+  const sample = () => page.locator('#sound-sample').textContent();
+  check('sounds: the volume slider runs 0 to 100 in steps of 5 and reads 70 from the fixture', await page.locator('#ui-volume').evaluate(el => el.type === 'range' && el.min === '0' && el.max === '100' && el.step === '5' && el.value === '70')
+    && await page.locator('#ui-volume-out').textContent() === '70');
+  check('sounds: nothing is played, built or said until a click', (await audio()).contexts === 0 && await sample() === '');
+  await page.evaluate(() => document.getElementById('b-sound-sample').click());
+  check('sounds: a click made by script plays nothing', (await audio()).contexts === 0 && await sample() === '');
+  await page.locator('#ui-volume').evaluate(el => { el.value = '35'; el.dispatchEvent(new Event('input', { bubbles: true })); });
+  check('sounds: dragging shows the number but sends nothing yet', await page.locator('#ui-volume-out').textContent() === '35' && await uiCalls() === '[]');
+  await page.locator('#ui-volume').fill('40');
+  await page.waitForFunction(() => window.preview.calls.some(c => c.cmd === 'uiSettings'));
+  check('sounds: releasing the slider sends one soundVolume preference and the panel keeps it', await uiCalls() === '[{"soundVolume":40}]'
+    && await page.locator('#ui-volume').inputValue() === '40' && await page.locator('#ui-volume-out').textContent() === '40' && (await page.locator('#feedback').textContent()).includes('Sound volume 40%'));
+  await page.locator('#b-sound-sample').click();
+  const first = await sample();
+  await page.locator('#b-sound-sample').click();
+  const second = await sample();
+  const built = await audio();
+  check('sounds: Play a sample names the cues in order, one per click, with one AudioContext, whether or not Sounds is ticked', first === 'Played: Quest started' && second === 'Played: Needs your approval'
+    && built.contexts === 1 && built.nodes > 0 && !await page.locator('#ui-sound').isChecked());
+  for (let i = 0; i < 5; i++) await page.locator('#b-sound-sample').click();
+  check('sounds: after six samples the cycle starts again at Quest started', await sample() === 'Played: Quest started' && (await audio()).contexts === 1);
+  const hint = () => page.locator('#ui-sound-hint').textContent();
+  check('sounds: the hint names the six cues and the slash command, and says the sounds are off in game while unticked',
+    (await hint()).startsWith('Cues for quest started, needs your approval, approved, Quest Complete, answer ready and Quest Failed. Silent while a quest works. Also /fam sound on | off | 0-100.') && (await hint()).endsWith('Sounds are off in game.'));
+  await page.locator('#ui-sound').check();
+  await page.waitForFunction(() => !document.getElementById('ui-sound-hint').textContent.includes('off in game'));
+  await page.locator('#ui-sound').uncheck();
+  await page.waitForFunction(() => document.getElementById('ui-sound-hint').textContent.endsWith('Sounds are off in game.'));
+  check('sounds: ticking Sounds drops the off line and unticking brings it back', (await hint()).endsWith('Sounds are off in game.'));
+  check('sounds: the line under the essentials lists /fam sound on | off | 0-100', (await page.locator('#essentials').textContent()).includes('/fam sound on | off | 0-100, /fam stream on | off'));
+  await snapshot(`control-${width}-sounds`);
   return results;
 }

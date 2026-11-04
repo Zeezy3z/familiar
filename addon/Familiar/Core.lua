@@ -349,7 +349,7 @@ local HELP = {
   "/fam tutorial - replay A Familiar Face, the practice quest",
   "/fam font bigger | smaller | reset | 80-160 - text size in the Familiar window (the quest list follows at once)",
   "/fam opacity [0-100] - window background opacity; no number opens Options -> AddOns -> Familiar",
-  "/fam sound [on | off] - chimes when a quest finishes, needs approval or fails",
+  "/fam sound [on | off | 0-100] - chimes when a quest finishes, needs approval or fails",
   "/fam warnings [on | off] - notices as raid warnings (mid-screen) or small in the Familiar window",
   "/fam native - toggle native (copyable) view of the current transcript",
   "/fam focus [game | stay] - after sending, give the keyboard back to the game (default) or keep typing",
@@ -437,7 +437,8 @@ SlashCmdList.FAMILIAR = function(input)
     local n = #ns.db.outbox
     ns.db.outbox = {}
     ns.Print(("dropped %d unsent message%s."):format(n, n == 1 and "" or "s"))
-  elseif (cmd == "autostart" or cmd == "sound" or cmd == "warnings" or cmd == "quiet" or cmd == "private" or cmd == "stream") and (rest == "" or rest:lower() == "on" or rest:lower() == "off") then
+  elseif (cmd == "autostart" or cmd == "sound" or cmd == "warnings" or cmd == "quiet" or cmd == "private" or cmd == "stream") and (rest == "" or rest:lower() == "on" or rest:lower() == "off"
+      or (cmd == "sound" and rest:match("^%d+%%?$"))) then -- /fam sound 40 | 55%: the volume, for the companion
     ns.Send({ t = "key", k = cmd, a = rest:lower(), view = ns.UI.focusMode and "focus" or "full" }, true)
   elseif cmd == "font" and IsFontArg(rest) then
     -- The quest list's rows are native, so they follow here and now; the companion sets the rest.
@@ -464,6 +465,8 @@ SlashCmdList.FAMILIAR = function(input)
       names[i] = ok and desc or "?"
     end
     ns.Print("icon: " .. (ns.iconSource == "own" and "own" or ns.iconSource == "fallback" and "fallback (game imp)" or "not drawn"))
+    local mini = ns.Layout.prect(ns.Minimap.button)
+    ns.Print(mini and ("minimap: %d,%d %d\195\151%d"):format(mini[1], mini[2], mini[3], mini[4]) or "minimap: hidden")
     ns.Print("under cursor: " .. (#names > 0 and table.concat(names, ", ") or "nothing"))
     ns.Print(("native JSON %s - snapshot %s - window %s - tracker %s"):format(
       (C_EncodingUtil and C_EncodingUtil.SerializeJSON) and "yes" or "no",
