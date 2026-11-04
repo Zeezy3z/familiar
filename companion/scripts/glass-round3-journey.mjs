@@ -259,5 +259,47 @@ export async function glassRound3Journey(page, origin) {
   const narrow = await page.evaluate(() => { const s = document.getElementById('detail-scroll'), img = document.querySelector('.welcome img.portrait').getBoundingClientRect();
     return { fits: s.scrollWidth <= s.clientWidth + 1, face: img.width, text: document.querySelector('.welcome .big').textContent }; });
   check('welcome: in a narrow pane at large text the face shrinks to 48 px and nothing spills sideways', narrow.fits && narrow.face === 48 && narrow.text === "I can't see the game yet.");
+
+  // ---- round 6 §2.1 the cues: the Glass plays shared/cues.ts through one AudioContext of its own (a counting stub stands in for WebAudio)
+  await open('finished');
+  await page.evaluate(() => {
+    const made = window.cuesMade = { contexts: 0, oscillators: 0, buffers: 0, started: 0, stopped: 0, peaks: [] };
+    const param = peaks => ({ setValueAtTime() {}, exponentialRampToValueAtTime() {}, linearRampToValueAtTime(v) { peaks?.push(v); } });
+    window.AudioContext = class {
+      constructor() { made.contexts++; this.currentTime = 0; this.sampleRate = 8000; this.state = 'running'; this.destination = {}; }
+      source(extra) { return { ...extra, connect() {}, start() { made.started++; }, stop() { made.stopped++; } }; }
+      createOscillator() { made.oscillators++; return this.source({ frequency: param() }); }
+      createBufferSource() { made.buffers++; return this.source({}); }
+      createBuffer(c, n) { return { getChannelData: () => new Float32Array(n) }; }
+      createBiquadFilter() { return { frequency: param(), Q: param(), connect() {} }; }
+      createGain() { const first = []; made.peaks.push(first); return { gain: param(first), connect() {} }; }
+    };
+  });
+  const cues = () => page.evaluate(() => ({ ...window.cuesMade, peaks: window.cuesMade.peaks.map(p => p[0]) }));
+  const emitCue = payload => page.evaluate(payload => window.preview.emit('sound', payload), payload);
+  await emitCue({ kind: 'approval', volume: 0.7 });
+  let heard = await cues();
+  check('cues: a sound event builds one context and plays the bell: four oscillators, each started and stopped', heard.contexts === 1 && heard.oscillators === 4 && heard.buffers === 0
+    && heard.started === 4 && heard.stopped === 4);
+  check('cues: the volume sent scales every voice (0.7 of 0.14, 0.05, 0.12, 0.04)', [0.098, 0.035, 0.084, 0.028].every((v, i) => Math.abs(heard.peaks[i] - v) < 1e-9));
+  await emitCue({ kind: 'approval', volume: 0.7 });
+  heard = await cues();
+  check('cues: a second cue reuses the context', heard.contexts === 1 && heard.oscillators === 8);
+  await emitCue('done');
+  heard = await cues();
+  check('cues: a bare cue name from an older main still plays, at the default volume', heard.contexts === 1 && heard.oscillators === 8 + 7
+    && Math.abs(heard.peaks[8] - 0.09 * 0.7) < 1e-9);
+  await emitCue({ kind: 'approved', volume: 1 });
+  heard = await cues();
+  check('cues: the stamp is a noise tap and a thump', heard.oscillators === 8 + 7 + 1 && heard.buffers === 1);
+  const silent = await cues();
+  await emitCue({ kind: 'reply', volume: 0 });
+  await emitCue({ kind: 'nope', volume: 1 });
+  await emitCue({ volume: 1 });
+  await emitCue(null);
+  await emitCue(42);
+  heard = await cues();
+  check('cues: volume 0, an unknown cue and a malformed event play nothing and break nothing', heard.contexts === 1 && heard.oscillators === silent.oscillators && heard.buffers === silent.buffers
+    && heard.started === silent.started && heard.peaks.length === silent.peaks.length);
   return results;
 }

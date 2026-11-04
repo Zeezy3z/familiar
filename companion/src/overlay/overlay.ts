@@ -8,6 +8,7 @@ import type { DetailModel, EntryView, RenderModel, Row, TrackerLine } from "../h
 import { threadState } from "./thread-state";
 import { approvalPreview } from "./approval-preview";
 import type { OverlayBridge } from "../shared/bridge";
+import { CUES, type Cue, DEFAULT_CUE_VOLUME, playCue } from "../shared/cues";
 const bridge = window.familiar as OverlayBridge;
 
 // Round-3 model fields (docs: UX round 3 §9). Read as optional so the Glass renders models from
@@ -812,27 +813,15 @@ bridge.on("vis", (v: { visible: boolean; devInput?: boolean }) => {
 });
 window.addEventListener("resize", () => applyLayout());
 
-// ---- audio: synthesized chimes (no assets) and optional speech ---------------------------------
+// ---- audio: the six synthesized cues (shared/cues.ts; no assets) and optional speech ----------------
+// Main sends { kind, volume } (volume 0..1, cfg.soundVolume / 100); an older main sends the bare cue
+// name, played at the default volume. Anything else is ignored. The context is built on the first cue.
 let audio: AudioContext | null = null;
-function chime(kind: "done" | "approval" | "error") {
-  audio ??= new AudioContext();
-  const notes = kind === "done" ? [659, 880, 1319] : kind === "approval" ? [880, 660, 880] : [330, 247];
-  const t0 = audio.currentTime;
-  notes.forEach((f, i) => {
-    const o = audio!.createOscillator();
-    const g = audio!.createGain();
-    o.type = "triangle";
-    o.frequency.value = f;
-    const t = t0 + i * 0.11;
-    g.gain.setValueAtTime(0, t);
-    g.gain.linearRampToValueAtTime(0.12, t + 0.015);
-    g.gain.exponentialRampToValueAtTime(0.001, t + 0.5);
-    o.connect(g).connect(audio!.destination);
-    o.start(t);
-    o.stop(t + 0.55);
-  });
-}
-bridge.on("sound", (k: any) => chime(k));
+bridge.on("sound", (p: unknown) => {
+  const { kind, volume } = (typeof p === "string" ? { kind: p } : (p ?? {})) as { kind?: unknown; volume?: unknown };
+  if (typeof kind !== "string" || !(CUES as readonly string[]).includes(kind)) return;
+  playCue((audio ??= new AudioContext()), kind as Cue, typeof volume === "number" && Number.isFinite(volume) ? volume : DEFAULT_CUE_VOLUME);
+});
 bridge.on("speak", (text: string) => {
   try {
     const u = new SpeechSynthesisUtterance(text);
