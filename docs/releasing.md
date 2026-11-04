@@ -127,6 +127,10 @@ with progress and **Retry** in the Familiars card). Both jobs fail unless:
 * `Familiar.exe --self-test` reads the pins and reports `skip Claude Code (claude --version): not
   downloaded yet` (a fresh runner has no `%LOCALAPPDATA%\Familiar\claude`).
 
+Uninstalling (`companion/build/installer.nsh`) removes the startup entry and the downloaded Claude
+Code (`%LOCALAPPDATA%\Familiar\claude`); an update keeps both. `%APPDATA%\Familiar` (config, saved
+quests, log) and the addon copied into WoW are always left in place.
+
 **Publish the installer only when `SIGNING_READY` is `true`,** never an unsigned one. Set it after a
 manual run of `installer.yml` on `main` has passed (step 5 below).
 
