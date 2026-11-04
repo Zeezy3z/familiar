@@ -5,7 +5,7 @@
 //   FAMILIAR_QA_MODULE=<path to playwright/index.mjs> node scripts/render-media.mjs [--out <dir>] [--gif]
 //   (npm run media -- --gif)
 //
-// Output (default ../docs/media): quest-log.png working.png approval.png complete.png control.png
+// Output (default ../docs/media): quest-log.png working.png approval.png stream-safe.png complete.png control.png
 // at device scale 2, and with --gif familiar.gif (needs ffmpeg on PATH; skipped with a notice otherwise).
 // Every frame carries a visible "PREVIEW" label: these are not live game footage.
 // The window frame, buttons and backdrop are simple stand-ins drawn here in CSS (no Blizzard art);
@@ -183,6 +183,31 @@ const SCENES = {
       entries: [
         { id: "p1", kind: "approval", title: "Edit src/plants.json", approval: "pending", requestId: "media", canAlways: true,
           text: "  { \"name\": \"Basil\", \"lastWatered\": \"2026-10-30\",\n-   \"sun\": \"full\" }\n+   \"sun\": \"full\", \"wateringDays\": 2 }" }] }),
+  },
+  // Stream-safe on (round 6 §2.3): what the viewers of a stream see. The hub aliases names (Project 1, Quest #1) and the tracker
+  // says only what state a quest is in; replies, your messages, tool lines and objectives sit blurred behind the veil, and the
+  // approval card stays readable. The fixture scenario already sets blur and private on the model.
+  "stream-safe": {
+    scenario: "stream-safe", top: 50, disabledKeys: [],
+    patch: {
+      list: { title: "Quest Log", rows: [
+        { kind: "zone", key: "chats", text: "Chats", count: 1 },
+        { kind: "thread", key: "c1", text: "Quest #2", agent: "codex", status: "idle", act: sel("c1") },
+        { kind: "zone", key: "p1", text: "Project 1", count: 1 },
+        { kind: "thread", key: "garden-water", text: "Quest #1", agent: "claude", status: "approval", selected: true, act: sel("garden-water") },
+      ] },
+      target: { text: "Claude · Quest #1 · Project 1" }, status, toasts: [],
+      keys: { approve: true, stop: true, mode: "Ask first" },
+      tracker: [
+        { id: "garden-water", agent: "claude", title: "Quest #1", project: "Project 1", status: "approval", activity: "Needs your approval", progress: "2/3", cost: "$0.14" },
+        { id: "c1", agent: "codex", title: "Quest #2", project: "Chats", status: "idle", activity: "Finished", cost: "8.2k tokens" },
+      ],
+    },
+    detail: thread({ title: "Quest #1", project: "Project 1", cwd: "", status: "approval", todos: [],
+      entries: [READ,
+        { id: "a1", kind: "assistant", text: "I'll add a `wateringDays` field to every plant." },
+        { id: "p1", kind: "approval", title: "Edit src/plants.json", approval: "pending", requestId: "media-stream", canAlways: true,
+          text: "-   \"sun\": \"full\" }\n+   \"sun\": \"full\", \"wateringDays\": 2 }" }] }),
   },
   complete: {
     scenario: "quest-complete", top: COMPLETE_TOP, disabledKeys: ["approve", "stop"],

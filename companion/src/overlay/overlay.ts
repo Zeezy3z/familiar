@@ -8,6 +8,7 @@ import type { DetailModel, EntryView, RenderModel, Row, TrackerLine } from "../h
 import { threadState } from "./thread-state";
 import { approvalPreview } from "./approval-preview";
 import type { OverlayBridge } from "../shared/bridge";
+import { CUES, type Cue, DEFAULT_CUE_VOLUME, playCue } from "../shared/cues";
 const bridge = window.familiar as OverlayBridge;
 
 // Round-3 model fields (docs: UX round 3 §9). Read as optional so the Glass renders models from
@@ -35,6 +36,7 @@ interface Layout {
   status?: Rect;
   keys?: Record<string, Rect>;
   tracker?: Rect;
+  mini?: Rect; // the familiar's minimap button (round 6; absent from an older addon, or while the button is hidden)
   occ?: Rect[];
   op?: number; // window background opacity, percent (absent: 100)
 }
@@ -78,6 +80,7 @@ const els = {
   glowApprove: $("glow-approve"),
   glowStop: $("glow-stop"),
   modeLabel: $("mode-label"),
+  miniBadge: $("mini-badge"),
   target: $("target"),
   latest: $("latest"),
 };
@@ -180,14 +183,15 @@ function setVar(name: string, value: string) {
   document.documentElement.style.setProperty(name, value);
 }
 
-function clipFor(el: HTMLElement, r?: Rect) {
+// `pad`: how far the element's own paint reaches outside its rect (the minimap badge's mark does).
+function clipFor(el: HTMLElement, r?: Rect, pad = 0) {
   if (!r || !layout?.occ?.length) {
     el.style.clipPath = "";
     return;
   }
   const w = r[2] * k,
     h = r[3] * k;
-  let d = `M0 0H${w}V${h}H0Z`;
+  let d = `M${-pad} ${-pad}H${w + pad}V${h + pad}H${-pad}Z`;
   for (const o of layout.occ) {
     const x = (o[0] - r[0]) * k,
       y = (o[1] - r[1]) * k,
@@ -208,7 +212,7 @@ function layoutShape(): string {
   if (!layout) return "";
   const size = (r?: Rect) => (r ? `${r[2]}x${r[3]}` : "-");
   return [window.innerWidth / layout.scr[0], layout.panel, layout.drag, layout.ui, layout.native, layout.focus, layout.rowH, layout.fpx, layout.px, layout.op,
-    size(layout.list), size(layout.detail), size(layout.status), size(layout.tracker), size(layout.keys?.approve), size(layout.keys?.stop), size(layout.keys?.mode),
+    size(layout.list), size(layout.detail), size(layout.status), size(layout.tracker), size(layout.mini), size(layout.keys?.approve), size(layout.keys?.stop), size(layout.keys?.mode),
     JSON.stringify(layout.occ ?? []), model?.fontScale, model?.raidWarnings, model?.tracker.length, !!model?.keys.approve, !!model?.keys.stop, !!keysOf(model)?.mode].join("|");
 }
 
@@ -225,6 +229,7 @@ function applyLayout(moveOnly = false) {
     place(els.glowApprove, layout.keys?.approve, panelOn && !!model?.keys.approve);
     place(els.glowStop, layout.keys?.stop, panelOn && !!model?.keys.stop);
     place(els.modeLabel, layout.keys?.mode, panelOn && !!keysOf(model)?.mode);
+    placeMiniBadge(false); // a move only: the clip path waits for the settled pass, like the panes'
     if (settleTimer) clearTimeout(settleTimer);
     settleTimer = setTimeout(() => { settleTimer = undefined; lastShape = ""; applyLayout(); }, 120);
     return;
@@ -260,6 +265,7 @@ function applyLayout(moveOnly = false) {
   place(els.modeLabel, layout.keys?.mode, panelOn && !!keysOf(model)?.mode);
   clipFor(els.modeLabel, layout.keys?.mode);
   fitModeLabel();
+  placeMiniBadge();
   // Toasts: centred near the top of the game, like raid warnings; or (raid warnings off) small,
   // across the top of the transcript, only while the Familiar window is open.
   const raid = model?.raidWarnings !== false;
@@ -278,6 +284,37 @@ function applyLayout(moveOnly = false) {
   else els.toasts.style.opacity = "1";
   syncDetailScroll();
 }
+
+// The familiar calls from the minimap (round 6 §2.2): a quest giver's mark at the top-right of the
+// addon's minimap button, painted from the rect the addon reports (layout.mini; no rect, no badge).
+// "!" while a request waits for you, "?" while a reply waits, nothing otherwise. A picture only: no hit
+// rect, no text but the glyph (so Hide names and Stream-safe need no care). It is shown with the window
+// closed too (the button is always there), and hidden while the window is dragged or the UI is hidden.
+const MINI_REACH = 0.12; // the mark sticks out of the button's rect by this fraction (overlay.css)
+let miniGlyph = "";
+function placeMiniBadge(clip = true) {
+  const items = model?.attention ?? [];
+  const glyph = items.some((i) => i.pending) ? "!" : items.length ? "?" : "";
+  const el = els.miniBadge;
+  const rect = layout?.mini;
+  place(el, rect, !!glyph && !!layout && layout.ui !== false && !layout.drag);
+  el.dataset.glyph = glyph;
+  if (rect) {
+    el.style.setProperty("--mini", `${rect[3] * k}px`);
+    if (clip) clipFor(el, rect, Math.ceil(Math.max(rect[2], rect[3]) * k * MINI_REACH) + 8);
+  }
+  // A new mark arrives the way a toast does, once: the class is dropped when the animation ends (or
+  // never starts: reduced motion), so hiding and showing the same mark again is quiet.
+  if (glyph !== miniGlyph) {
+    miniGlyph = glyph;
+    el.classList.remove("pop");
+    if (glyph) {
+      void el.offsetWidth;
+      el.classList.add("pop");
+    }
+  }
+}
+els.miniBadge.addEventListener("animationend", () => els.miniBadge.classList.remove("pop"));
 
 // The native Mode button is small (64x22 in UI.lua): the label takes the body small size, capped by
 // the rect's height, and shrinks further only when a long mode ("Accept edits") would not fit.
@@ -490,7 +527,7 @@ function entryHtml(e: EntryView, threadId: string, agent: string, cwd: string): 
       return `<div class="body md"${revealAct}>${md(e.text)}${e.streaming ? '<span class="caret">▍</span>' : ""}</div>`;
     case "tool": {
       const icon = e.status === "running" ? "◌" : e.status === "error" ? "✗" : "✓";
-      return `<div class="tool-line" data-act="${attr({ type: "tool", id: e.id })}"><span class="ti ${e.status}">${e.status === "unknown" ? "?" : icon}</span> <b>${esc(e.name ?? "tool")}</b> <span class="tsum">${esc(e.text)}</span>${e.status === "unknown" ? '<span class="outcome-unknown">Outcome unknown — check the folder before resending</span>' : ""}</div>${e.expanded && e.output ? `<pre class="tout">${diffHtml(e.output)}</pre>` : ""}`;
+      return `<div class="tool-line" data-act="${attr({ type: "tool", id: e.id })}"><span class="ti ${e.status}">${e.status === "unknown" ? "?" : icon}</span> <b>${esc(e.name ?? "tool")}</b> <span class="tsum">${esc(e.text)}</span>${e.status === "unknown" ? '<span class="outcome-unknown">Outcome unknown — check the folder before resending</span>' : ""}</div>${e.expanded && e.output ? `<div class="tout-veil"><pre class="tout">${diffHtml(e.output)}</pre></div>` : ""}`;
     }
     case "approval": {
       const pending = e.approval === "pending";
@@ -634,7 +671,13 @@ function render() {
   renderTracker(model.tracker);
   renderToasts(model);
   document.body.classList.toggle("blur", blurOn());
-  els.status.textContent = model.status.text + (model.quiet ? " · Alerts muted (/fam quiet off)" : "") + (blurOn() ? " · Stream-safe on" : model.private ? " · Hide names on" : "");
+  // The status words, then what is switched on as chips (Stream-safe wins over Hide names: it hides names too).
+  const chips = [model.quiet ? "Alerts muted (/fam quiet off)" : "", blurOn() ? "Stream-safe on" : model.private ? "Hide names on" : ""].filter(Boolean);
+  const statusHtml = `<span class="st-text">${esc(model.status.text)}</span>` + chips.map((chip) => `<span class="chip">${esc(chip)}</span>`).join("");
+  if (els.status.dataset.sig !== statusHtml) {
+    els.status.innerHTML = statusHtml;
+    els.status.dataset.sig = statusHtml;
+  }
   const keys = keysOf(model);
   const modeHtml = keys?.mode ? `<span>${esc(keys.mode)}</span>` : "";
   if (els.modeLabel.innerHTML !== modeHtml) els.modeLabel.innerHTML = modeHtml;
@@ -812,27 +855,15 @@ bridge.on("vis", (v: { visible: boolean; devInput?: boolean }) => {
 });
 window.addEventListener("resize", () => applyLayout());
 
-// ---- audio: synthesized chimes (no assets) and optional speech ---------------------------------
+// ---- audio: the six synthesized cues (shared/cues.ts; no assets) and optional speech ----------------
+// Main sends { kind, volume } (volume 0..1, cfg.soundVolume / 100); an older main sends the bare cue
+// name, played at the default volume. Anything else is ignored. The context is built on the first cue.
 let audio: AudioContext | null = null;
-function chime(kind: "done" | "approval" | "error") {
-  audio ??= new AudioContext();
-  const notes = kind === "done" ? [659, 880, 1319] : kind === "approval" ? [880, 660, 880] : [330, 247];
-  const t0 = audio.currentTime;
-  notes.forEach((f, i) => {
-    const o = audio!.createOscillator();
-    const g = audio!.createGain();
-    o.type = "triangle";
-    o.frequency.value = f;
-    const t = t0 + i * 0.11;
-    g.gain.setValueAtTime(0, t);
-    g.gain.linearRampToValueAtTime(0.12, t + 0.015);
-    g.gain.exponentialRampToValueAtTime(0.001, t + 0.5);
-    o.connect(g).connect(audio!.destination);
-    o.start(t);
-    o.stop(t + 0.55);
-  });
-}
-bridge.on("sound", (k: any) => chime(k));
+bridge.on("sound", (p: unknown) => {
+  const { kind, volume } = (typeof p === "string" ? { kind: p } : (p ?? {})) as { kind?: unknown; volume?: unknown };
+  if (typeof kind !== "string" || !(CUES as readonly string[]).includes(kind)) return;
+  playCue((audio ??= new AudioContext()), kind as Cue, typeof volume === "number" && Number.isFinite(volume) ? volume : DEFAULT_CUE_VOLUME);
+});
 bridge.on("speak", (text: string) => {
   try {
     const u = new SpeechSynthesisUtterance(text);

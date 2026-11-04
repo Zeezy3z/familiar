@@ -9,8 +9,8 @@ import { fileURLToPath } from "node:url";
 const port = Number(process.env.FAMILIAR_PREVIEW_PORT) || 47812;
 const dist = join(dirname(fileURLToPath(import.meta.url)), "../dist");
 const allowed = new Set(["control.html", "control.js", "overlay.html", "overlay.js", "overlay.css", "assets/marcellus-latin-400-normal.woff2"]);
-const types = { html: "text/html", js: "text/javascript", css: "text/css", woff2: "font/woff2", png: "image/png" };
-const isAsset = (file) => /^assets\/[a-z0-9@-]+\.png$/.test(file); // the painted faces and seals (no path segments, so no traversal)
+const types = { html: "text/html", js: "text/javascript", css: "text/css", woff2: "font/woff2", png: "image/png", jpg: "image/jpeg" };
+const isAsset = (file) => /^assets\/[a-z0-9@-]+\.(png|jpg)$/.test(file); // the painted faces, seals and workshop header (no path segments, so no traversal)
 createServer((req, res) => {
   const file = new URL(req.url, "http://localhost").pathname.slice(1) || "control.html";
   res.setHeader("Cache-Control", "no-store");

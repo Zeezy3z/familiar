@@ -142,15 +142,28 @@ export async function glassRound3Journey(page, origin) {
   const blur = () => page.evaluate(() => {
     const f = sel => { const el = document.querySelector(sel); return el ? getComputedStyle(el).filter : 'missing'; };
     return { body: document.body.classList.contains('blur'), reply: f('.entry.assistant .body'), you: f('.entry.user .body'), tool: f('.tool-line .tsum'), obj: f('.obj'),
-      tracker: f('.tl-a'), preview: f('.approval-preview'), card: f('.entry.approval .card'), title: f('.qtitle'), status: document.getElementById('status').textContent };
+      tracker: f('.tl-a'), preview: f('.approval-preview'), card: f('.entry.approval .card'), title: f('.qtitle'), status: document.getElementById('status').textContent,
+      words: document.querySelector('#status .st-text')?.textContent, chips: [...document.querySelectorAll('#status .chip')].map(c => c.textContent) };
   });
   const b = await blur();
   check('stream-safe: replies, your messages, tools, objectives and tracker are blurred', b.body && [b.reply, b.you, b.tool, b.obj, b.tracker].every(v => v.startsWith('blur(')));
   check('stream-safe: the approval card and titles stay readable', b.preview === 'none' && b.card === 'none' && b.title === 'none');
-  check('stream-safe: status says Stream-safe on', b.status.endsWith(' · Stream-safe on') && !b.status.includes('Hide names on'));
+  check('stream-safe: status says Stream-safe on, as a chip after the words (round 6: it was a " · Stream-safe on" suffix)', b.chips.join() === 'Stream-safe on' && b.words === 'Linked · Claude ready · Codex ready' && !b.status.includes('Hide names on')
+    && await page.evaluate(() => { const c = document.querySelector('#status .chip').getBoundingClientRect(), s = document.getElementById('status').getBoundingClientRect(); return c.left >= s.left && c.right <= s.right; }));
+  // Round 6 §2.3: a violet gauze with a gold edge over the blurred text. The veil is the entry's own ::after, outside the filtered text.
+  const veil = sel => page.evaluate(sel => { const el = document.querySelector(sel); if (!el) return null; const cs = getComputedStyle(el, '::after');
+    return { content: cs.content, opacity: cs.opacity, border: cs.borderTopWidth, edge: cs.borderTopColor, pos: cs.position, events: cs.pointerEvents, bg: cs.backgroundImage, w: parseFloat(cs.width), h: parseFloat(cs.height),
+      entryW: el.clientWidth, entryH: el.clientHeight, ownFilter: getComputedStyle(el).filter }; }, sel);
+  let v = await veil('.entry.assistant');
+  check("curtain: the reply's veil is on the entry: opaque, a 1 px gold edge, the whole entry, inert, and not itself blurred", v.content === '""' && v.opacity === '1' && v.border === '1px' && v.edge === 'rgba(201, 162, 39, 0.4)'
+    && v.pos === 'absolute' && v.events === 'none' && v.bg.startsWith('linear-gradient(') && v.bg.includes('rgba(44, 26, 70, 0.55)') && Math.abs(v.w - v.entryW) < 1.5 && Math.abs(v.h - v.entryH) < 1.5 && v.ownFilter === 'none');
+  check('curtain: your message and the objectives carry the veil too', (await veil('.entry.user')).opacity === '1' && (await veil('.entry.user')).content === '""' && (await veil('.objectives')).content === '""' && (await veil('.objectives')).opacity === '1');
+  const approvalVeil = await veil('.entry.approval');
+  check('curtain: nothing is drawn over the approval card, which stays unblurred', approvalVeil.content === 'none' && b.preview === 'none' && b.card === 'none');
   const revealCalls = await click('.entry.assistant .body');
   check('stream-safe: a click reveals that reply only, with no action', revealCalls.length === 0 && await page.evaluate(() =>
     getComputedStyle(document.querySelector('.entry.assistant .body')).filter === 'none' && getComputedStyle(document.querySelector('.entry.user .body')).filter.startsWith('blur(')));
+  check("curtain: a reveal lifts that reply's veil and no other", (await veil('.entry.assistant')).opacity === '0' && (await veil('.entry.user')).opacity === '1' && (await veil('.objectives')).opacity === '1');
   await push();
   check('stream-safe: a model push keeps the reveal', await page.locator('.entry.assistant.revealed').count() === 1);
   await page.waitForFunction(() => !document.querySelector('.entry.revealed'), null, { timeout: 10000 }).catch(() => {});
@@ -158,7 +171,32 @@ export async function glassRound3Journey(page, origin) {
   await push(() => { window.preview.model.blur = false; });
   check('stream-safe: off removes the blur and the reveal control', await page.evaluate(() => !document.body.classList.contains('blur')
     && getComputedStyle(document.querySelector('.entry.assistant .body')).filter === 'none' && !document.querySelector('.entry.assistant .body[data-act]'))
-    && (await page.locator('#status').textContent()).endsWith(' · Hide names on'));
+    && (await blur()).chips.join() === 'Hide names on'); // round 6: a chip, it was a " · Hide names on" suffix
+  v = await veil('.entry.assistant');
+  check('curtain: with Stream-safe off there is no veil and no Stream-safe chip (Hide names alone is a chip, not a curtain)', v.content === 'none' && (await veil('.objectives')).content === 'none'
+    && !(await blur()).chips.includes('Stream-safe on'));
+  await push(() => { window.preview.model.private = false; window.preview.model.quiet = true; });
+  check('chips: Alerts muted is a chip with its hint, and nothing else is', (await blur()).chips.join() === 'Alerts muted (/fam quiet off)');
+  await push(() => { window.preview.model.blur = true; window.preview.model.private = true; });
+  check('chips: Alerts muted and Stream-safe on side by side, in that order, and Hide names does not repeat itself', (await blur()).chips.join('|') === 'Alerts muted (/fam quiet off)|Stream-safe on');
+  await push(() => { window.preview.model.quiet = false; window.preview.model.private = false; window.preview.model.blur = false; });
+  check('chips: with everything off the status is the words alone', (await blur()).chips.length === 0 && (await blur()).words === 'Linked · Claude ready · Codex ready');
+  // A reasoning block and an expanded tool output are blurred too, and their veils are crisp (outside what is filtered).
+  await push(() => { const m = window.preview.model; m.blur = true; m.private = true; m.detail.entries.push({ id: 'think', kind: 'reasoning', text: 'Thinking about the pull timer.' });
+    const tool = m.detail.entries.find(e => e.kind === 'tool'); tool.expanded = true; tool.output = '+ /pull 10\n- /pull 8'; });
+  const extra = await page.evaluate(() => ({ body: getComputedStyle(document.querySelector('.entry.reasoning .body')).filter, entry: getComputedStyle(document.querySelector('.entry.reasoning')).filter,
+    out: getComputedStyle(document.querySelector('.tout')).filter, outWrap: getComputedStyle(document.querySelector('.tout-veil')).filter }));
+  check('curtain: reasoning and tool output are blurred, behind veils that are not', extra.body.startsWith('blur(') && extra.entry === 'none' && extra.out.startsWith('blur(') && extra.outWrap === 'none'
+    && (await veil('.entry.reasoning')).content === '""' && (await veil('.tout-veil')).content === '""' && (await veil('.tout-veil')).border === '1px');
+  check('curtain: the blur is 7px, with the colour drawn down', await page.evaluate(() => getComputedStyle(document.querySelector('.entry.assistant .body')).filter === 'blur(7px) saturate(0.5)'));
+  await push(() => { const m = window.preview.model; m.detail.entries = m.detail.entries.filter(e => e.id !== 'think'); delete m.detail.entries.find(e => e.kind === 'tool').expanded; m.blur = false; m.private = false; });
+  // With motion on the curtain lifts in --m-fast: gone within 200 ms of the click.
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  await open('stream-safe');
+  await click('.entry.assistant .body');
+  const lifted = await page.waitForFunction(() => getComputedStyle(document.querySelector('.entry.assistant'), '::after').opacity === '0', null, { timeout: 200 }).then(() => true, () => false);
+  check('curtain: a reveal lifts the veil within 200 ms (motion on), and the text is clear', lifted && await page.evaluate(() => getComputedStyle(document.querySelector('.entry.assistant .body')).filter === 'none'));
+  await page.emulateMedia({ reducedMotion: 'reduce' });
 
   // ---- §8 Jump to latest (wheel d:-9999 on detail)
   await open('long');
@@ -259,5 +297,136 @@ export async function glassRound3Journey(page, origin) {
   const narrow = await page.evaluate(() => { const s = document.getElementById('detail-scroll'), img = document.querySelector('.welcome img.portrait').getBoundingClientRect();
     return { fits: s.scrollWidth <= s.clientWidth + 1, face: img.width, text: document.querySelector('.welcome .big').textContent }; });
   check('welcome: in a narrow pane at large text the face shrinks to 48 px and nothing spills sideways', narrow.fits && narrow.face === 48 && narrow.text === "I can't see the game yet.");
+
+  // ---- round 6 §2.1 the cues: the Glass plays shared/cues.ts through one AudioContext of its own (a counting stub stands in for WebAudio)
+  await open('finished');
+  await page.evaluate(() => {
+    const made = window.cuesMade = { contexts: 0, oscillators: 0, buffers: 0, started: 0, stopped: 0, peaks: [] };
+    const param = peaks => ({ setValueAtTime() {}, exponentialRampToValueAtTime() {}, linearRampToValueAtTime(v) { peaks?.push(v); } });
+    window.AudioContext = class {
+      constructor() { made.contexts++; this.currentTime = 0; this.sampleRate = 8000; this.state = 'running'; this.destination = {}; }
+      source(extra) { return { ...extra, connect() {}, start() { made.started++; }, stop() { made.stopped++; } }; }
+      createOscillator() { made.oscillators++; return this.source({ frequency: param() }); }
+      createBufferSource() { made.buffers++; return this.source({}); }
+      createBuffer(c, n) { return { getChannelData: () => new Float32Array(n) }; }
+      createBiquadFilter() { return { frequency: param(), Q: param(), connect() {} }; }
+      createGain() { const first = []; made.peaks.push(first); return { gain: param(first), connect() {} }; }
+    };
+  });
+  const cues = () => page.evaluate(() => ({ ...window.cuesMade, peaks: window.cuesMade.peaks.map(p => p[0]) }));
+  const emitCue = payload => page.evaluate(payload => window.preview.emit('sound', payload), payload);
+  await emitCue({ kind: 'approval', volume: 0.7 });
+  let heard = await cues();
+  check('cues: a sound event builds one context and plays the bell: four oscillators, each started and stopped', heard.contexts === 1 && heard.oscillators === 4 && heard.buffers === 0
+    && heard.started === 4 && heard.stopped === 4);
+  check('cues: the volume sent scales every voice (0.7 of 0.14, 0.05, 0.12, 0.04)', [0.098, 0.035, 0.084, 0.028].every((v, i) => Math.abs(heard.peaks[i] - v) < 1e-9));
+  await emitCue({ kind: 'approval', volume: 0.7 });
+  heard = await cues();
+  check('cues: a second cue reuses the context', heard.contexts === 1 && heard.oscillators === 8);
+  await emitCue('done');
+  heard = await cues();
+  check('cues: a bare cue name from an older main still plays, at the default volume', heard.contexts === 1 && heard.oscillators === 8 + 7
+    && Math.abs(heard.peaks[8] - 0.09 * 0.7) < 1e-9);
+  await emitCue({ kind: 'approved', volume: 1 });
+  heard = await cues();
+  check('cues: the stamp is a noise tap and a thump', heard.oscillators === 8 + 7 + 1 && heard.buffers === 1);
+  const silent = await cues();
+  await emitCue({ kind: 'reply', volume: 0 });
+  await emitCue({ kind: 'nope', volume: 1 });
+  await emitCue({ volume: 1 });
+  await emitCue(null);
+  await emitCue(42);
+  heard = await cues();
+  check('cues: volume 0, an unknown cue and a malformed event play nothing and break nothing', heard.contexts === 1 && heard.oscillators === silent.oscillators && heard.buffers === silent.buffers
+    && heard.started === silent.started && heard.peaks.length === silent.peaks.length);
+
+  // ---- round 6 §2.4 one motion vocabulary: the durations come from --m-fast / --m-arrive / --m-settle (motion on, as a player has it)
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  await open('quest-complete');
+  await push(() => { window.preview.model.toasts.push({ kind: 'approval', text: 'Needs approval · Quest log', at: 2 }); });
+  const motion = await page.evaluate(() => { const cs = (sel, pseudo) => getComputedStyle(document.querySelector(sel), pseudo), root = getComputedStyle(document.documentElement);
+    return { tokens: ['--m-fast', '--m-arrive', '--m-settle'].map(n => root.getPropertyValue(n).trim()), arrive: cs('.toast.approval').animationDuration, settle: cs('.toast.done').animationDuration,
+      seal: cs('.toast.done .seal').animationDuration }; });
+  check('motion: the tokens are 150 / 350 / 600 ms', motion.tokens.join() === '150ms,350ms,600ms');
+  check('motion: a banner arrives in --m-arrive, Quest Complete settles in --m-settle, and its seal stamps in --m-arrive', motion.arrive === '0.35s' && motion.settle === '0.6s' && motion.seal === '0.35s');
+  await open('stream-safe');
+  check('motion: the Stream-safe blur changes state in --m-fast', await page.evaluate(() => getComputedStyle(document.querySelector('.entry.assistant .body')).transitionDuration) === '0.15s');
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+
+  // ---- round 6 §2.2 the familiar calls from the minimap: "!" while a request waits, "?" while a reply waits, painted on the rect the addon reports (layout.mini; no rect, no badge)
+  const miniLayout = async over => { await page.evaluate(over => { const p = window.preview; p.emit('layout', { ...p.layout, ...over }); }, over); await settle(); };
+  const badge = () => page.evaluate(() => { const el = document.getElementById('mini-badge'), cs = getComputedStyle(el), r = el.getBoundingClientRect(), after = getComputedStyle(el, '::after');
+    return { shown: cs.display !== 'none', glyph: el.dataset.glyph, content: after.content, color: after.color, box: [r.left, r.top, r.width, r.height], inert: cs.pointerEvents === 'none', pos: cs.position,
+      act: el.hasAttribute('data-act') || !!el.querySelector('[data-act]'), text: el.textContent, aria: el.getAttribute('aria-hidden'), clip: cs.clipPath, mini: cs.getPropertyValue('--mini').trim(),
+      markW: parseFloat(after.width), filter: after.filter }; });
+  const near = (box, rect) => box.every((v, i) => Math.abs(v - rect[i]) <= 1);
+  const MINI = [1180, 40, 31, 31];
+  await open('approval');
+  check('minimap: with no attention nothing is painted', !(await badge()).shown);
+  await push(() => { window.preview.model.attention = [{ thread: 'preview', entry: 'p1', revision: 'fixture:p1', title: 'Quest log', project: 'Preview project', cwd: 'C:\\preview', agent: 'claude',
+    mode: 'Ask first', label: 'Needs approval', excerpt: '+ Clearer spacing for the preview', pending: true, at: 1 }]; });
+  let mini = await badge();
+  check('minimap: a waiting request paints "!" on the minimap button\'s rect, in the card\'s orange', mini.shown && mini.glyph === '!' && mini.content === '"!"' && near(mini.box, MINI) && mini.color === 'rgb(255, 128, 64)');
+  check('minimap: the mark is sized from the button (42%, 12 px at least) and is a picture only: no hit rect, no action, no text', mini.pos === 'absolute' && mini.inert && !mini.act && mini.text === '' && mini.aria === 'true'
+    && mini.mini === '31px' && mini.markW >= 12 && Math.abs(mini.markW - 31 * 0.42) < 1);
+  await push(() => { window.preview.model.attention = [{ thread: 'preview', entry: 'a1', revision: 'fixture:a1', title: 'Quest log', project: 'Preview project', cwd: 'C:\\preview', agent: 'claude',
+    mode: 'Ask first', label: 'Reply waiting', excerpt: 'A reply', pending: false, at: 1 }]; });
+  mini = await badge();
+  check('minimap: only replies waiting paint "?" in gold', mini.shown && mini.glyph === '?' && mini.content === '"?"' && mini.color === 'rgb(255, 209, 0)');
+  await push(() => { window.preview.model.attention.push({ thread: 'other', entry: 'p2', revision: 'fixture:p2', title: 'Another quest', project: 'Preview project', cwd: 'C:\\preview', agent: 'claude',
+    mode: 'Ask first', label: 'Needs approval', excerpt: 'Another request', pending: true, at: 2 }); });
+  check('minimap: a request outranks a reply', (await badge()).glyph === '!');
+  await push(() => { window.preview.model.attention = []; });
+  check('minimap: nothing waiting, nothing painted', !(await badge()).shown && (await badge()).glyph === '');
+  await push(() => { window.preview.model.attention = [{ thread: 'preview', entry: 'p1', revision: 'fixture:p1', title: 'T', project: 'P', cwd: '', agent: 'claude', mode: 'Ask first', label: 'Needs approval', excerpt: 'x', pending: true, at: 1 }]; });
+  await push(() => { window.preview.model.attention = undefined; });
+  check('minimap: a model without attention (an older hub) paints nothing', !(await badge()).shown);
+  await open('stream-safe');
+  await push(() => { window.preview.model.attention = [{ thread: 'preview', entry: 'p-s', revision: 'fixture:p-s', title: 'Quest #1', project: 'Project 1', cwd: '', agent: 'claude', mode: 'Ask first',
+    label: 'Needs approval', excerpt: 'Edit Macros.lua', pending: true, at: 1 }]; });
+  mini = await badge();
+  check('minimap: Stream-safe and Hide names keep the mark (a glyph, no names), unblurred', mini.shown && mini.glyph === '!' && mini.text === '' && mini.filter === 'none' && await page.evaluate(() => document.body.classList.contains('blur')));
+  await open('waiting');
+  mini = await badge();
+  check('minimap: the waiting scenario (an idle quest, one reply waiting) paints "?"', mini.shown && mini.glyph === '?' && near(mini.box, MINI));
+  await miniLayout({ mini: undefined });
+  check('minimap: a layout without the rect (an older addon, or the button hidden) paints nothing', !(await badge()).shown);
+  await miniLayout({});
+  check('minimap: the rect coming back brings the mark back', (await badge()).shown);
+  await miniLayout({ drag: true });
+  check('minimap: hidden while the window is being dragged', !(await badge()).shown);
+  await miniLayout({ drag: false, ui: false });
+  check('minimap: hidden while the game UI is hidden', !(await badge()).shown);
+  await miniLayout({ ui: true, panel: false });
+  check('minimap: shown with the Familiar window closed (the button is always there)', (await badge()).shown && near((await badge()).box, MINI));
+  await miniLayout({ panel: true, mini: [1100, 60, 31, 31] });
+  check('minimap: the mark follows the button when it moves', near((await badge()).box, [1100, 60, 31, 31]));
+  await miniLayout({ mini: [1100, 60, 46, 46] });
+  mini = await badge();
+  check('minimap: a scaled minimap scales the mark', near(mini.box, [1100, 60, 46, 46]) && mini.mini === '46px' && Math.abs(mini.markW - 46 * 0.42) < 1);
+  await miniLayout({ mini: MINI, occ: [[1170, 30, 60, 60]] });
+  mini = await badge();
+  check('minimap: a game frame opened over the button cuts the mark like the tracker (an even-odd clip with the frame as the hole)', mini.clip.startsWith('path(') && mini.clip.includes('evenodd'));
+  await miniLayout({ occ: undefined });
+  check('minimap: with nothing over it the mark is not clipped', (await badge()).clip === 'none');
+  check('minimap: it has no hit rect: the page never hit-tests it', await page.evaluate(() => { const el = document.getElementById('mini-badge'); return document.elementFromPoint(1180 + 31 * 0.9, 40 + 31 * 0.1) !== el && getComputedStyle(el).pointerEvents === 'none'; }));
+  // The mark arrives like a toast, once, when it changes (motion on); reduced motion makes none.
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  await open('approval');
+  const pop = () => page.evaluate(() => { const el = document.getElementById('mini-badge'); return { pop: el.classList.contains('pop'), anim: getComputedStyle(el, '::after').animationName, dur: getComputedStyle(el, '::after').animationDuration }; });
+  await push(() => { window.preview.model.attention = [{ thread: 'preview', entry: 'p1', revision: 'fixture:p1', title: 'T', project: 'P', cwd: '', agent: 'claude', mode: 'Ask first', label: 'Needs approval', excerpt: 'x', pending: true, at: 1 }]; });
+  const arriving = await pop();
+  await page.waitForFunction(() => !document.getElementById('mini-badge').classList.contains('pop'), null, { timeout: 3000 }).catch(() => {});
+  const settled = await pop();
+  await push();
+  const same = await pop();
+  await push(() => { window.preview.model.attention[0].pending = false; });
+  const changed = await pop();
+  check('minimap: a new mark arrives with toastIn in --m-arrive, once; the same mark again is quiet; a changed mark arrives again', arriving.pop && arriving.anim === 'toastIn' && arriving.dur === '0.35s'
+    && !settled.pop && settled.anim === 'none' && !same.pop && changed.pop && changed.anim === 'toastIn');
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await open('approval');
+  await push(() => { window.preview.model.attention = [{ thread: 'preview', entry: 'p1', revision: 'fixture:p1', title: 'T', project: 'P', cwd: '', agent: 'claude', mode: 'Ask first', label: 'Needs approval', excerpt: 'x', pending: true, at: 1 }]; });
+  check('minimap: reduced motion makes no motion', (await pop()).anim === 'none');
   return results;
 }
