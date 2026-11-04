@@ -1631,7 +1631,7 @@ export class Hub {
           t.status = "error";
           t.lastError = e.error ?? "failed";
           this.note(t, `Turn failed: ${t.lastError}`, "error");
-          this.toast(`Failed · ${agentName(t.agent)} · ${this.projectName(t)} · ${t.title}`, "error", t.id, `Failed · ${agentName(t.agent)}`);
+          this.toast(`Quest Failed · ${t.title}`, "error", t.id, "Quest Failed");
           this.onSound("error");
         } else {
           t.status = "idle";
@@ -1641,7 +1641,9 @@ export class Hub {
           } else {
             const last = [...t.entries].reverse().find((x) => x.kind === "assistant");
             if (this.view.selected !== t.id) t.unread = true;
-            this.toast(`Finished · ${agentName(t.agent)} · ${this.projectName(t)} · ${t.title}`, "done", t.id, `Finished · ${agentName(t.agent)}`);
+            // The moment, not a receipt: no agent, zone or cost ("Answer ready" for a chat).
+            const moment = t.kind === "chat" ? "Answer ready" : "Quest Complete";
+            this.toast(`${moment} · ${t.title}`, "done", t.id, moment);
             if (!this.cfg().quiet) this.onSound("done");
             if (!this.cfg().quiet && !this.cfg().privateMode && this.cfg().speak && last) this.onSpeak(`${agentName(t.agent)} finished in ${this.projectName(t)}. ${firstSentence(last.text, 200)}`);
           }

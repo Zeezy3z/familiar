@@ -156,7 +156,7 @@ export function buildModel(hub: Hub, link: { linked: boolean; fps: number }): Re
     list: v.list === "pick" ? pickList(hub) : questList(hub),
     detail: detail(hub, link.linked),
     status: statusLine(hub, link),
-    keys: { approve: anyPending, stop: !!sel && (sel.status === "running" || sel.status === "approval") },
+    keys: { approve: anyPending, stop: !!sel && (sel.status === "running" || sel.status === "approval"), ...modeKey(hub) },
     tracker: trackerLines(hub),
     toasts: hub.toasts,
     native: v.native,
@@ -171,6 +171,24 @@ export function buildModel(hub: Hub, link: { linked: boolean; fps: number }): Re
   m.tracker = m.tracker.slice(0, 8);
   return m;
 }
+
+/** What the Glass paints over the native Mode button: the mode of what the Mode key acts on (the
+ * draft, else the selected quest; see Hub.key "mode"). Nothing it acts on: the native "Mode" shows. */
+function modeKey(hub: Hub): Pick<RenderModel["keys"], "mode" | "modeHot"> {
+  const target = hub.view.draft ?? hub.selectedThread();
+  if (!target) return {};
+  if (hub.view.draft ? hub.view.draft.chat : hub.selectedThread()?.kind === "chat") return { mode: "Chat", modeHot: false };
+  return { mode: MODE_LABEL[target.mode], modeHot: target.mode === "edits" || target.mode === "auto" };
+}
+
+/** A quest's spend as its agent reported it (displayed, never sent anywhere): dollars, else tokens. */
+export function costLabel(u: Thread["usage"]): string | undefined {
+  if (u?.costUsd) return dollars(u.costUsd);
+  const tokens = (u?.inputTokens ?? 0) + (u?.outputTokens ?? 0);
+  return tokens ? `${fmtK(tokens)} tokens` : undefined;
+}
+
+const dollars = (usd: number) => (usd < 0.01 ? "<$0.01" : `$${usd.toFixed(2)}`);
 
 // ---- private (streamer) mode --------------------------------------------------------------------
 // The one place real names leave the render model: zones become "Project n", quests "Quest #n" and
@@ -195,7 +213,7 @@ function privateNames(hub: Hub) {
 
 /** Generic toast text: never a project, title, command or reply excerpt. */
 function privateToast(x: Toast): Toast {
-  const text = x.generic ?? (x.kind === "approval" ? "Approval needed" : x.kind === "done" ? "Quest finished" : x.kind === "error" && x.threadId ? "Quest failed" : x.text);
+  const text = x.generic ?? (x.kind === "approval" ? "Approval needed" : x.kind === "done" ? "Quest Complete" : x.kind === "error" && x.threadId ? "Quest Failed" : x.text);
   return { ...x, text };
 }
 
@@ -448,7 +466,7 @@ function welcome(hub: Hub, linked: boolean): DetailModel {
 function threadDetail(hub: Hub, t: Thread): DetailModel {
   const u = t.usage;
   const usage = u
-    ? [u.inputTokens ? `${fmtK(u.inputTokens)} in` : "", u.outputTokens ? `${fmtK(u.outputTokens)} out` : "", u.costUsd ? `$${u.costUsd.toFixed(2)}` : ""]
+    ? [u.inputTokens ? `${fmtK(u.inputTokens)} in` : "", u.outputTokens ? `${fmtK(u.outputTokens)} out` : "", u.costUsd ? dollars(u.costUsd) : ""]
         .filter(Boolean)
         .join(" · ")
     : undefined;
@@ -590,6 +608,7 @@ function trackerLines(hub: Hub): TrackerLine[] {
         status: t.status,
         activity,
         progress: t.todos.length ? `${done}/${t.todos.length}` : undefined,
+        cost: costLabel(t.usage),
       };
     });
 }

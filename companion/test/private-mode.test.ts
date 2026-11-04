@@ -93,11 +93,11 @@ describe("private mode", () => {
     expect(card.text).toBe("rm -rf build && npm run deploy");
     expect(m.attention?.find((i) => i.pending)?.excerpt).toBe("Run: rm -rf build");
     // Toasts: generic only; nothing spoken.
-    expect(m.toasts.map((t) => t.text)).toEqual(expect.arrayContaining(["Finished · Claude", "Needs approval · Claude"]));
+    expect(m.toasts.map((t) => t.text)).toEqual(expect.arrayContaining(["Quest Complete", "Needs approval · Claude"]));
     expect(spoken).toEqual([]);
     // The real (non-private) finish toast in the hub carries no reply text either.
     const finished = hub.toasts.find((t) => t.kind === "done");
-    expect(finished?.text).toMatch(/^Finished · Claude · /);
+    expect(finished?.text).toMatch(/^Quest Complete · /);
     expect(finished?.text).not.toContain("The vault key moved");
     // Names stay stable across renders.
     expect(model().list.rows.map((r) => r.text)).toEqual(m.list.rows.map((r) => r.text));

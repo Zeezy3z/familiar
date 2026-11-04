@@ -397,8 +397,18 @@ describe("Hub", () => {
     expect(t.status).toBe("idle");
     expect(t.entries.at(-1)).toMatchObject({ text: "Hello there.", streaming: false });
     expect(hub.toasts.at(-1)!.kind).toBe("done");
-    expect(hub.toasts.at(-1)!.text).toMatch(/^Finished · /);
+    expect(hub.toasts.at(-1)!.text).toMatch(/^Quest Complete · /);
     expect(hub.toasts.at(-1)!.text).not.toContain("Hello there");
+  });
+
+  it("finish toasts name the quest only: Quest Complete, Answer ready for a chat, Quest Failed", async () => {
+    await hub.quick("claude", "@familiar ship it");
+    const quest = hub.view.selected!;
+    claude.emit({ type: "done", threadId: quest, status: "failed", error: "boom" });
+    expect(hub.toasts.at(-1)).toMatchObject({ kind: "error", text: "Quest Failed · ship it", generic: "Quest Failed" });
+    await hub.ask("is the hearth lit?");
+    claude.emit({ type: "done", threadId: hub.view.selected!, status: "completed" });
+    expect(hub.toasts.at(-1)).toMatchObject({ kind: "done", text: "Answer ready · is the hearth lit?", generic: "Answer ready" });
   });
 
   it("approvals: pending → approve via key → backend gets allow; status recovers", async () => {
@@ -995,6 +1005,40 @@ describe("Hub", () => {
     expect(m.list.rows[3]).toMatchObject({ kind: "thread", text: "one", selected: true });
     expect(m.tracker[0]).toMatchObject({ title: "one", activity: "Fix", progress: "1/2" });
     expect(m.detail.kind).toBe("thread");
+  });
+
+  it("the tracker shows each quest's own reported spend: dollars, else tokens, else nothing", async () => {
+    await hub.quick("claude", "@familiar priced");
+    const priced = hub.view.selected!;
+    await hub.quick("codex", "@beta counted");
+    const counted = hub.view.selected!;
+    const model = () => buildModel(hub, { linked: true, fps: 30 });
+    const line = (id: string) => model().tracker.find((l) => l.id === id)!;
+    expect(line(priced).cost).toBeUndefined();
+    claude.emit({ type: "usage", threadId: priced, costUsd: 0.1234 });
+    codex.emit({ type: "usage", threadId: counted, inputTokens: 4000, outputTokens: 2000 });
+    expect(line(priced).cost).toBe("$0.12");
+    expect(line(counted).cost).toBe("6.0k tokens");
+    claude.emit({ type: "usage", threadId: priced, costUsd: 0.004 });
+    expect(line(priced).cost).toBe("<$0.01");
+    const detail = model().detail;
+    expect(detail.kind === "thread" && detail.usage).toBe("4.0k in · 2.0k out");
+  });
+
+  it("the Mode button's label follows what the Mode key acts on", async () => {
+    const keys = () => buildModel(hub, { linked: true, fps: 30 }).keys;
+    expect(keys().mode).toBeUndefined(); // welcome: the native "Mode" shows
+    await hub.quick("claude", "@familiar labelled");
+    const t = hub.selectedThread()!;
+    expect(keys()).toMatchObject({ mode: "Ask first", modeHot: false });
+    await hub.key("mode", undefined, "full", OK);
+    expect(keys()).toMatchObject({ mode: "Plan only", modeHot: false });
+    t.mode = "auto"; // chosen in the control panel
+    expect(keys()).toMatchObject({ mode: "Auto", modeHot: true });
+    await hub.key("newChat");
+    expect(keys()).toMatchObject({ mode: "Chat", modeHot: false });
+    hub.action({ type: "select", id: "ext:claude:ext-1" });
+    expect(keys().mode).toBeUndefined(); // a desktop thread: Mode has nothing to act on
   });
 
   describe("which desktop threads are listed", () => {
