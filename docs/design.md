@@ -89,21 +89,39 @@ code only. State is never colour alone: each status shows a glyph and a word (�
 canonical approval-card order is **Approve · Deny · Always (this quest)**: Approve and Deny are
 filled buttons, Always is a ghost button (dashed border, right-aligned) that applies only to the
 current quest. Pane rects, `--row-h` and the status/tracker rects come from `Layout.lua`; styling
-may add depth inside a rect but never changes its size.
+may add depth inside a rect but never changes its size. Motion has three durations: `--m-fast`
+150 ms (state changes), `--m-arrive` 350 ms (arrivals: toast, card, seal, badge, a request on the
+panel) and `--m-settle` 600 ms (the Quest Complete moment settling). Nothing is longer and nothing
+loops but the caret; reduced motion turns it all off. `test/motion.test.ts` keeps literal
+durations out of `overlay.css` and `control.html`.
 
 **Tracker** — a small movable frame like the quest objective tracker: active quests, what each
 familiar is doing right now (current objective or tool), progress `3/5`, approvals in orange.
 Click a line to open that quest.
 
-**Toasts** — raid-warning style banners when a quest finishes, fails or needs approval, plus a
-synthesized chime (optional speech).
+**Toasts and sounds** — raid-warning style banners when a quest finishes, fails or needs approval
+(optional speech), and six synthesized cues (`shared/cues.ts`: oscillators and filtered noise from
+a pure score, no recordings): *Quest started* (a parchment unroll), *Needs your approval* (a bell),
+*Approved* (a stamp), *Quest Complete* (a rising three-note phrase), *Answer ready* (one soft note,
+for a chat) and *Quest Failed* (two low notes stepping down). Approved and Quest started answer
+the player's own action, so in combat they are dropped, never held; the others keep the
+hold-and-summarize path. Deny, Stop and refusals are silent, and nothing plays while a quest works.
+The volume is `soundVolume` (0-100, default 70), set in the control panel or with `/fam sound`.
+
+**Stream-safe curtain** — with Stream-safe on, replies, sent messages, tool lines and objectives
+are blurred and sit under a dark veil with a gold top edge; a click on one lifts the veil for 8
+seconds. Approval cards are never blurred and never veiled, and the status bar shows chips
+(*Stream-safe on*, *Hide names on*, *Alerts muted*) instead of a suffix.
 
 **Slash commands** — `/fam` toggle · `/fam <text>` send to the selected quest · `/fam claude <text>`
 / `/fam codex <text>` start a quest in the current zone · `/fam approve|deny|always|stop` ·
 `/fam tracker` · `/fam native` · `/fam strip tl|tr|bl|br` · `/fam reload`.
 
 **Keybindings** (Options → Keybindings → AddOns → Familiar): toggle, focus composer, approve,
-deny, stop, next/previous quest, tracker. Also: minimap button and the AddOn compartment.
+deny, stop, next/previous quest, tracker. Also: minimap button and the AddOn compartment. The
+minimap button wears a small `!` (a request is waiting) or `?` (a reply is unread) at its top-right,
+drawn by the Glass on the button's rectangle that the addon reports in the layout message; it takes
+no clicks, carries no text, and paints nothing when the rectangle is absent.
 
 **Desktop control panel** (tray → Open Familiar) — everything that must not be reachable from the
 game, as three steps and one fold. Top to bottom: **Requests waiting** (every pending approval,
@@ -113,7 +131,8 @@ sentence, from `main/doctor.ts`, while the link is not up), and under it the fir
 content (the Familiars card for step 1 and while the first-run choice is open, the guidance text
 for steps 2–3, a single "All set" line when everything is done); the **Projects** card (folders
 added by hand or as folders of projects; it sits here until a folder has been added, then moves
-under Advanced); the **essentials** — Text size, Stream-safe, Sounds; and one collapsed
+under Advanced); the **essentials** — Text size, Stream-safe, Sounds (a volume slider and **Play a sample**, which
+plays the six cues one per click in the panel itself, so they can be heard without the game); and one collapsed
 **Advanced** section: Familiars (once step 1 is done; it stays above Advanced while Claude Code is
 downloading, failed or missing, with its progress and **Retry**), Chat defaults, New quests start
 in (Accept edits and Auto are chosen only here; a risky default opens Advanced so its warning box
@@ -126,7 +145,8 @@ a line beside the version says when the addon and the app are different versions
 and step state come from `control/journey.ts` (version and update wording from `control/build.ts`);
 nothing there changes a setting. Everything that came from an agent, the game or the network is set
 as text, never as markup. The header carries a small portrait that follows the journey (puzzled while
-the Link step is undone, working while Claude Code downloads or a quest runs, otherwise idle).
+the Link step is undone, working while Claude Code downloads or a quest runs, otherwise idle), over a painted workshop band
+(`assets/workshop-1600.jpg`, original art, under a gradient that keeps the title legible).
 
 **UI voice.** How Familiar's own words read, on the PC and in the Glass:
 
