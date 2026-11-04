@@ -327,8 +327,8 @@ export async function glassRound3Journey(page, origin) {
     && (await page.locator('.welcome-tutorial .ag').textContent()) === '◆');
   check('welcome: no button sits inside a text line; the only controls are an offer\'s actions and the practice-quest link', await page.evaluate(() => [...document.querySelectorAll('.welcome .btn, .welcome [data-act]')]
     .every(b => b.closest('.oa') || (b.classList.contains('link') && b.closest('.welcome-tutorial'))) && !document.querySelector('.welcome .ot .btn, .welcome .os [data-act]')));
-  check('welcome: + Claude / + Codex name the toolbar buttons: key caps with no hit rect', await page.evaluate(() => { const keys = [...document.querySelectorAll('.welcome-project .okey')];
-    return keys.length === 2 && keys.every(k => !k.closest('[data-act]') && !k.classList.contains('btn')); }));
+  check('welcome: + Claude / + Codex are buttons that open the folder picker', await page.evaluate(() => { const keys = [...document.querySelectorAll('.welcome-project .oa .btn')];
+    return keys.length === 2 && keys.map(k => JSON.parse(k.dataset.act).agent).join() === 'claude,codex' && keys.every(k => JSON.parse(k.dataset.act).type === 'start'); }));
   check('welcome: the old paragraphs, the familiars list and the counts line are gone', await page.evaluate(() => !document.querySelector('.welcome .hint, .welcome .kv')
     && !/Your familiars|awaiting approval|Opens a draft/.test(document.querySelector('.welcome').textContent)));
   const chatCalls = await click('.welcome-chat .btn');

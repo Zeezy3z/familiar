@@ -625,9 +625,8 @@ function staticDetail(d: DetailModel): string {
     // status bar's job; the counts ride on the greeting. A hub without `zones` draws nothing extra.
     const noProjects = (d as { zones?: number }).zones === 0;
     const ready = d.backends.filter((b) => b.ready);
-    // + Claude / + Codex name the toolbar buttons right above (the Glass has no action that opens the
-    // folder picker), so they are drawn as key caps, not buttons; another familiar starts with /fam <id>.
-    const starts = ready.map((b) => b.id === "claude" || b.id === "codex" ? `<span class="okey">+ ${esc(b.label)}</span>` : `<span class="okey cmd">/fam ${esc(b.id)}</span>`).join("");
+    // + Claude / + Codex open the same folder picker as the toolbar keys; another familiar starts with /fam <id>.
+    const starts = ready.map((b) => b.id === "claude" || b.id === "codex" ? `<span class="btn" data-act="${attr({ type: "start", agent: b.id })}">+ ${esc(b.label)}</span>` : `<span class="okey cmd">/fam ${esc(b.id)}</span>`).join("");
     const projectSub = noProjects ? "No project folders yet. Add one in Familiar on your PC (tray → Open Familiar → Projects)."
       : ready.length ? "Pick a folder. I work while you play and ask before I change anything." : "No familiar is ready yet. Sign in from the tray on your PC.";
     const { expr, big, sub } = welcomeHead(d);
