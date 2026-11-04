@@ -51,7 +51,7 @@ import { devEnabled, serveDevHooks } from "./dev-hooks";
 import { changedConfigKeys, describeAddonMessage, describeOverlayAction, diagnosticsText, logLine, redact, rotateLog } from "./log-file";
 import { linkDoctor } from "./doctor";
 import { trayNoticeFor } from "./notices";
-import type { CheckUpdate } from "./update";
+import { checkUpdate, isReleasesUrl, type CheckUpdate } from "./update";
 
 const VERSION = "0.2.0";
 
@@ -810,7 +810,8 @@ function statusSnapshot() {
     requests: hub ? hub.pendingRequests() : [],
     claude: claudeStatus(),
     doctor: doctorNow(),
-    update: { app: VERSION, addon: hub?.addon.addon, mismatch: false, last: lastUpdateCheck },
+    // Versions: the addon's (hello) against this app's, and the last "Check for updates" answer.
+    update: { app: VERSION, addon: hub?.addon.addon, mismatch: !!hub?.versionMismatch(), last: lastUpdateCheck },
     providers: providersNow(),
     providersChosen: cfg.providersChosen,
     chat: { agent: cfg.chatAgent, model: cfg.chatModel, effort: cfg.chatEffort },
@@ -1274,9 +1275,18 @@ app.whenReady().then(async () => {
         return r;
       }
       case "checkUpdate":
-        return { current: VERSION, error: "Not available yet." } satisfies CheckUpdate;
-      case "openUrl":
+        // The player's click only: one GET to GitHub's latest release (update.ts). Never scheduled.
+        log("[update] Check for updates: asking GitHub for the latest release");
+        lastUpdateCheck = await checkUpdate(VERSION);
+        log(`[update] ${lastUpdateCheck.error ?? `latest ${lastUpdateCheck.latest}${lastUpdateCheck.newer ? " (newer than this app)" : ""}`}`);
+        sendStatus();
+        return lastUpdateCheck;
+      case "openUrl": {
+        // "Open the download page": only the release page Check for updates returned.
+        const url = String((args as { url?: unknown } | undefined)?.url ?? "");
+        if (url && url === lastUpdateCheck?.url && isReleasesUrl(url)) await shell.openExternal(url).catch((e) => log(`[open] ${e}`));
         return undefined;
+      }
       case "testToast":
         hub.toast("Familiar overlay test — if you can read this over WoW, the Glass works.", "info");
         return true;

@@ -1140,6 +1140,57 @@ describe("zones for worktrees", () => {
   });
 });
 
+describe("addon and app versions", () => {
+  const hello = (addon: unknown) => hub.handleAddon({ t: "hello", addon, build: "1.60.2.70500", iface: 16002, char: "Zee", realm: "Forever" });
+  const versionToasts = () => hub.toasts.filter((x) => /Your addon is/.test(x.text));
+
+  it("a different addon version: one toast per run (hello repeats every 20 s), and the status bar says which", () => {
+    hub.version = "0.2.0";
+    hello("0.3.0");
+    expect(versionToasts()).toEqual([expect.objectContaining({ kind: "info", ms: 20_000,
+      text: "Your addon is 0.3.0 and Familiar on your PC is 0.2.0. Update the one that's behind: addon via WowUp or the release zip, app from the Releases page." })]);
+    hello("0.3.0");
+    hello("0.3.0");
+    expect(versionToasts()).toHaveLength(1);
+    expect(buildModel(hub, { linked: true, fps: 30 }).status.text).toMatch(/ {2}· {2}addon 0\.3\.0 \/ app 0\.2\.0$/);
+    // Hide names: the same words (they name no project or quest).
+    cfg.privateMode = true;
+    try {
+      expect(buildModel(hub, { linked: true, fps: 30 }).toasts.map((x) => x.text)).toContain(versionToasts()[0].text);
+    } finally {
+      cfg.privateMode = false;
+    }
+    // Updated and /reload: the suffix goes.
+    hello("0.2.0");
+    expect(buildModel(hub, { linked: true, fps: 30 }).status.text).not.toMatch(/addon/);
+  });
+
+  it("the same version, a clone's dev addon, or no version: no toast, no suffix", () => {
+    hub.version = "0.2.0";
+    for (const v of ["0.2.0", "v0.2.0", "dev", undefined, 7, "0.3.0 <b>hi</b>"]) hello(v);
+    expect(versionToasts()).toEqual([]);
+    expect(hub.versionMismatch()).toBeUndefined();
+    expect(buildModel(hub, { linked: true, fps: 30 }).status.text).not.toMatch(/addon/);
+  });
+
+  it("the version toast stays up 20 s, longer than other info toasts", () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      hub.version = "0.2.1";
+      hello("0.2.0");
+      hub.toast("Something else", "info");
+      vi.advanceTimersByTime(10_000);
+      (hub as any).pruneToasts();
+      expect(hub.toasts.map((x) => x.text)).toEqual([versionToasts()[0].text]);
+      vi.advanceTimersByTime(10_001);
+      (hub as any).pruneToasts();
+      expect(versionToasts()).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe("project folders from the control panel (Projects card)", () => {
   it("an added folder is a zone in the next pick without a restart; removing it takes it away; excluded folders are refused with the reason", async () => {
     // Its own config: no roots yet, like a first run without agent history.

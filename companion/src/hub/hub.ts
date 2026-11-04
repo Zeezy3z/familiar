@@ -115,6 +115,8 @@ export interface Toast {
   generic?: string;
   /** approval: the request it is about (main raises one Windows notice per request). */
   requestId?: string;
+  /** How long it stays up (default: 60 s for approvals, 9 s for the rest). */
+  ms?: number;
 }
 
 export interface View {
@@ -274,6 +276,27 @@ export class Hub {
   onToast: (x: Toast) => void = () => {};
   /** This companion's version (main's VERSION), compared with the addon's on hello. */
   version = "";
+  private versionToasted = false;
+
+  /** The addon and this companion are different versions (WowUp updated one, not the other).
+   * Only a plain version counts: a clone's addon says "dev". Undefined when they match. */
+  versionMismatch(): { addon: string; app: string } | undefined {
+    const addon = this.addon.addon;
+    const plain = (v: unknown): v is string => typeof v === "string" && /^v?\d+\.\d+(\.\d+)?([-+][0-9A-Za-z.-]{1,24})?$/.test(v);
+    if (!plain(addon) || !plain(this.version) || addon.replace(/^v/, "") === this.version.replace(/^v/, "")) return undefined;
+    return { addon, app: this.version };
+  }
+
+  /** Once per companion run (hello comes every 20 s and after each /reload): one toast saying which
+   * to update; the status bar keeps "addon x / app y" while they differ. No names in it. */
+  private versionNotice() {
+    const m = this.versionMismatch();
+    if (!m || this.versionToasted) return;
+    this.versionToasted = true;
+    this.log(`[hub] addon ${m.addon} and companion ${m.app} differ`);
+    const text = `Your addon is ${m.addon} and Familiar on your PC is ${m.app}. Update the one that's behind: addon via WowUp or the release zip, app from the Releases page.`;
+    this.show({ id: this.toastSeq++, text, kind: "info", at: Date.now(), generic: text, ms: 20_000 });
+  }
 
   constructor(
     public cfg: () => Config,
@@ -687,6 +710,7 @@ export class Hub {
       case "hello":
         if (msg.viewKeys === 1) this.viewKeys = true;
         this.addon = { ...this.addon, addon: msg.addon, build: msg.build, iface: msg.iface, char: msg.char, realm: msg.realm, syncAt: msg.syncAt };
+        this.versionNotice();
         this.changed("hello");
         break;
       case "prompt":
@@ -1939,7 +1963,7 @@ export class Hub {
 
   private pruneToasts() {
     const now = Date.now();
-    const keep = this.toasts.filter((x) => now - x.at < (x.kind === "approval" ? 60_000 : 9_000));
+    const keep = this.toasts.filter((x) => now - x.at < (x.ms ?? (x.kind === "approval" ? 60_000 : 9_000)));
     if (keep.length !== this.toasts.length) {
       this.toasts = keep;
       this.changed("toast");

@@ -635,6 +635,8 @@ function statusLine(hub: Hub, link: { linked: boolean; fps: number }): RenderMod
   parts.push(...providers.map((p) => `${p.label} ${!p.enabled ? "off" : p.ready ? "✓" : "✗"}`));
   if (running) parts.push(`${running} running`);
   if (approval) parts.push(`${approval} awaiting approval`);
+  const versions = hub.versionMismatch();
+  if (versions) parts.push(`addon ${versions.addon} / app ${versions.app}`);
   return { text: parts.join("  ·  "), level: !link.linked ? "off" : approval || !providers.some((p) => p.ready) ? "warn" : "ok" };
 }
 
