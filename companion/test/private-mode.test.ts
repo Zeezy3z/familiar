@@ -47,6 +47,8 @@ const model = () => buildModel(hub, { linked: true, fps: 30 });
 beforeEach(async () => {
   process.env.APPDATA = fs.mkdtempSync(path.join(tmp, "state-"));
   cfg.privateMode = false;
+  cfg.blurTranscript = false;
+  cfg.speak = true;
   claude = new FakeBackend("claude");
   hub = new Hub(() => cfg, { claude }, () => {});
   hub.minCardAgeMs = 0;
@@ -93,11 +95,11 @@ describe("private mode", () => {
     expect(card.text).toBe("rm -rf build && npm run deploy");
     expect(m.attention?.find((i) => i.pending)?.excerpt).toBe("Run: rm -rf build");
     // Toasts: generic only; nothing spoken.
-    expect(m.toasts.map((t) => t.text)).toEqual(expect.arrayContaining(["Finished · Claude", "Needs approval · Claude"]));
+    expect(m.toasts.map((t) => t.text)).toEqual(expect.arrayContaining(["Quest Complete", "Needs approval · Claude"]));
     expect(spoken).toEqual([]);
     // The real (non-private) finish toast in the hub carries no reply text either.
     const finished = hub.toasts.find((t) => t.kind === "done");
-    expect(finished?.text).toMatch(/^Finished · Claude · /);
+    expect(finished?.text).toMatch(/^Quest Complete · /);
     expect(finished?.text).not.toContain("The vault key moved");
     // Names stay stable across renders.
     expect(model().list.rows.map((r) => r.text)).toEqual(m.list.rows.map((r) => r.text));
@@ -128,6 +130,41 @@ describe("private mode", () => {
     claude.emit({ type: "approval", threadId: pending, requestId: "r2", kind: "command", title: "Run: npm test", detail: "npm test", canAlways: false });
     expect(model().toasts.some((t) => t.text.includes("secret-beta") && t.text.includes("Run: npm test"))).toBe(true);
     expect(buildSnapshot(hub)).toContain("The vault key moved");
+  });
+
+  it("the after-the-fight summary names nothing, so private mode shows it unchanged", async () => {
+    await hub.key("private", "on");
+    hub.setCombat(true);
+    await scene();
+    hub.setCombat(false);
+    const toasts = model().toasts;
+    expect(toasts.map((t) => t.text)).toContain("While you fought: 1 quest finished · 1 needs approval");
+    expect(JSON.stringify(toasts)).not.toMatch(SECRETS);
+  });
+
+  it("Stream-safe is one switch: names hidden, replies blurred, no speech; approval cards stay readable", async () => {
+    const spoken: string[] = [];
+    hub.onSpeak = (t) => spoken.push(t);
+    await hub.key("stream", "on");
+    expect(cfg).toMatchObject({ privateMode: true, blurTranscript: true, speak: false });
+    expect(hub.toasts.at(-1)!.text).toBe("Stream-safe on: names hidden, replies blurred. Click a blurred reply to read it for 8 seconds.");
+    const { pending } = await scene();
+    const m = model();
+    expect(m).toMatchObject({ private: true, blur: true });
+    if (m.detail.kind !== "thread" || m.detail.id !== pending) throw new Error("pending quest expected");
+    expect(m.detail.entries.find((e) => e.kind === "approval")).toMatchObject({ title: "Run: rm -rf build", text: "rm -rf build && npm run deploy" });
+    expect(spoken).toEqual([]);
+    await hub.key("stream", "off");
+    expect(cfg).toMatchObject({ privateMode: false, blurTranscript: false, speak: false }); // speech stays the player's to turn on
+    expect(hub.toasts.at(-1)!.text).toBe("Stream-safe off.");
+    expect(model().blur).toBeUndefined();
+    expect(JSON.stringify(model().list.rows)).toContain("Refactor billing");
+    // A bare /fam stream toggles; showing names again (Hide names off) ends Stream-safe too.
+    await hub.key("stream");
+    expect(model().blur).toBe(true);
+    await hub.key("private", "off");
+    expect(cfg.blurTranscript).toBe(false);
+    expect(model().blur).toBeUndefined();
   });
 
   it("chats are titled Chats / Chat #n", async () => {

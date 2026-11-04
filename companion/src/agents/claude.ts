@@ -15,6 +15,7 @@ import {
   Mode,
   StartOptions,
   approvalDetail,
+  approvalText,
   editPreview,
   summarizeTool,
   truncatePreview,
@@ -477,21 +478,27 @@ export class ClaudeBackend implements AgentBackend {
       const pending: PendingApproval = { resolve, input, suggestions: opts?.suggestions, toolName };
       let kind: "tool" | "question" | "planExit" = "tool";
       let title = opts?.title ?? `Allow ${opts?.displayName ?? toolName}?`;
-      let detail = opts?.description ? `${opts.description}\n${approvalDetail(toolName, input)}` : approvalDetail(toolName, input);
-      const diff = editPreview(toolName, input);
-      if (diff) detail = diff;
-      else if (toolName === "Bash" && (input as any).description) detail = `${approvalDetail(toolName, input)}\n# ${(input as any).description}`;
+      // The card's text within its limits, or (Infinity) the whole request for the control panel.
+      const describe = (chars: number, lines: number) => {
+        const diff = editPreview(toolName, input, lines);
+        if (diff) return diff;
+        const body = approvalDetail(toolName, input, chars);
+        if (toolName === "Bash" && (input as any).description) return `${body}\n# ${(input as any).description}`;
+        return opts?.description ? `${opts.description}\n${body}` : body;
+      };
+      let text = approvalText(describe(4000, 60), describe(Infinity, Infinity));
       if (toolName === "AskUserQuestion") {
         const q = (input as any).questions?.[0];
         kind = "question";
         title = q?.question ?? "Claude has a question";
         pending.question = q?.question;
         pending.options = (q?.options ?? []).map((o: any) => o.label ?? String(o));
-        detail = (q?.options ?? []).map((o: any) => `• ${o.label}${o.description ? " — " + o.description : ""}`).join("\n");
+        text = { detail: (q?.options ?? []).map((o: any) => `• ${o.label}${o.description ? " — " + o.description : ""}`).join("\n") };
       } else if (toolName === "ExitPlanMode") {
         kind = "planExit";
         title = "Approve the plan and start implementing?";
-        detail = truncatePreview(String((input as any).plan ?? ""), 4000);
+        const plan = String((input as any).plan ?? "");
+        text = approvalText(truncatePreview(plan, 4000), plan);
       }
       l.approvals.set(requestId, pending);
       opts?.signal?.addEventListener?.("abort", () => {
@@ -506,7 +513,7 @@ export class ClaudeBackend implements AgentBackend {
         requestId,
         kind,
         title,
-        detail,
+        ...text,
         canAlways: kind === "tool" && !opts?.suppressAlwaysAllowRule && (opts?.suggestions?.length ?? 0) > 0,
         ...(pending.options ? { options: pending.options } : {}),
       } as AgentEvent);

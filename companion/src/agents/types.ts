@@ -80,6 +80,9 @@ export type AgentEvent =
       detail: string;
       canAlways: boolean;
       options?: string[]; // multiple-choice answers (Claude AskUserQuestion)
+      /** `detail` is a cut preview: the whole request is `full`, and only the control panel approves it. */
+      cut?: boolean;
+      full?: string;
     }
   | { type: "approvalResolved"; threadId: string; requestId: string }
   | { type: "usage"; threadId: string; inputTokens?: number; outputTokens?: number; contextWindow?: number; costUsd?: number }
@@ -158,6 +161,17 @@ export class Emitter<T> {
       }
     }
   }
+}
+
+/** The most of a cut request an approval event carries for the control panel. */
+export const FULL_CAP = 200_000;
+
+/** An approval event's text: the card's `preview` and, when that is not the whole request, `cut`
+ * plus the whole text (`full`, itself capped at FULL_CAP and saying so). A cut request is approved
+ * only in the control panel, where `full` is shown; the game can only deny it. */
+export function approvalText(preview: string, whole: string): { detail: string; cut?: true; full?: string } {
+  if (preview === whole) return { detail: preview };
+  return { detail: preview, cut: true, full: whole.length > FULL_CAP ? `${whole.slice(0, FULL_CAP)}\n… (truncated at 200k)` : whole };
 }
 
 /** Keep provider preview limits explicit; expanding Glass cannot restore the omitted text. */
