@@ -17,11 +17,15 @@
     --u:5px;                                /* Glass: calc(var(--small-font)*.4); control panel: 5px */
     --fs-sm:var(--small-font); --fs-md:var(--body-font); --fs-lg:calc(var(--body-font)*1.25); --fs-xl:calc(var(--body-font)*1.7);
     --shadow:1px 1px 0 #000; --r:2px; --r-btn:3px;
+    /* Motion: state changes · arrivals (toast, card, seal, badge) · the moment settling; nothing longer, nothing loops but the caret. */
+    --m-fast:150ms; --m-arrive:350ms; --m-settle:600ms;
     /* Control-panel surfaces (not part of the shared block). */
     --bg:#0b0a0d; --card:#15131a; --field:#1d1a22;
   }
   body { margin: 0; background: var(--bg); color: var(--text); font: var(--fs-md) var(--sans); }
-  header { padding: calc(var(--u)*2.8) calc(var(--u)*3.6) calc(var(--u)*1.6); display: flex; flex-wrap: wrap; align-items: center; gap: calc(var(--u)*.8) calc(var(--u)*2.4); border-bottom: 1px solid var(--line-soft); }
+  /* The painted desk behind the title; the gradient keeps the words legible and melts the band into --bg on the left. */
+  header { min-height: 112px; box-sizing: border-box; padding: calc(var(--u)*2.8) calc(var(--u)*3.6) calc(var(--u)*1.6); display: flex; flex-wrap: wrap; align-items: center; gap: calc(var(--u)*.8) calc(var(--u)*2.4); border-bottom: 1px solid var(--line);
+    background: linear-gradient(90deg, var(--bg) 0%, var(--bg) 18%, rgba(11, 10, 13, .55) 55%, rgba(11, 10, 13, .15) 100%), url("assets/workshop-1600.jpg") right center / cover no-repeat var(--bg); }
   h1 { font-family: var(--display); color: var(--gold); font-weight: normal; margin: 0; font-size: var(--fs-xl); text-shadow: var(--shadow); }
   .portrait { width: 56px; height: 56px; flex: none; border-radius: 50%; box-shadow: 0 0 0 1px var(--line); }
   .ver { color: var(--muted); }
@@ -37,6 +41,7 @@
   .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   #log { height: 190px; overflow: auto; font: var(--fs-sm) var(--mono); white-space: pre-wrap; color: var(--text-dim); }
   button { background: linear-gradient(180deg, #5a1010, #2a0505); color: var(--gold); border: 1px solid #000; box-shadow: inset 0 1px 0 rgba(255,209,0,.25), inset 0 -1px 0 #000; border-radius: var(--r-btn); padding: 4px 12px; font-family: var(--display); cursor: pointer; }
+  button { transition: filter var(--m-fast); }
   button:hover { filter: brightness(1.3); }
   .btns { display: flex; gap: calc(var(--u)*1.2); flex-wrap: wrap; margin-top: calc(var(--u)*1.2); }
   ul { margin: 4px 0; padding-left: 18px; } li { margin: 2px 0; }
@@ -91,7 +96,7 @@
   #requests { border-color: var(--warn); background: linear-gradient(120deg, #2a1708, var(--card)); }
   #requests h2 { color: var(--warn); font-size: 18px; }
   #requests[hidden] { display: none; }
-  .req { padding: calc(var(--u)*2) 0 0; margin-top: calc(var(--u)*2); border-top: 1px solid var(--line); }
+  .req { padding: calc(var(--u)*2) 0 0; margin-top: calc(var(--u)*2); border-top: 1px solid var(--line); animation: arrive var(--m-arrive) ease-out; }
   .req:first-child { border-top: none; margin-top: 0; }
   .req-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: calc(var(--u)*.8) calc(var(--u)*1.6); }
   .req h3 { margin: 0; font-family: var(--display); font-weight: normal; font-size: 16px; color: var(--text); overflow-wrap: anywhere; }
@@ -104,10 +109,19 @@
   .req-msg:empty { display: none; }
   .req-full:empty::before { content: "No more detail came with this request."; color: var(--muted); }
 
+  /* Something new on the page slides in once: a request appearing, the journey title changing (control.ts re-adds .arrive). */
+  @keyframes arrive { from { opacity: 0; transform: translateY(-4px); } }
+  .arrive { animation: arrive var(--m-arrive) ease-out; }
+  @media (prefers-reduced-motion: reduce) { *, ::before, ::after { animation: none !important; transition: none !important; } }
+
   /* Essentials: always visible. */
   .ess { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: calc(var(--u)*2.4); }
   .ess > div > b, .ess label b { font-weight: 600; }
   .ess .hint { margin-top: calc(var(--u)*.8); }
+  .vol { display: flex; flex-wrap: wrap; align-items: center; gap: calc(var(--u)*.8) calc(var(--u)*1.6); margin-top: calc(var(--u)*.8); }
+  .vol input[type="range"] { flex: 1 1 90px; min-width: 90px; max-width: 200px; margin: 0; }
+  .vol output { min-width: 3ch; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+  #sound-sample:empty { display: none; }
 
   /* Advanced: everything else, collapsed by default. */
   #advanced { border: 1px solid var(--line-soft); border-radius: 4px; background: var(--card); }
@@ -165,9 +179,12 @@
       <div><label><input type="checkbox" id="ui-stream" aria-describedby="ui-stream-hint"> <b>Stream-safe</b></label>
         <div class="hint" id="ui-stream-hint">Hide names and blur replies on the Glass. Approval cards stay readable: you must see what you approve. What you type in the box is still on screen.</div></div>
       <div><label><input type="checkbox" id="ui-sound" aria-describedby="ui-sound-hint"> <b>Sounds</b></label>
-        <div class="hint" id="ui-sound-hint">Chime when a quest finishes, needs approval or fails.</div></div>
+        <div class="vol"><label for="ui-volume">Volume</label><input type="range" id="ui-volume" min="0" max="100" step="5" value="70" aria-describedby="ui-sound-hint"><output id="ui-volume-out" for="ui-volume">70</output>
+          <button type="button" class="small" id="b-sound-sample">Play a sample</button></div>
+        <div class="hint" id="sound-sample" role="status"></div>
+        <div class="hint" id="ui-sound-hint">Cues for quest started, needs your approval, approved, Quest Complete, answer ready and Quest Failed. Silent while a quest works. Also /fam sound on | off | 0-100.</div></div>
     </div>
-    <div class="hint" style="margin-top:calc(var(--u)*1.6)">Also in game: /fam font bigger | smaller | reset, /fam sound on | off, /fam stream on | off</div></section>
+    <div class="hint" style="margin-top:calc(var(--u)*1.6)">Also in game: /fam font bigger | smaller | reset, /fam sound on | off | 0-100, /fam stream on | off</div></section>
   <details class="wide" id="advanced">
     <summary><b>Advanced</b> <span class="muted">— chat model, new-quest mode, Approve key, notices, logs</span></summary>
     <div class="adv-body">
