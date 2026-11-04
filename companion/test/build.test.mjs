@@ -68,7 +68,7 @@ describe("boot.cjs, the start-with-Windows entry", () => {
     fixtures.push(base);
     const dir = join(base, "companion"); // beside addon/Familiar, as in a clone or the download
     for (const d of ["src", "scripts", "dist", "node_modules/electron", "node_modules/koffi", "../addon/Familiar"]) mkdirSync(join(dir, d), { recursive: true });
-    for (const f of ["boot.cjs", "self-test.cjs"]) copyFileSync(fileURLToPath(new URL(`../${f}`, import.meta.url)), join(dir, f));
+    for (const f of ["boot.cjs", "self-test.cjs", "fetch-claude.cjs"]) copyFileSync(fileURLToPath(new URL(`../${f}`, import.meta.url)), join(dir, f));
     writeFileSync(join(base, "addon/Familiar/Familiar.toc"), "## Interface: 16001\n");
     writeFileSync(join(dir, "node_modules/koffi/index.js"),
       'exports.version = "stand-in"; exports.load = () => ({ func: () => () => process.pid });');
@@ -154,6 +154,40 @@ describe("boot.cjs, the start-with-Windows entry", () => {
     expect(r.out.trim().split("\n").at(-1)).toBe("skip Claude Code (claude --version): not downloaded yet (first run fetches it)");
     expect(r).toMatchObject({ status: 0, ran: "" });
   });
+
+  // The installed app: main runs selfTest({ appRoot, addonDir, claudeHome }) for Familiar.exe
+  // --self-test, with claudeHome its own download folder (%LOCALAPPDATA%\Familiar\claude).
+  it("the installed app's self-test needs the shipped pins and skips Claude Code until its download folder holds it", () => {
+    const { dir } = app();
+    const home = join(dir, "..", "LocalAppData", "Familiar", "claude");
+    const where = { appRoot: dir, addonDir: join(dir, "..", "addon", "Familiar"), claudeHome: home };
+    const selfTest = () => JSON.parse(execFileSync(process.execPath, ["-e", "process.stdout.write(JSON.stringify(require(process.argv[1]).selfTest(JSON.parse(process.argv[2]))))",
+      join(dir, "self-test.cjs"), JSON.stringify(where)], { encoding: "utf8" }));
+    const names = (r) => r.lines.map((l) => l.replace(/:.*/, ""));
+    const before = ["ok   companion bundle (dist/main.js)", "ok   addon (Familiar.toc)", "ok   koffi"];
+
+    let r = selfTest(); // a package without dist/claude-pins.json could never download Claude Code
+    expect(names(r)).toEqual([...before, "FAIL Claude Code pins (dist/claude-pins.json)", "skip Claude Code (claude --version)"]);
+    expect(r.ok).toBe(false);
+
+    const { pinned } = createRequire(import.meta.url)("../fetch-claude.cjs");
+    const companionDir = fileURLToPath(new URL("..", import.meta.url));
+    writeFileSync(join(dir, "dist", "claude-pins.json"), JSON.stringify(pinned(companionDir, "win32", "x64").map(({ dir: _, ...pin }) => pin)));
+    r = selfTest();
+    expect(r.lines.at(-2)).toMatch(/^ok {3}Claude Code pins \(dist\/claude-pins\.json\): @anthropic-ai\/claude-agent-sdk@\S+, @anthropic-ai\/claude-agent-sdk-win32-x64@\S+$/);
+    expect(r.lines.at(-1)).toBe("skip Claude Code (claude --version): not downloaded yet (first run fetches it)");
+    expect(r.ok).toBe(true);
+
+    // Downloaded: the SDK, and a binary that answers --version (this Node standing in for claude.exe).
+    const scope = join(home, "node_modules", "@anthropic-ai");
+    mkdirSync(join(scope, "claude-agent-sdk"), { recursive: true });
+    writeFileSync(join(scope, "claude-agent-sdk", "package.json"), "{}");
+    mkdirSync(join(scope, `claude-agent-sdk-${process.platform}-${process.arch}`));
+    copyFileSync(process.execPath, join(scope, `claude-agent-sdk-${process.platform}-${process.arch}`, process.platform === "win32" ? "claude.exe" : "claude"));
+    r = selfTest();
+    expect(r.lines.at(-1)).toBe(`ok   Claude Code (claude --version): ${process.version}`);
+    expect(r.ok).toBe(true);
+  }, 60_000);
 });
 
 // The real fetch-claude.cjs in a throwaway companion folder, with the network replaced by a

@@ -12,22 +12,27 @@ directories:
 extraMetadata:
   # Not boot.cjs: the package has no src/, so boot.cjs would think dist/ is stale and rebuild on every start.
   main: dist/main.js
-npmRebuild: false # koffi (N-API prebuilt) and the Claude SDK (prebuilt claude.exe) need no native rebuild
+npmRebuild: false # koffi (N-API prebuilt) needs no native rebuild
 nodeGypRebuild: false
 asar: true
 # Production node_modules are added automatically; the patterns below only add our files and prune.
+# No Anthropic code: the Claude Agent SDK and its Claude Code binary package are left out, and the
+# app downloads the versions dist/claude-pins.json names (written by scripts/build.mjs) from npm on
+# first run into %LOCALAPPDATA%\Familiar\claude (fetch-claude.cjs). The SDK's open-source
+# dependencies stay. installer.yml fails the build if either package is in it (scripts/installer-check.mjs).
 files:
   - package.json
   - self-test.cjs
-  - dist/**/*
+  - fetch-claude.cjs
+  - dist/**/* # includes dist/claude-pins.json
   - "!dist/fakewow*" # FakeWoW test harness, never loaded by main
   - "!dist/build-info.json" # offline-inspection copy; main.js embeds the build identity
   - "!node_modules/@fontsource/**" # build.mjs copies the one woff2 into dist/assets
   - "!node_modules/koffi/{vendor,doc}/**" # keep koffi/src: src/koffi/src/static.cjs is runtime code
   - "!node_modules/**/*.{md,markdown,map,d.ts,d.mts}"
+  - "!node_modules/@anthropic-ai/claude-agent-sdk{,-*}{,/**}" # Anthropic's, not ours to redistribute (above)
 asarUnpack:
   - node_modules/@koromix/koffi-win32-x64/** # koffi.node must be a real file to load
-  - node_modules/@anthropic-ai/claude-agent-sdk-win32-x64/** # claude.exe must be a real file to spawn
 extraResources:
   - from: ../addon/Familiar
     to: addon/Familiar # process.resourcesPath\addon\Familiar, copied into WoW by the companion

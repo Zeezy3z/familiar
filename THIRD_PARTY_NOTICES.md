@@ -10,7 +10,9 @@ from the npm registry on your own machine (`npm ci`). The release download
 Anthropic proprietary code, neither `@anthropic-ai/claude-agent-sdk` nor
 `@anthropic-ai/claude-agent-sdk-win32-x64`. Its first run downloads both from the npm registry
 onto your own machine (`companion/fetch-claude.cjs`), at the versions the lockfile pins and
-checked against the lockfile's hashes. This repository and its downloads never redistribute them.
+checked against the lockfile's hashes. The Windows installer (`Familiar-Setup-X.Y.Z.exe`) leaves
+them out the same way: the installed app downloads them on first run into
+`%LOCALAPPDATA%\Familiar\claude`. This repository and its downloads never redistribute them.
 The SDK's open-source dependencies, such as @anthropic-ai/sdk (MIT), are in the download.
 
 ## Runtime dependencies (companion)
@@ -18,7 +20,7 @@ The SDK's open-source dependencies, such as @anthropic-ai/sdk (MIT), are in the 
 | Package | Version | Licence | Notes |
 |---|---|---|---|
 | @agentclientprotocol/sdk | 1.7.0 | Apache-2.0 | ACP client for Hermes, Grok Build and other ACP agents. |
-| @anthropic-ai/claude-agent-sdk (with its platform package @anthropic-ai/claude-agent-sdk-win32-x64) | 0.3.293 | Proprietary: "© Anthropic PBC. All rights reserved. Use is subject to the Legal Agreements outlined here: https://code.claude.com/docs/en/legal-and-compliance." | The platform package contains the unmodified Claude Code binary. Both are downloaded from npm onto your machine at first run, under Anthropic's terms (`npm ci` in a git clone, `fetch-claude.cjs` in the release download); not bundled by `scripts/build.mjs` (marked `external`), not committed, and not in the release download. Familiar never modifies either. The signed installer, not published yet, would bundle both; see `docs/releasing.md`. |
+| @anthropic-ai/claude-agent-sdk (with its platform package @anthropic-ai/claude-agent-sdk-win32-x64) | 0.3.293 | Proprietary: "© Anthropic PBC. All rights reserved. Use is subject to the Legal Agreements outlined here: https://code.claude.com/docs/en/legal-and-compliance." | The platform package contains the unmodified Claude Code binary. Both are downloaded from npm onto your machine at first run, under Anthropic's terms (`npm ci` in a git clone, `fetch-claude.cjs` in the release download); not bundled by `scripts/build.mjs` (marked `external`), not committed, and not in the release download or the installer: the installed app downloads both from npm on first run into `%LOCALAPPDATA%\Familiar\claude`, at the versions `package-lock.json` pins (shipped as `dist/claude-pins.json`), checked against their sha512. Familiar never modifies either. See `docs/releasing.md`. |
 | @fontsource/marcellus | 5.3.0 | SIL Open Font License 1.1 (OFL-1.1) | Font "Marcellus", Copyright (c) 2012 Brian J. Bonislawsky DBA Astigmatic (AOETI), with Reserved Font Name "Marcellus". `scripts/build.mjs` copies `marcellus-latin-400-normal.woff2` into the local `dist/assets/` for the overlay and control panel. |
 | dompurify | 3.4.16 | MPL-2.0 OR Apache-2.0 | Used under the Apache-2.0 option. |
 | highlight.js | 11.12.0 | BSD-3-Clause | Copyright (c) 2006, Ivan Sagalaev. |
