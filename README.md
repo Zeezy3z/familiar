@@ -8,7 +8,7 @@ A quest log for your coding agents, inside World of Warcraft: Forever.
 
 ## Familiar in one minute
 
-<img src="docs/media/familiar.png" align="right" width="128" alt="The familiar: a tawny owl scribe with amber eyes, teal wing tips and a scroll satchel">
+<img src="docs/media/familiar.png" align="right" width="128" alt="The familiar: a great horned owl scribe with a sharp amber stare, a worn leather strap and a scroll">
 
 * **What it is:** a quest log for your coding agents, inside WoW: Forever.
 * **How you use it:** open it with `/fam` or the minimap owl. Your first run puts a short tutorial
