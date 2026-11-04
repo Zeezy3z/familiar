@@ -80,6 +80,9 @@ export type AgentEvent =
       detail: string;
       canAlways: boolean;
       options?: string[]; // multiple-choice answers (Claude AskUserQuestion)
+      /** `detail` is a cut preview: the whole request is `full`, and only the control panel approves it. */
+      cut?: boolean;
+      full?: string;
     }
   | { type: "approvalResolved"; threadId: string; requestId: string }
   | { type: "usage"; threadId: string; inputTokens?: number; outputTokens?: number; contextWindow?: number; costUsd?: number }

@@ -38,6 +38,10 @@ export interface EntryView {
   options?: string[];
   requestId?: string;
   level?: string;
+  /** approval: the text is a cut preview, so the card offers Deny only (approve on the PC). */
+  cut?: boolean;
+  /** approval: why the last approving click was refused, as the line the card shows. */
+  refused?: string;
 }
 
 export interface ProviderView {
@@ -104,6 +108,8 @@ export interface TrackerLine {
   status: ThreadStatus;
   activity: string;
   progress?: string;
+  /** The agent's own reported spend ("$0.14", "<$0.01") or tokens ("8.2k tokens"). Display only. */
+  cost?: string;
 }
 
 export interface RenderModel {
@@ -118,7 +124,11 @@ export interface RenderModel {
   list: { title: string; rows: Row[] };
   detail: DetailModel;
   status: { text: string; level: "ok" | "warn" | "off" };
-  keys: { approve: boolean; stop: boolean };
+  /** `mode`: what the Mode button acts on now (the selected quest's or draft's mode label, "Chat"
+   * for chats; absent when nothing it acts on is selected); `modeHot`: Accept edits or Auto. */
+  keys: { approve: boolean; stop: boolean; mode?: string; modeHot?: boolean };
+  /** Stream-safe: the Glass blurs replies (never approval cards) until clicked. */
+  blur?: boolean;
   tracker: TrackerLine[];
   toasts: Toast[];
   native: boolean;
@@ -152,7 +162,8 @@ export function buildModel(hub: Hub, link: { linked: boolean; fps: number }): Re
     native: v.native,
     fontScale: hub.cfg().fontScale,
     raidWarnings: hub.cfg().raidWarnings !== false,
-    providers: Object.fromEntries(Object.keys(hub.backends).map((id) => [id, { label: providerInfo(id).label, glyph: providerInfo(id).glyph }])),
+    // The tutorial's "familiar" is not a backend but has quest rows of its own.
+    providers: Object.fromEntries([...Object.keys(hub.backends), "familiar"].map((id) => [id, { label: providerInfo(id).label, glyph: providerInfo(id).glyph }])),
   };
   if (hub.cfg().privateMode) privateModel(hub, m, link.linked);
   if (hub.cfg().quiet && m.attention?.length) m.tracker.unshift({ id: m.attention[0].thread, agent: m.attention[0].agent,

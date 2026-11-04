@@ -48,8 +48,19 @@ export interface Entry {
   approval?: "pending" | "approved" | "denied" | "always" | "expired";
   canAlways?: boolean;
   options?: string[];
+  /** approval: the card's text is a cut preview; `full` is the whole request, approved only on the PC. */
+  cut?: boolean;
+  full?: string;
+  /** approval: why the last approving click or key was refused (shown on the card until a decision). */
+  refused?: { why: Refusal; at: number };
   level?: "info" | "error";
 }
+
+/** Why the hub refused an approving decision: no proof of real input, a card too fresh to have
+ * been read, a cut request (approved only in the control panel), or an unknown view context. */
+export type Refusal = "proof" | "fresh" | "cut" | "view";
+/** Where a decision came from: the game (Glass card, keys) or the desktop control panel. */
+export type DecisionOrigin = "game" | "panel";
 
 export type ThreadStatus = "idle" | "running" | "approval" | "error" | "new";
 
@@ -72,8 +83,9 @@ export interface Thread {
   /** Revision of the last saved attention event explicitly acknowledged in catch-up notes. */
   attentionSeen?: string | null;
   origin: "familiar" | "external";
-  /** "chat": no repo, web search only (the Chats zone). */
-  kind?: "chat";
+  /** "chat": no repo, web search only (the Chats zone). "tutorial": A Familiar Face, answered by
+   * the hub itself (hub/tutorial.ts), no backend. */
+  kind?: "chat" | "tutorial";
   /** The quest log this chat's model last saw (it is only re-sent when it changed). */
   questsSent?: string;
   /** The desktop/CLI session this quest continues (a fork has its own id): that session's entry
@@ -1151,7 +1163,7 @@ export class Hub {
 
   private lastDecisionAt = 0;
 
-  decide(threadId: string, requestId: string, d: Decision) {
+  decide(threadId: string, requestId: string, d: Decision, origin: DecisionOrigin = "game") {
     const t = this.threads.get(threadId);
     if (!t) return;
     const e = t.entries.find((x) => x.requestId === requestId && x.approval === "pending");
