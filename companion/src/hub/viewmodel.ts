@@ -5,6 +5,7 @@ import { providerInfo } from "../agents/providers";
 import { AgentKind, MODE_LABEL, TodoItem } from "../agents/types";
 import { agentName, Entry, Hub, mustFork, Refusal, Thread, ThreadStatus, Toast } from "./hub";
 import { CHATS_KEY } from "./projects";
+import { costLabel, dollars, fmtK } from "./rewards";
 
 export type Act = Record<string, unknown> & { type: string };
 
@@ -182,15 +183,6 @@ function modeKey(hub: Hub): Pick<RenderModel["keys"], "mode" | "modeHot"> {
   if (hub.view.draft ? hub.view.draft.chat : hub.selectedThread()?.kind === "chat") return { mode: "Chat", modeHot: false };
   return { mode: MODE_LABEL[target.mode], modeHot: target.mode === "edits" || target.mode === "auto" };
 }
-
-/** A quest's spend as its agent reported it (displayed, never sent anywhere): dollars, else tokens. */
-export function costLabel(u: Thread["usage"]): string | undefined {
-  if (u?.costUsd) return dollars(u.costUsd);
-  const tokens = (u?.inputTokens ?? 0) + (u?.outputTokens ?? 0);
-  return tokens ? `${fmtK(tokens)} tokens` : undefined;
-}
-
-const dollars = (usd: number) => (usd < 0.01 ? "<$0.01" : `$${usd.toFixed(2)}`);
 
 // ---- private (streamer) mode --------------------------------------------------------------------
 // The one place real names leave the render model: zones become "Project n", quests "Quest #n" and
@@ -582,7 +574,7 @@ function targetLine(hub: Hub): RenderModel["target"] {
     const x = hub.external.get(v.selected);
     if (x) return { text: `Desktop ${agentName(x.agent)} conversation in ${zone(x.projectKey, x.cwd)} (asks before continuing)`, warn: true };
   }
-  return { text: "Nothing selected - choose Chat, a project quest, or a conversation on the left", warn: true };
+  return { text: "Nothing selected — pick a quest on the left, or + Chat / + Claude / + Codex.", warn: true };
 }
 
 function trackerLines(hub: Hub): TrackerLine[] {
@@ -665,10 +657,6 @@ export function ago(ms: number) {
   if (s < 3600) return `${Math.round(s / 60)}m ago`;
   if (s < 86400) return `${Math.round(s / 3600)}h ago`;
   return `${Math.round(s / 86400)}d ago`;
-}
-
-function fmtK(n: number) {
-  return n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : String(n);
 }
 
 /** Where a desktop/CLI/bot thread came from, for "from ... · recent". */

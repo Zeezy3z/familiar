@@ -411,6 +411,54 @@ describe("Hub", () => {
     expect(hub.toasts.at(-1)).toMatchObject({ kind: "done", text: "Answer ready · is the hearth lit?", generic: "Answer ready" });
   });
 
+  it("a finished quest's toast carries its rewards: objectives, this turn's edits, spend; chats none; private mode keeps it", async () => {
+    await hub.quick("claude", "@familiar polish the hearth");
+    const id = hub.view.selected!;
+    const edit = (toolId: string, name: string, ok = true) => {
+      claude.emit({ type: "tool", threadId: id, toolId, phase: "started", name, summary: "hearth.ts" });
+      claude.emit({ type: "tool", threadId: id, toolId, phase: "completed", name: "", summary: "", ok });
+    };
+    edit("earlier", "Write"); // the first turn's edit
+    claude.emit({ type: "done", threadId: id, status: "completed" });
+    expect(hub.toasts.at(-1)).toMatchObject({ kind: "done", sub: "1 edit" });
+    await hub.prompt("now the chimney");
+    expect(claude.sent.at(-1)).toEqual({ threadId: id, text: "now the chimney" });
+    claude.emit({ type: "todo", threadId: id, items: ["Sweep", "Mend", "Light"].map((text) => ({ text, status: "completed" as const })) });
+    edit("e1", "Edit");
+    claude.emit({ type: "tool", threadId: id, toolId: "r1", phase: "started", name: "Read", summary: "hearth.ts" });
+    edit("refused", "Edit", false); // denied: nothing changed
+    edit("e2", "Edit");
+    claude.emit({ type: "usage", threadId: id, costUsd: 0.2149 });
+    claude.emit({ type: "done", threadId: id, status: "completed" });
+    const done = hub.toasts.at(-1)!;
+    expect(done).toMatchObject({ kind: "done", text: "Quest Complete · polish the hearth", generic: "Quest Complete", sub: "3/3 objectives · 2 edits · $0.21" });
+    // Hide names / Stream-safe: the title goes, the rewards line stays (counts and cost name nothing).
+    cfg.privateMode = true;
+    try {
+      expect(buildModel(hub, { linked: true, fps: 30 }).toasts.find((x) => x.id === done.id)).toMatchObject({ text: "Quest Complete", sub: "3/3 objectives · 2 edits · $0.21" });
+    } finally {
+      cfg.privateMode = false;
+    }
+    // A failed turn says what was done before it failed; the banner's words are unchanged.
+    await hub.prompt("and the bellows");
+    claude.emit({ type: "todo", threadId: id, items: [{ text: "Bellows", status: "completed" }, { text: "Test", status: "in_progress" }] });
+    edit("e3", "MultiEdit");
+    claude.emit({ type: "done", threadId: id, status: "failed", error: "boom" });
+    expect(hub.toasts.at(-1)).toMatchObject({ kind: "error", text: "Quest Failed · polish the hearth", generic: "Quest Failed", sub: "1/2 objectives · 1 edit · $0.21" });
+    // A chat's answer has no rewards line, even with spend reported.
+    await hub.ask("is the hearth lit?");
+    const chat = hub.view.selected!;
+    claude.emit({ type: "usage", threadId: chat, costUsd: 0.01 });
+    claude.emit({ type: "done", threadId: chat, status: "completed" });
+    expect(hub.toasts.at(-1)).toMatchObject({ kind: "done", generic: "Answer ready" });
+    expect(hub.toasts.at(-1)).not.toHaveProperty("sub");
+    // Nothing to report: no line at all.
+    await hub.quick("codex", "@beta just look");
+    codex.emit({ type: "done", threadId: hub.view.selected!, status: "completed" });
+    expect(hub.toasts.at(-1)).toMatchObject({ kind: "done", text: "Quest Complete · just look" });
+    expect(hub.toasts.at(-1)).not.toHaveProperty("sub");
+  });
+
   it("approvals: pending → approve via key → backend gets allow; status recovers", async () => {
     await hub.quick("codex", "@familiar do it");
     const id = hub.view.selected!;
