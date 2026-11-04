@@ -271,6 +271,20 @@ body.short-detail .welcome .portrait { display: none; }
 #mode-label > span { font-size: var(--fs-sm); white-space: nowrap; } /* overlay.ts fits it to the rect */
 #mode-label.hot { color: var(--warn); border-color: var(--warn); }
 
+/* ---- the familiar calls from the minimap (round 6 §2.2) ---- */
+/* The element is the addon's minimap button rect (overlay.ts places it; no rect, no badge) and paints nothing
+   itself: the mark sits at its top-right, a little outside it, and is a picture only (no hit rect, no hover).
+   "!" = a request waits (the card's orange), "?" = a reply waits (the turn-in's gold). */
+#mini-badge { position: absolute; pointer-events: none; }
+#mini-badge::after { content: attr(data-glyph); position: absolute; right: -12%; top: -12%;
+  width: calc(var(--mini) * .42); height: calc(var(--mini) * .42); min-width: 12px; min-height: 12px;
+  border-radius: 50%; background: rgba(9, 8, 11, .92); box-shadow: 0 0 0 1px var(--gold-dim), 0 0 4px #000;
+  display: flex; align-items: center; justify-content: center;
+  font-family: var(--display); font-weight: 700; font-size: calc(var(--mini) * .34); line-height: 1; text-shadow: var(--shadow); }
+#mini-badge.pop::after { animation: toastIn var(--m-arrive) ease-out; } /* a new mark arrives like a toast, once (overlay.ts) */
+#mini-badge[data-glyph="!"]::after { color: var(--warn); }
+#mini-badge[data-glyph="?"]::after { color: var(--gold); }
+
 /* ---- toasts ---- */
 /* Above the panes' sticky quest header (z-index 2), which otherwise covers a raid warning. */
 #toasts { position: absolute; z-index: 10; left: 0; right: 0; top: 14%; display: flex; flex-direction: column; align-items: center; gap: var(--u); pointer-events: none; }

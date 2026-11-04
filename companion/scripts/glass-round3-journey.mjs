@@ -314,5 +314,81 @@ export async function glassRound3Journey(page, origin) {
   await open('stream-safe');
   check('motion: the Stream-safe blur changes state in --m-fast', await page.evaluate(() => getComputedStyle(document.querySelector('.entry.assistant .body')).transitionDuration) === '0.15s');
   await page.emulateMedia({ reducedMotion: 'reduce' });
+
+  // ---- round 6 §2.2 the familiar calls from the minimap: "!" while a request waits, "?" while a reply waits, painted on the rect the addon reports (layout.mini; no rect, no badge)
+  const miniLayout = async over => { await page.evaluate(over => { const p = window.preview; p.emit('layout', { ...p.layout, ...over }); }, over); await settle(); };
+  const badge = () => page.evaluate(() => { const el = document.getElementById('mini-badge'), cs = getComputedStyle(el), r = el.getBoundingClientRect(), after = getComputedStyle(el, '::after');
+    return { shown: cs.display !== 'none', glyph: el.dataset.glyph, content: after.content, color: after.color, box: [r.left, r.top, r.width, r.height], inert: cs.pointerEvents === 'none', pos: cs.position,
+      act: el.hasAttribute('data-act') || !!el.querySelector('[data-act]'), text: el.textContent, aria: el.getAttribute('aria-hidden'), clip: cs.clipPath, mini: cs.getPropertyValue('--mini').trim(),
+      markW: parseFloat(after.width), filter: after.filter }; });
+  const near = (box, rect) => box.every((v, i) => Math.abs(v - rect[i]) <= 1);
+  const MINI = [1180, 40, 31, 31];
+  await open('approval');
+  check('minimap: with no attention nothing is painted', !(await badge()).shown);
+  await push(() => { window.preview.model.attention = [{ thread: 'preview', entry: 'p1', revision: 'fixture:p1', title: 'Quest log', project: 'Preview project', cwd: 'C:\\preview', agent: 'claude',
+    mode: 'Ask first', label: 'Needs approval', excerpt: '+ Clearer spacing for the preview', pending: true, at: 1 }]; });
+  let mini = await badge();
+  check('minimap: a waiting request paints "!" on the minimap button\'s rect, in the card\'s orange', mini.shown && mini.glyph === '!' && mini.content === '"!"' && near(mini.box, MINI) && mini.color === 'rgb(255, 128, 64)');
+  check('minimap: the mark is sized from the button (42%, 12 px at least) and is a picture only: no hit rect, no action, no text', mini.pos === 'absolute' && mini.inert && !mini.act && mini.text === '' && mini.aria === 'true'
+    && mini.mini === '31px' && mini.markW >= 12 && Math.abs(mini.markW - 31 * 0.42) < 1);
+  await push(() => { window.preview.model.attention = [{ thread: 'preview', entry: 'a1', revision: 'fixture:a1', title: 'Quest log', project: 'Preview project', cwd: 'C:\\preview', agent: 'claude',
+    mode: 'Ask first', label: 'Reply waiting', excerpt: 'A reply', pending: false, at: 1 }]; });
+  mini = await badge();
+  check('minimap: only replies waiting paint "?" in gold', mini.shown && mini.glyph === '?' && mini.content === '"?"' && mini.color === 'rgb(255, 209, 0)');
+  await push(() => { window.preview.model.attention.push({ thread: 'other', entry: 'p2', revision: 'fixture:p2', title: 'Another quest', project: 'Preview project', cwd: 'C:\\preview', agent: 'claude',
+    mode: 'Ask first', label: 'Needs approval', excerpt: 'Another request', pending: true, at: 2 }); });
+  check('minimap: a request outranks a reply', (await badge()).glyph === '!');
+  await push(() => { window.preview.model.attention = []; });
+  check('minimap: nothing waiting, nothing painted', !(await badge()).shown && (await badge()).glyph === '');
+  await push(() => { window.preview.model.attention = [{ thread: 'preview', entry: 'p1', revision: 'fixture:p1', title: 'T', project: 'P', cwd: '', agent: 'claude', mode: 'Ask first', label: 'Needs approval', excerpt: 'x', pending: true, at: 1 }]; });
+  await push(() => { window.preview.model.attention = undefined; });
+  check('minimap: a model without attention (an older hub) paints nothing', !(await badge()).shown);
+  await open('stream-safe');
+  await push(() => { window.preview.model.attention = [{ thread: 'preview', entry: 'p-s', revision: 'fixture:p-s', title: 'Quest #1', project: 'Project 1', cwd: '', agent: 'claude', mode: 'Ask first',
+    label: 'Needs approval', excerpt: 'Edit Macros.lua', pending: true, at: 1 }]; });
+  mini = await badge();
+  check('minimap: Stream-safe and Hide names keep the mark (a glyph, no names), unblurred', mini.shown && mini.glyph === '!' && mini.text === '' && mini.filter === 'none' && await page.evaluate(() => document.body.classList.contains('blur')));
+  await open('waiting');
+  mini = await badge();
+  check('minimap: the waiting scenario (an idle quest, one reply waiting) paints "?"', mini.shown && mini.glyph === '?' && near(mini.box, MINI));
+  await miniLayout({ mini: undefined });
+  check('minimap: a layout without the rect (an older addon, or the button hidden) paints nothing', !(await badge()).shown);
+  await miniLayout({});
+  check('minimap: the rect coming back brings the mark back', (await badge()).shown);
+  await miniLayout({ drag: true });
+  check('minimap: hidden while the window is being dragged', !(await badge()).shown);
+  await miniLayout({ drag: false, ui: false });
+  check('minimap: hidden while the game UI is hidden', !(await badge()).shown);
+  await miniLayout({ ui: true, panel: false });
+  check('minimap: shown with the Familiar window closed (the button is always there)', (await badge()).shown && near((await badge()).box, MINI));
+  await miniLayout({ panel: true, mini: [1100, 60, 31, 31] });
+  check('minimap: the mark follows the button when it moves', near((await badge()).box, [1100, 60, 31, 31]));
+  await miniLayout({ mini: [1100, 60, 46, 46] });
+  mini = await badge();
+  check('minimap: a scaled minimap scales the mark', near(mini.box, [1100, 60, 46, 46]) && mini.mini === '46px' && Math.abs(mini.markW - 46 * 0.42) < 1);
+  await miniLayout({ mini: MINI, occ: [[1170, 30, 60, 60]] });
+  mini = await badge();
+  check('minimap: a game frame opened over the button cuts the mark like the tracker (an even-odd clip with the frame as the hole)', mini.clip.startsWith('path(') && mini.clip.includes('evenodd'));
+  await miniLayout({ occ: undefined });
+  check('minimap: with nothing over it the mark is not clipped', (await badge()).clip === 'none');
+  check('minimap: it has no hit rect: the page never hit-tests it', await page.evaluate(() => { const el = document.getElementById('mini-badge'); return document.elementFromPoint(1180 + 31 * 0.9, 40 + 31 * 0.1) !== el && getComputedStyle(el).pointerEvents === 'none'; }));
+  // The mark arrives like a toast, once, when it changes (motion on); reduced motion makes none.
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  await open('approval');
+  const pop = () => page.evaluate(() => { const el = document.getElementById('mini-badge'); return { pop: el.classList.contains('pop'), anim: getComputedStyle(el, '::after').animationName, dur: getComputedStyle(el, '::after').animationDuration }; });
+  await push(() => { window.preview.model.attention = [{ thread: 'preview', entry: 'p1', revision: 'fixture:p1', title: 'T', project: 'P', cwd: '', agent: 'claude', mode: 'Ask first', label: 'Needs approval', excerpt: 'x', pending: true, at: 1 }]; });
+  const arriving = await pop();
+  await page.waitForFunction(() => !document.getElementById('mini-badge').classList.contains('pop'), null, { timeout: 3000 }).catch(() => {});
+  const settled = await pop();
+  await push();
+  const same = await pop();
+  await push(() => { window.preview.model.attention[0].pending = false; });
+  const changed = await pop();
+  check('minimap: a new mark arrives with toastIn in --m-arrive, once; the same mark again is quiet; a changed mark arrives again', arriving.pop && arriving.anim === 'toastIn' && arriving.dur === '0.35s'
+    && !settled.pop && settled.anim === 'none' && !same.pop && changed.pop && changed.anim === 'toastIn');
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await open('approval');
+  await push(() => { window.preview.model.attention = [{ thread: 'preview', entry: 'p1', revision: 'fixture:p1', title: 'T', project: 'P', cwd: '', agent: 'claude', mode: 'Ask first', label: 'Needs approval', excerpt: 'x', pending: true, at: 1 }]; });
+  check('minimap: reduced motion makes no motion', (await pop()).anim === 'none');
   return results;
 }
