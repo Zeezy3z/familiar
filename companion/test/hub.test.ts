@@ -978,7 +978,7 @@ describe("Hub", () => {
     expect(welcome).toMatchObject({ linked: true, linkedChar: "Previous character", chat: {
       id: "codex", label: "Codex", model: "m2", enabled: true, ready: true, act: { type: "newIn", key: "chats" },
     } });
-    expect(unlinked.target.text).toContain("Chat");
+    expect(unlinked.target).toEqual({ text: "Nothing selected · pick a quest, or start one above." });
     hub.action(welcome.chat.act);
     hub.action(welcome.chat.act);
     expect(buildModel(hub, { linked: true, fps: 30 }).detail).toMatchObject({ kind: "draft", chat: true,
@@ -1028,7 +1028,7 @@ describe("Hub", () => {
 
   it("target line says where the next message goes", async () => {
     const m0 = buildModel(hub, { linked: true, fps: 30 });
-    expect(m0.target.warn).toBe(true);
+    expect(m0.target.warn).toBeFalsy(); // nothing selected is not a warning
     await hub.quick("codex", "@familiar tgt");
     expect(buildModel(hub, { linked: true, fps: 30 }).target.text).toBe("Codex - tgt - familiar - Ask first");
   });
