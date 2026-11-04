@@ -1140,6 +1140,113 @@ describe("zones for worktrees", () => {
   });
 });
 
+describe("addon and app versions", () => {
+  const hello = (addon: unknown) => hub.handleAddon({ t: "hello", addon, build: "1.60.2.70500", iface: 16002, char: "Zee", realm: "Forever" });
+  const versionToasts = () => hub.toasts.filter((x) => /Your addon is/.test(x.text));
+
+  it("a different addon version: one toast per run (hello repeats every 20 s), and the status bar says which", () => {
+    hub.version = "0.2.0";
+    hello("0.3.0");
+    expect(versionToasts()).toEqual([expect.objectContaining({ kind: "info", ms: 20_000,
+      text: "Your addon is 0.3.0 and Familiar on your PC is 0.2.0. Update the one that's behind: addon via WowUp or the release zip, app from the Releases page." })]);
+    hello("0.3.0");
+    hello("0.3.0");
+    expect(versionToasts()).toHaveLength(1);
+    expect(buildModel(hub, { linked: true, fps: 30 }).status.text).toMatch(/ {2}· {2}addon 0\.3\.0 \/ app 0\.2\.0$/);
+    // Hide names: the same words (they name no project or quest).
+    cfg.privateMode = true;
+    try {
+      expect(buildModel(hub, { linked: true, fps: 30 }).toasts.map((x) => x.text)).toContain(versionToasts()[0].text);
+    } finally {
+      cfg.privateMode = false;
+    }
+    // Updated and /reload: the suffix goes.
+    hello("0.2.0");
+    expect(buildModel(hub, { linked: true, fps: 30 }).status.text).not.toMatch(/addon/);
+  });
+
+  it("the same version, a clone's dev addon, or no version: no toast, no suffix", () => {
+    hub.version = "0.2.0";
+    for (const v of ["0.2.0", "v0.2.0", "dev", undefined, 7, "0.3.0 <b>hi</b>"]) hello(v);
+    expect(versionToasts()).toEqual([]);
+    expect(hub.versionMismatch()).toBeUndefined();
+    expect(buildModel(hub, { linked: true, fps: 30 }).status.text).not.toMatch(/addon/);
+  });
+
+  it("the version toast stays up 20 s, longer than other info toasts", () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      hub.version = "0.2.1";
+      hello("0.2.0");
+      hub.toast("Something else", "info");
+      vi.advanceTimersByTime(10_000);
+      (hub as any).pruneToasts();
+      expect(hub.toasts.map((x) => x.text)).toEqual([versionToasts()[0].text]);
+      vi.advanceTimersByTime(10_001);
+      (hub as any).pruneToasts();
+      expect(versionToasts()).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("project folders from the control panel (Projects card)", () => {
+  it("an added folder is a zone in the next pick without a restart; removing it takes it away; excluded folders are refused with the reason", async () => {
+    // Its own config: no roots yet, like a first run without agent history.
+    const own = { ...cfg, projectRoots: [] as string[], projects: [] as string[] };
+    let saved = 0;
+    const h = new Hub(() => own, { claude, codex }, () => {});
+    h.minCardAgeMs = 0;
+    await h.start();
+    h.onConfigChanged = () => saved++; // each added or removed folder is saved
+    const zones = () => { const d = buildModel(h, { linked: true, fps: 30 }).detail; return d.kind === "welcome" ? d.zones : -1; };
+    const pick = async () => {
+      await h.key("newClaude");
+      const rows = buildModel(h, { linked: true, fps: 30 }).list.rows;
+      await h.key("back");
+      return rows.filter((r) => r.kind === "project").map((r) => r.text);
+    };
+    expect(zones()).toBe(0);
+    expect(h.projectsSummary()).toEqual({ explicit: [], roots: [], history: 0 });
+
+    const alpha = path.join(projRoot, "alpha");
+    expect(h.addProjectFolder(alpha, "project")).toEqual({ ok: true, path: alpha });
+    expect(own.projects).toEqual([alpha]);
+    expect(saved).toBe(1);
+    expect(h.projects.list().map((p) => p.name)).toEqual(["alpha"]);
+    expect(await pick()).toEqual(["alpha"]);
+    expect(zones()).toBe(1);
+    expect(h.addProjectFolder(alpha + path.sep, "project")).toEqual({ ok: true, path: alpha }); // already there: not added twice
+    expect(own.projects).toEqual([alpha]);
+
+    // Refused, with the reason the panel shows: excluded by config, opted out, too broad, missing.
+    expect(h.addProjectFolder(path.join(projRoot, "node_modules"), "project")).toEqual({ ok: false, why: "That folder is excluded by your config." });
+    expect(h.addProjectFolder(path.join(projRoot, "private-vault"), "root")).toEqual({ ok: false, why: "That folder is excluded by your config." });
+    const hidden = fs.mkdtempSync(path.join(projRoot, "optout-"));
+    fs.writeFileSync(path.join(hidden, ".nofamiliar"), "");
+    expect(h.addProjectFolder(hidden, "project").why).toMatch(/\.nofamiliar file, so Familiar never offers it/);
+    expect(h.addProjectFolder(os.homedir(), "root").why).toMatch(/home folder can't be a zone/);
+    expect(h.addProjectFolder(path.join(projRoot, "no-such-folder"), "project")).toEqual({ ok: false, why: "That folder doesn't exist." });
+    expect(own.projects).toEqual([alpha]);
+    expect(own.projectRoots).toEqual([]);
+
+    // A folder of projects: its subfolders are zones (minus the excluded ones).
+    expect(h.addProjectFolder(projRoot, "root")).toMatchObject({ ok: true });
+    expect(h.projects.list().map((p) => p.name).sort()).toEqual(["alpha", "beta", "familiar", "gamma"]);
+    expect(h.projectsSummary()).toEqual({ explicit: [alpha], roots: [projRoot], history: 0 });
+
+    // Removing: the zone goes at once, unless agent history still lists it.
+    expect(h.removeProjectFolder(projRoot)).toEqual({ ok: true });
+    expect(h.projects.list().map((p) => p.name)).toEqual(["alpha"]);
+    await h.quick("claude", "@alpha start something");
+    expect(h.removeProjectFolder(alpha)).toEqual({ ok: true });
+    expect(h.removeProjectFolder(alpha)).toEqual({ ok: false });
+    expect(h.projects.list().map((p) => p.name)).toEqual(["alpha"]); // a quest worked there
+    expect(h.projectsSummary()).toEqual({ explicit: [], roots: [], history: 1 });
+  });
+});
+
 
 describe("always-on companion and offline honesty", () => {
   it("handles each prompt id once, persists the ids, and FamiliarSync can list them", async () => {
@@ -2106,13 +2213,13 @@ describe("physical corroboration (any addon can forge strip messages)", () => {
     expect(card).toMatchObject({ cut: true, approval: "pending",
       refused: "Part of this request is hidden here. Approve it in full from Familiar's control panel on your PC, or Deny." });
     expect(JSON.stringify(detail)).not.toContain(full); // the Glass never gets the whole text
-    // "Requests waiting on your PC": the whole request with real names; a panel click decides it.
-    expect(hub.cutRequests()).toEqual([{ thread: id, questTitle: "long command", project: "familiar", agent: "Claude", requestId: "long",
-      title: "Allow Bash?", full, canAlways: true, at: expect.any(Number) }]);
+    // "Requests waiting": the whole request with real names; a panel click decides it.
+    expect(hub.pendingRequests()).toEqual([{ thread: id, questTitle: "long command", project: "familiar", agent: "Claude", requestId: "long",
+      title: "Allow Bash?", detail: full.slice(0, 4000) + "\n… (1005 characters omitted from this preview)", full, cut: true, canAlways: true, at: expect.any(Number) }]);
     expect(hub.decide(id, "long", "allow", "panel")).toEqual({ ok: true });
     expect(claude.decisions).toEqual([{ requestId: "long", d: "allow" }]);
     expect(hub.threads.get(id)!.entries.find((e) => e.requestId === "long")!.refused).toBeUndefined();
-    expect(hub.cutRequests()).toEqual([]);
+    expect(hub.pendingRequests()).toEqual([]);
     expect(hub.decide(id, "long", "allow", "panel")).toEqual({ ok: false, why: "no longer pending" });
     // Deny from the card needs no proof, cut or not.
     cut("long2");
@@ -2133,6 +2240,44 @@ describe("physical corroboration (any addon can forge strip messages)", () => {
     expect(saved.entries.find((e: any) => e.requestId === "long")).toMatchObject({ cut: true, approval: "approved" });
     expect(saved.entries.find((e: any) => e.requestId === "long").full).toBeUndefined();
     expect(saved.entries.find((e: any) => e.requestId === "long3").full).toBe(full);
+  });
+
+  it("a pending request can be approved from the control panel: every request is listed there, questions stay in game", async () => {
+    const id = await ask(codex, "short");
+    let raised: { kind: string; requestId?: string; threadId?: string }[] = [];
+    hub.onToast = (x) => raised.push(x);
+    // Listed whole (detail is the whole text: nothing is cut), with real names and no badge.
+    expect(hub.pendingRequests()).toEqual([{ thread: id, questTitle: "corroborate", project: "familiar", agent: "Codex", requestId: "short",
+      title: "Run command?", detail: "npm test", cut: false, canAlways: true, at: expect.any(Number) }]);
+    expect(hub.decide(id, "short", "allow", "panel")).toEqual({ ok: true });
+    expect(codex.decisions).toEqual([{ requestId: "short", d: "allow" }]);
+    expect(hub.threads.get(id)!.entries.find((e) => e.requestId === "short")).toMatchObject({ approval: "approved" });
+    expect(hub.threads.get(id)!.entries.find((e) => e.requestId === "short")!.refused).toBeUndefined();
+    expect(hub.pendingRequests()).toEqual([]);
+    // One decision per request id: a late click in the panel (or the game) changes nothing.
+    expect(hub.decide(id, "short", "deny", "panel")).toEqual({ ok: false, why: "no longer pending" });
+    hub.action({ type: "decide", thread: id, requestId: "short", decision: "deny" });
+    expect(codex.decisions).toHaveLength(1);
+    // Always and Deny from the panel too.
+    codex.emit({ type: "approval", threadId: id, requestId: "s2", kind: "command", title: "Run command?", detail: "npm run build", canAlways: true });
+    codex.emit({ type: "approval", threadId: id, requestId: "s3", kind: "command", title: "Run command?", detail: "rm -rf dist", canAlways: false });
+    expect(hub.pendingRequests().map((r) => [r.requestId, r.cut, r.full])).toEqual([["s2", false, undefined], ["s3", false, undefined]]);
+    expect(hub.decide(id, "s2", "allowAlways", "panel")).toEqual({ ok: true });
+    expect(hub.decide(id, "s3", "deny", "panel")).toEqual({ ok: true });
+    expect(codex.decisions.slice(1)).toEqual([{ requestId: "s2", d: "allowAlways" }, { requestId: "s3", d: "deny" }]);
+    // Each approval toast names its request, for main's one Windows notice per request.
+    expect(raised.filter((x) => x.kind === "approval").map((x) => [x.threadId, x.requestId])).toEqual([[id, "s2"], [id, "s3"]]);
+    // A multiple-choice question wants an answer, not Approve: it is answered in game, never listed.
+    raised = [];
+    codex.emit({ type: "approval", threadId: id, requestId: "q1", kind: "question", title: "Which?", detail: "• A\n• B", canAlways: false, options: ["A", "B"] } as any);
+    expect(hub.pendingRequests()).toEqual([]);
+    // In a fight the toast (and so the notice) waits, then comes once.
+    hub.setCombat(true);
+    codex.emit({ type: "approval", threadId: id, requestId: "s4", kind: "command", title: "Run command?", detail: "npm test", canAlways: true });
+    expect(raised.map((x) => x.requestId)).toEqual(["q1"]);
+    expect(hub.pendingRequests().map((r) => r.requestId)).toEqual(["s4"]); // the panel lists it at once
+    hub.setCombat(false);
+    expect(raised.map((x) => x.requestId)).toEqual(["q1", "s4"]);
   });
 
   it("a refusal is written on the card until the next decision", async () => {
@@ -2340,10 +2485,11 @@ describe("game-side budgets and the start toast", () => {
   });
 });
 
-// The release download carries no Anthropic code until Run Familiar.cmd's first run fetches the
-// Claude Agent SDK and Claude Code (fetch-claude.cjs). The real Claude backend and Familiars card,
-// pointed at a prebuilt companion folder without them.
-const { CLAUDE_NOT_DOWNLOADED, companionDir } = await import("../src/agents/claude-download");
+// The release download (and the installed app) carries no Anthropic code until the first run
+// fetches the Claude Agent SDK and Claude Code (fetch-claude.cjs, from Run Familiar.cmd or the
+// companion itself). The real Claude backend and Familiars card, pointed at a prebuilt companion
+// folder without them.
+const { CLAUDE_NOT_DOWNLOADED, claudeStatus, companionDir, downloadClaude } = await import("../src/agents/claude-download");
 const { ClaudeBackend } = await import("../src/agents/claude");
 const { providerSetup } = await import("../src/agents/setup");
 describe("release download before Claude is downloaded", () => {
@@ -2362,11 +2508,11 @@ describe("release download before Claude is downloaded", () => {
     return { download, restore: () => (companionDir.root = before) };
   }
 
-  it("the Familiars card says to run Run Familiar.cmd again, with no Install… or Sign in, until both packages are there", () => {
+  it("the Familiars card says to click Retry in the control panel, with no Install… or Sign in, until both packages are there", () => {
     const p = prebuilt();
     try {
       const row = () => providerSetup(() => true).find((r) => r.id === "claude")!;
-      expect(CLAUDE_NOT_DOWNLOADED).toBe("Not downloaded yet — run Run Familiar.cmd again to download Claude Code (about 112 MB)");
+      expect(CLAUDE_NOT_DOWNLOADED).toBe("Not downloaded yet — click Retry in Familiar's control panel to download Claude Code (about 112 MB)");
       expect(row()).toMatchObject({ installed: false, enabled: false, signedIn: false, detail: CLAUDE_NOT_DOWNLOADED, installUrl: undefined, canLogin: false });
       p.download();
       expect(row()).toMatchObject({ installed: true, enabled: true, installUrl: "https://docs.claude.com/en/docs/claude-code/setup" });
@@ -2389,6 +2535,44 @@ describe("release download before Claude is downloaded", () => {
       expect(t.lastError).toBe(`${CLAUDE_NOT_DOWNLOADED}. Your message is saved: after that, use Ctrl+Up in the composer and send again.`);
       expect(t.lastError).not.toMatch(/Reinstall|optional|pathToClaudeCodeExecutable|couldn't start/);
       expect(t.entries).toMatchObject([{ kind: "user", text: "Fix the tooltip" }, { kind: "notice", level: "error", text: t.lastError }]);
+    } finally {
+      p.restore();
+    }
+  });
+
+  it("first run downloads Claude Code: missing, then downloading with progress, then present; a failure says why and Retry downloads again", async () => {
+    const p = prebuilt();
+    try {
+      const row = () => providerSetup(() => true).find((r) => r.id === "claude")!;
+      const seen: unknown[] = [];
+      expect(claudeStatus()).toEqual({ state: "missing" });
+      // A failed download (no network): the reason, scrubbed, and that the other agents still work.
+      const failed = await downloadClaude(async () => { throw new Error("no response from the npm registry for 60 s"); }, (s) => seen.push(s));
+      expect(seen).toEqual([{ state: "downloading" }, failed]);
+      expect(failed).toEqual({ state: "failed", error: "no response from the npm registry for 60 s" });
+      expect(row()).toMatchObject({ installed: false, enabled: false,
+        detail: "Claude Code couldn't be downloaded (no response from the npm registry for 60 s). Codex and the other agents work; click Retry in Familiar's control panel" });
+      const real = new ClaudeBackend({ log: () => {}, version: "test" });
+      expect(await real.init()).toMatchObject({ ready: false, setup: row().detail });
+      // Retry: downloading again, the card's line following each whole percent.
+      seen.length = 0;
+      let release!: () => void;
+      const gate = new Promise<void>((r) => (release = r));
+      const done = downloadClaude(async (progress) => {
+        progress(0, 117_440_512);
+        progress(50_000_000, 117_440_512);
+        progress(50_000_001, 117_440_512); // same percent: no extra update
+        await gate;
+        p.download();
+      }, (s) => seen.push(s));
+      expect(downloadClaude(async () => { throw new Error("a second download"); })).toBe(done); // one at a time
+      expect(claudeStatus()).toEqual({ state: "downloading", pct: 42, mb: 112 });
+      expect(row().detail).toBe("Downloading Claude Code · 42 % of 112 MB");
+      release();
+      expect(await done).toEqual({ state: "present" });
+      expect(seen).toEqual([{ state: "downloading" }, { state: "downloading", pct: 0, mb: 112 }, { state: "downloading", pct: 42, mb: 112 }, { state: "present" }]);
+      expect(row()).toMatchObject({ installed: true, enabled: true });
+      expect(row().detail).not.toMatch(/Download|Retry/);
     } finally {
       p.restore();
     }

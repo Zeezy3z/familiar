@@ -60,6 +60,8 @@ export type DetailModel =
       backends: ProviderView[];
       chat: ProviderView & { model?: string; act: Act };
       counts: { running: number; approval: number; total: number };
+      /** Project folders known (configured or from agent history); 0: nowhere to start a quest yet. */
+      zones: number;
     }
   | { kind: "pick"; agent: AgentKind }
   | {
@@ -461,6 +463,7 @@ function welcome(hub: Hub, linked: boolean): DetailModel {
       approval: threads.filter((t) => t.status === "approval").length,
       total: threads.length,
     },
+    zones: hub.projects.list().length,
   };
 }
 
@@ -632,6 +635,8 @@ function statusLine(hub: Hub, link: { linked: boolean; fps: number }): RenderMod
   parts.push(...providers.map((p) => `${p.label} ${!p.enabled ? "off" : p.ready ? "✓" : "✗"}`));
   if (running) parts.push(`${running} running`);
   if (approval) parts.push(`${approval} awaiting approval`);
+  const versions = hub.versionMismatch();
+  if (versions) parts.push(`addon ${versions.addon} / app ${versions.app}`);
   return { text: parts.join("  ·  "), level: !link.linked ? "off" : approval || !providers.some((p) => p.ready) ? "warn" : "ok" };
 }
 

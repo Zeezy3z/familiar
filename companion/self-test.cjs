@@ -1,14 +1,22 @@
 // Checks that this install can run, without starting it: no windows, no login entry, no AddOns
 // link. `electron.exe <companion folder> --self-test` runs it from boot.cjs before the companion
-// loads (release.yml runs it on the extracted download). One line per check; ok is false if any
-// check failed. A skipped check does not fail: the release download has no Claude Code until its
-// first run fetches it (fetch-claude.cjs).
+// loads (release.yml runs it on the extracted download); `Familiar.exe --self-test` runs it from
+// main for the installed app (installer.yml). One line per check; ok is false if any check failed.
+// A skipped check does not fail: the release download and the installed app have no Claude Code
+// until their first run fetches it (fetch-claude.cjs).
 const fs = require("node:fs");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 
-/** @param {{ appRoot: string, addonDir: string, claudeExe?: string }} where */
-function selfTest({ appRoot, addonDir, claudeExe }) {
+/**
+ * @param {{ appRoot: string, addonDir: string, claudeHome?: string, claudeExe?: string }} where
+ *   claudeHome: the folder this install downloads Claude Code into (the installed app's
+ *   %LOCALAPPDATA%\Familiar\claude, claudeHome() in src/agents/claude-download.ts). Given, the binary
+ *   and the SDK are looked for there, the shipped pins (dist/claude-pins.json) must read, and Claude
+ *   Code not there yet is a skip. Without it (boot.cjs: a clone or the release download) claudeExe
+ *   is the binary the SDK resolves, and only the release download (.prebuilt) may skip.
+ */
+function selfTest({ appRoot, addonDir, claudeHome, claudeExe }) {
   const lines = [];
   let ok = true;
   const check = (name, fn) => {
@@ -33,8 +41,15 @@ function selfTest({ appRoot, addonDir, claudeExe }) {
     return `${koffi.version}, native call ok`;
   });
   const claude = "Claude Code (claude --version)";
-  const sdk = path.join(appRoot, "node_modules", "@anthropic-ai", "claude-agent-sdk", "package.json");
-  if ((!claudeExe || !fs.existsSync(sdk)) && fs.existsSync(path.join(appRoot, ".prebuilt"))) lines.push(`skip ${claude}: not downloaded yet (first run fetches it)`);
+  const scope = path.join(claudeHome || appRoot, "node_modules", "@anthropic-ai");
+  if (claudeHome) {
+    claudeExe = path.join(scope, `claude-agent-sdk-${process.platform}-${process.arch}`, process.platform === "win32" ? "claude.exe" : "claude");
+    check("Claude Code pins (dist/claude-pins.json)", () =>
+      require("./fetch-claude.cjs").pinsFrom(path.join(appRoot, "dist", "claude-pins.json")).map((p) => `${p.name}@${p.version}`).join(", "));
+  }
+  const downloads = !!claudeHome || fs.existsSync(path.join(appRoot, ".prebuilt"));
+  const there = !!claudeExe && fs.existsSync(claudeExe) && fs.existsSync(path.join(scope, "claude-agent-sdk", "package.json"));
+  if (downloads && !there) lines.push(`skip ${claude}: not downloaded yet (first run fetches it)`);
   else check(claude, () => {
     if (!claudeExe) throw new Error("bundled Claude Code binary not found");
     // A cold first start of a ~250 MB binary can be slow while antivirus scans it.

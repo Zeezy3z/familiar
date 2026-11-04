@@ -49,6 +49,8 @@ export interface Config {
   /** Notices (done, approval needed, failed, settings) big in the middle of the screen like raid
    * warnings; off: small, at the top of the Familiar window, only while it's open. */
   raidWarnings: boolean;
+  /** A Windows notice (tray balloon) when a request is waiting and WoW isn't in front. Local only. */
+  trayNotices: boolean;
   /** Start the companion (in the tray) when you sign in to Windows. */
   launchAtLogin: boolean;
   /** Launch-at-login has been switched on once by default (afterwards it's the user's choice). */
@@ -95,6 +97,7 @@ export const DEFAULT_CONFIG: Config = {
   tutorialSeen: false,
   fontScale: 1,
   raidWarnings: true,
+  trayNotices: true,
   launchAtLogin: false,
   autostartOffered: false,
   toolDetail: "compact",

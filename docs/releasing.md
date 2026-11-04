@@ -63,8 +63,12 @@ release in place. Open the release afterwards and check that all four files are 
   re-downloads the addon zip. Re-running a tag (or just its failed app job) replaces both files.
 * GitHub's automatic "Source code (zip)": not the supported download; the README points to the
   `FamiliarApp` zip.
-* Notes: the commit log since the previous tag. While Familiar is in beta the workflow marks the
-  release as a prerelease titled `Familiar X.Y.Z beta`.
+* Notes: [`release-body.md`](release-body.md) (the GIF, `docs/media/familiar.gif`, or else
+  `approval.png` when the tag has one; "Familiar in one minute"; the downloads), then the commit log
+  since the previous tag. The workflow fills in the tag, version and repository and keeps the
+  block between `<!-- release-body -->` markers, so a rerun replaces it. Edit the notes by hand
+  afterwards as usual. While Familiar is in beta the workflow marks the release as a prerelease
+  titled `Familiar X.Y.Z beta`.
 
 ## Addon managers
 
@@ -99,18 +103,36 @@ and has no published digest.
 ## Signed installer
 
 [`installer.yml`](../.github/workflows/installer.yml) runs on every `v*` tag and on manual dispatch.
-It always packages the companion (`companion/electron-builder.yml`) and runs
-`Familiar.exe --self-test` on the result, but publishes nothing unsigned. It builds, signs and
-uploads the per-user NSIS installer only when the repository variable `SIGNING_READY` is `true`.
-Signing uses Azure Artifact Signing through GitHub OIDC, so there is no Azure secret key.
-`companion/build/sign.cjs` signs everything except the bundled `claude.exe`, which keeps
-Anthropic's signature. The job then checks both signatures.
+It always packages the companion (`companion/electron-builder.yml`), checks the result with
+[`companion/scripts/installer-check.mjs`](../companion/scripts/installer-check.mjs) and runs
+`Familiar.exe --self-test` on it, but publishes nothing unsigned. It builds, signs and uploads the
+per-user NSIS installer only when the repository variable `SIGNING_READY` is `true`. Signing uses
+Azure Artifact Signing through GitHub OIDC, so there is no Azure secret key.
+`companion/build/sign.cjs` signs every file electron-builder hands it and refuses any Claude Agent
+SDK file. The job then checks the signatures of `Familiar.exe` and the installer.
 
-**Do not publish the installer yet.** Unlike the app zip, it still bundles the Claude Agent SDK and
-`claude.exe` (`electron-builder.yml` unpacks `@anthropic-ai/claude-agent-sdk-win32-x64`, and
-`main.ts` runs it as `BUNDLED_CLAUDE` in packaged mode), which redistributes Anthropic's code. Keep `SIGNING_READY`
-unset until the installer also downloads Claude Code on first run, or redistribution is confirmed
-as allowed.
+Like the app zip, the installer carries no Anthropic code. `electron-builder.yml` leaves out the
+Claude Agent SDK and its Claude Code binary package; the SDK's open-source dependencies stay. The
+build writes `companion/dist/claude-pins.json` from `package-lock.json` (`scripts/build.mjs`: name,
+version, registry URL and sha512 of both win32-x64 packages), and it ships inside `app.asar` with
+`fetch-claude.cjs`. On first run the installed app downloads exactly those versions from
+`https://registry.npmjs.org` into `%LOCALAPPDATA%\Familiar\claude`, checks each against its sha512
+and moves them into place only once both are checked (`fetchClaude({ root, pins })`, in the app,
+with progress and **Retry** in the Familiars card). Both jobs fail unless:
+
+* `installer-check.mjs release/win-unpacked` finds no `@anthropic-ai/claude-agent-sdk*` folder
+  and no `claude`/`claude.exe` anywhere under `release/win-unpacked`, neither as files nor inside
+  `app.asar`, and finds `dist/claude-pins.json`, `fetch-claude.cjs` and `self-test.cjs` in
+  `app.asar`;
+* `Familiar.exe --self-test` reads the pins and reports `skip Claude Code (claude --version): not
+  downloaded yet` (a fresh runner has no `%LOCALAPPDATA%\Familiar\claude`).
+
+Uninstalling (`companion/build/installer.nsh`) removes the startup entry and the downloaded Claude
+Code (`%LOCALAPPDATA%\Familiar\claude`); an update keeps both. `%APPDATA%\Familiar` (config, saved
+quests, log) and the addon copied into WoW are always left in place.
+
+**Publish the installer only when `SIGNING_READY` is `true`,** never an unsigned one. Set it after a
+manual run of `installer.yml` on `main` has passed (step 5 below).
 
 To turn it on:
 
@@ -128,7 +150,8 @@ To turn it on:
    * `AZURE_SIGNING_PROFILE`: the certificate profile name.
    * `SIGNING_PUBLISHER`: the certificate's subject CN, exactly as it appears. Choose it once:
      once in-app updates exist, changing it breaks them for installed users.
-5. Run the workflow once by hand with `SIGNING_READY` unset to confirm the self-test passes. Then
+5. Run the workflow once by hand with `SIGNING_READY` unset to confirm the package check and the
+   self-test pass. Then
    set `SIGNING_READY` to `true`. A manual run signs and verifies but uploads nothing; the next
    tag adds `Familiar-Setup-X.Y.Z.exe`, its `.blockmap`, `latest.yml` and a `SHA256SUMS.txt` line.
 
@@ -138,5 +161,9 @@ installer job afterwards.
 
 Local unsigned build, for testing only (never publish its output): from `companion/`, run
 `npm run build`, then `npx electron-builder --win --dir`, then
-`release\win-unpacked\Familiar.exe --self-test` from Git Bash. Don't start the packaged app
-normally on a machine you use: it writes the startup entry and the WoW AddOns folder.
+`node scripts/installer-check.mjs release/win-unpacked` and
+`release\win-unpacked\Familiar.exe --self-test` from Git Bash. With Smart App Control on, Windows
+may refuse to run the freshly built, unsigned `Familiar.exe` ("An Application Control policy has
+blocked this file"); CI's runner is the place to run it then. Don't start the packaged app
+normally on a machine you use: it writes the startup entry and the WoW AddOns folder, and
+downloads Claude Code into `%LOCALAPPDATA%\Familiar\claude`.

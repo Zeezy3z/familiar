@@ -54,6 +54,30 @@ jobs:
           jq -e --arg f "$(basename "$zip")" \
             '.releases[0].filename == $f and any(.releases[0].metadata[]; .flavor == "forever")' \
             "$dir/release.json" || fail "release.json does not describe $(basename "$zip") as flavor forever"
+      # The notes start with docs/release-body.md (media, "Familiar in one minute", downloads) above
+      # the packager's changelog. Between markers, so a rerun replaces it instead of adding another.
+      - name: Put docs/release-body.md at the top of the release notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          media=
+          for f in familiar.gif approval.png; do
+            if [ -f "docs/media/$f" ]; then
+              media="![Familiar in WoW: Forever. Rendered from the real overlay with sample data.](https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$TAG/docs/media/$f)"
+              break
+            fi
+          done
+          top=$(grep -v '^<!--.*-->$' docs/release-body.md)
+          top=${top//'{{MEDIA}}'/"$media"}
+          top=${top//'{{TAG}}'/"$TAG"}
+          top=${top//'{{VERSION}}'/"${TAG#v}"}
+          top=${top//'{{REPO}}'/"$GITHUB_REPOSITORY"}
+          ! grep -q '{{' <<< "$top" || { echo "::error::docs/release-body.md has a placeholder release.yml does not fill"; exit 1; }
+          top=$(sed '/./,$!d' <<< "$top") # no leading blank lines
+          old=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body --jq .body) # its own line: a failure stops the step
+          old=$(sed -e '/^<!-- release-body -->$/,/^<!-- \/release-body -->$/d' -e '/./,$!d' <<< "$old")
+          printf '<!-- release-body -->\n%s\n<!-- /release-body -->\n\n%s\n' "$top" "$old" > "$RUNNER_TEMP/notes.md"
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file "$RUNNER_TEMP/notes.md"
       # Beta: version strings stay plain (0.1.0); "beta" lives only in the release title.
       # Remove this step (or drop --prerelease) for the first non-beta release.
       - name: Mark the release as a beta prerelease

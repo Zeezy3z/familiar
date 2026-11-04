@@ -102,6 +102,8 @@ export interface Diagnostics {
   windows: string;
   wow: string;
   capture: string;
+  /** The Link Doctor's line ("<step>: <sentence>"). */
+  link?: string;
   providers: string[];
   configKeys: string[];
   /** Already-redacted log lines (the in-memory ring). */
@@ -118,6 +120,7 @@ export function diagnosticsText(d: Diagnostics): string {
     `Electron: ${d.electron} · Node: ${d.node} · Windows: ${d.windows}`,
     `WoW: ${d.wow}`,
     `Capture: ${d.capture}`,
+    ...(d.link ? [`Link doctor: ${d.link}`] : []),
     `Providers: ${d.providers.join("; ") || "none"}`,
     `Config (non-default keys): ${d.configKeys.join(", ") || "none"}`,
     ``,

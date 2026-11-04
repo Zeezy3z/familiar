@@ -59,6 +59,13 @@ the failed job only.
   SDK, with no Node on PATH. It never starts the companion,
   so it says nothing about windows, the overlay or WoW, nor about SmartScreen or antivirus on a
   file downloaded with a browser.
+- `docs/media/` holds the README's screenshots, rendered from the real overlay and control panel
+  with sample data (`npm run media` from `companion/`, `scripts/render-media.mjs`, same
+  `FAMILIAR_QA_MODULE` convention as the smoke). A person reviews and commits them; CI never
+  commits output, but the smoke job runs the renderer and fails unless it produces every PNG, so
+  it cannot rot. Regenerate them after a Glass or control-panel change. `test/readme-media.test.mjs`
+  fails when the README points at a `docs/media` file that is not there, or shows an image
+  without its "Rendered from the real … with sample data." caption.
 - Hosted browser evidence does not establish native Windows/WGC/FakeWoW or live in-game
   behaviour. Keep those checks distinct. If you are running inside Familiar, the `AGENTS.md`
   restart prohibition applies.

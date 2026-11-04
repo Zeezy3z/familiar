@@ -47,6 +47,11 @@ jobs:
         env:
           FAMILIAR_QA_MODULE: ${{ runner.temp }}/familiar-qa/node_modules/playwright/index.mjs
         run: node scripts/preview-smoke.mjs
+      # The README and release-page images render from the same fixtures; fails if any PNG is missing.
+      - name: Render the README media
+        env:
+          FAMILIAR_QA_MODULE: ${{ runner.temp }}/familiar-qa/node_modules/playwright/index.mjs
+        run: node scripts/render-media.mjs --out "$RUNNER_TEMP/media"
       - name: Upload screenshots, trace, and checks
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

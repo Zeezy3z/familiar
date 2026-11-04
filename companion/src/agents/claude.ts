@@ -3,7 +3,7 @@
 // ANTHROPIC_API_KEY or the user's existing Claude Code sign-in; Familiar never sees credentials.
 import { randomUUID } from "node:crypto";
 import { StderrFilter } from "./acp";
-import { claudeNotDownloaded } from "./claude-download";
+import { claudeExecutable, claudeNotDownloaded, claudeSdkSpecifier } from "./claude-download";
 import { readDesktopSessions, readLiveSessions } from "./claude-desktop";
 import {
   AgentBackend,
@@ -26,12 +26,16 @@ import {
 
 type Sdk = typeof import("@anthropic-ai/claude-agent-sdk");
 let sdkPromise: Promise<Sdk> | null = null;
-// The SDK is ESM-only; load it lazily from our CommonJS bundle. Not cached while the release
-// download still lacks it, so a Run Familiar.cmd that fetches it works without a restart.
+// The SDK is ESM-only; load it lazily from our CommonJS bundle (by name, or for the installed app
+// from the download folder: claudeSdkSpecifier). Not cached while it is still being downloaded or
+// failed to load, so a download that finishes later works without a restart.
 const loadSdk = (): Promise<Sdk> => {
   const missing = claudeNotDownloaded();
   if (missing) return Promise.reject(new Error(missing));
-  return (sdkPromise ??= new Function("m", "return import(m)")("@anthropic-ai/claude-agent-sdk") as Promise<Sdk>);
+  return (sdkPromise ??= (new Function("m", "return import(m)")(claudeSdkSpecifier()) as Promise<Sdk>).catch((e) => {
+    sdkPromise = null;
+    throw e;
+  }));
 };
 
 const PERMISSION_MODE: Record<Mode, "default" | "acceptEdits" | "plan" | "auto"> = {
@@ -257,7 +261,8 @@ export class ClaudeBackend implements AgentBackend {
         for (const line of stderrFilter.lines(s)) this.opts.log("[claude:stderr] " + line);
       },
     };
-    if (this.opts.executable) options.pathToClaudeCodeExecutable = this.opts.executable;
+    const exe = this.opts.executable || claudeExecutable(); // config override, else the downloaded binary
+    if (exe) options.pathToClaudeCodeExecutable = exe;
     const model = l.model ?? this.opts.defaultModel;
     if (model && model !== "default") options.model = model;
     if (l.chat) {

@@ -48,6 +48,12 @@ const reasm = new Reassembler((_id, payload) => {
 });
 
 bridge.on("stop", () => stop());
+// "Save what Familiar sees": main asks for a small crop of the next frame (see takeSnapshot).
+let snapshotWanted: { id: number; width: number; height: number } | null = null;
+bridge.on("snapshot", (r: { id: number; width: number; height: number }) => {
+  if (!stream) return bridge.send("snapshot", { id: r.id, error: "Familiar isn't reading the WoW window right now" });
+  snapshotWanted = r;
+});
 bridge.on("start", (cfg: StartCfg) => {
   start(cfg).catch((e) => {
     stats.error = String(e?.message ?? e);
@@ -125,6 +131,11 @@ async function start(cfg: StartCfg) {
       break;
     }
     try {
+      if (snapshotWanted) {
+        const want = snapshotWanted;
+        snapshotWanted = null;
+        await takeSnapshot(frame, want);
+      }
       stats.frames++;
       fpsCount++;
       stats.frameW = frame.displayWidth;
@@ -191,6 +202,24 @@ async function start(cfg: StartCfg) {
       stats.error = String(e?.message ?? e);
     } finally {
       frame.close();
+    }
+  }
+
+  /** The top-left of the game: `want` px (320x32) from the client corner, or from just above-left of
+   * the strip while it is locked (screen capture: wherever it sits). Never more than asked for. */
+  async function takeSnapshot(frame: any, want: { id: number; width: number; height: number }) {
+    const fw = frame.displayWidth,
+      fh = frame.displayHeight;
+    const w = Math.min(want.width, fw) & ~1,
+      h = Math.min(want.height, fh) & ~1;
+    const at = lock ? { x: lock.x - 6, y: lock.y - 6 } : { x: cfg.clientX, y: cfg.clientY };
+    const x = Math.max(0, Math.min(fw - w, Math.floor(at.x))) & ~1;
+    const y = Math.max(0, Math.min(fh - h, Math.floor(at.y))) & ~1;
+    try {
+      const img = await region(frame, x, y, w, h);
+      bridge.send("snapshot", { id: want.id, width: img.width, height: img.height, data: img.data.slice(0, img.width * img.height * 4) });
+    } catch (e: any) {
+      bridge.send("snapshot", { id: want.id, error: String(e?.message ?? e) });
     }
   }
 

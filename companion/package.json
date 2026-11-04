@@ -10,7 +10,8 @@
     "start": "node scripts/build.mjs && electron .",
     "dist": "node scripts/build.mjs && electron-builder --win --publish never",
     "typecheck": "tsc --noEmit -p .",
-    "test": "vitest run"
+    "test": "vitest run",
+    "media": "node scripts/render-media.mjs"
   },
   "license": "MIT",
   "author": "Zeezy3z",
