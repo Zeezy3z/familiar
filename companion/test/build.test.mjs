@@ -157,73 +157,91 @@ describe("boot.cjs, the start-with-Windows entry", () => {
 });
 
 // The real fetch-claude.cjs in a throwaway companion folder, with the network replaced by a
-// downloader that serves a stand-in npm tarball (built here with the same tar.exe the script uses).
-describe("fetch-claude.cjs, the release download's first-run Claude Code download", () => {
+// downloader that serves stand-in npm tarballs (built here with the same tar.exe the script uses).
+describe("fetch-claude.cjs, the release download's first-run Claude download", () => {
   const { fetchClaude } = createRequire(import.meta.url)("../fetch-claude.cjs");
-  const NAME = "@anthropic-ai/claude-agent-sdk-win32-x64";
-  const URL_ = `https://registry.npmjs.org/${NAME}/-/claude-agent-sdk-win32-x64-0.9.9.tgz`;
+  const SDK = "@anthropic-ai/claude-agent-sdk";
+  const BIN = "@anthropic-ai/claude-agent-sdk-win32-x64";
+  const MAC = "@anthropic-ai/claude-agent-sdk-darwin-arm64";
+  const url = (name) => `https://registry.npmjs.org/${name}/-/${name.split("/")[1]}-0.9.9.tgz`;
   const tar = process.platform === "win32" ? join(process.env.SystemRoot || "C:\\Windows", "System32", "tar.exe") : "tar";
-  function companion({ resolved = URL_ } = {}) {
+  function companion({ resolved = {} } = {}) {
     const dir = mkdtempSync(join(tmpdir(), "familiar-fetch-"));
     fixtures.push(dir);
-    const pkg = join(dir, "pack", "package");
-    mkdirSync(pkg, { recursive: true });
-    writeFileSync(join(pkg, "package.json"), JSON.stringify({ name: NAME, version: "0.9.9" }));
-    writeFileSync(join(pkg, "claude.exe"), "stand-in for the Claude Code binary");
-    const tgz = join(dir, "pack.tgz");
-    execFileSync(tar, ["-c", "-z", "-f", tgz, "-C", join(dir, "pack"), "package"]);
-    const bytes = readFileSync(tgz);
-    const integrity = "sha512-" + createHash("sha512").update(bytes).digest("base64");
+    const files = {
+      [SDK]: { "package.json": JSON.stringify({ name: SDK, version: "0.9.9" }), "manifest.json": JSON.stringify({ version: "9.1.999" }), "sdk.mjs": "export const query = () => {};" },
+      [BIN]: { "package.json": JSON.stringify({ name: BIN, version: "0.9.9" }), "claude.exe": "stand-in for the Claude Code binary" },
+      [MAC]: { "package.json": JSON.stringify({ name: MAC, version: "0.9.9" }), claude: "another platform's binary" },
+    };
+    const bytes = {};
+    const packages = {};
+    for (const [name, content] of Object.entries(files)) {
+      const pack = join(dir, "pack", name.split("/")[1]);
+      mkdirSync(join(pack, "package"), { recursive: true });
+      for (const [f, text] of Object.entries(content)) writeFileSync(join(pack, "package", f), text);
+      const tgz = join(pack, "p.tgz");
+      execFileSync(tar, ["-c", "-z", "-f", tgz, "-C", pack, "package"]);
+      bytes[name] = readFileSync(tgz);
+      packages[`node_modules/${name}`] = { version: "0.9.9", resolved: resolved[name] ?? url(name), integrity: "sha512-" + createHash("sha512").update(bytes[name]).digest("base64"),
+        ...(name === BIN ? { os: ["win32"], cpu: ["x64"], optional: true } : name === MAC ? { os: ["darwin"], cpu: ["arm64"], optional: true } : {}) };
+    }
     const root = join(dir, "companion");
-    mkdirSync(join(root, "node_modules/@anthropic-ai/claude-agent-sdk"), { recursive: true });
-    writeFileSync(join(root, "node_modules/@anthropic-ai/claude-agent-sdk/manifest.json"), JSON.stringify({ version: "9.1.999" }));
-    writeFileSync(join(root, "package-lock.json"), JSON.stringify({ packages: { [`node_modules/${NAME}`]: { version: "0.9.9", resolved, integrity } } }));
-    const target = join(root, "node_modules", NAME);
+    mkdirSync(join(root, "node_modules/@anthropic-ai/sdk"), { recursive: true }); // the MIT API client, which stays in the zip
+    writeFileSync(join(root, "package-lock.json"), JSON.stringify({ packages }));
     const urls = [];
     let out = "";
-    const fetch = (serve = bytes) => fetchClaude({ root, platform: "win32", arch: "x64", tar, log: (s) => (out += s),
-      download: async (url, file, progress) => { urls.push(url); progress(0, serve.length); writeFileSync(file, serve); progress(serve.length, serve.length); } });
-    const leftovers = () => readdirSync(join(root, "node_modules/@anthropic-ai")).filter((n) => n.startsWith("."));
-    return { root, target, bytes, urls, fetch, leftovers, out: () => out };
+    const fetch = (tamper) => fetchClaude({ root, platform: "win32", arch: "x64", tar, log: (s) => (out += s),
+      download: async (u, file, progress) => {
+        urls.push(u);
+        const name = Object.keys(bytes).find((n) => u === url(n));
+        const serve = Buffer.from(bytes[name]);
+        if (name === tamper) serve[serve.length >> 1] ^= 0xff;
+        progress(0, serve.length);
+        writeFileSync(file, serve);
+        progress(serve.length, serve.length);
+      } });
+    const at = (name, f) => join(root, "node_modules", name, f);
+    const scope = () => readdirSync(join(root, "node_modules/@anthropic-ai")).sort();
+    return { root, urls, fetch, at, scope, out: () => out };
   }
 
-  it("installs exactly the pinned package where the Agent SDK looks, and a second run downloads nothing", async () => {
+  it("installs exactly the pinned SDK and this PC's Claude Code where npm would, and a second run downloads nothing", async () => {
     const c = companion();
     await expect(c.fetch()).resolves.toBe("installed");
-    expect(c.urls).toEqual([URL_]);
-    expect(c.out()).toMatch(/^Downloading Claude Code 9\.1\.999 from npm \(about 0 MB\)\.\.\./);
-    expect(readFileSync(join(c.target, "claude.exe"), "utf8")).toBe("stand-in for the Claude Code binary");
-    expect(JSON.parse(readFileSync(join(c.target, "package.json"), "utf8")).version).toBe("0.9.9");
-    expect(c.leftovers()).toEqual([]);
+    expect(c.urls).toEqual([url(SDK), url(BIN)]); // never another platform's binary
+    expect(c.out()).toMatch(/^Downloading the Claude Agent SDK 0\.9\.9 from npm \(about 1 MB\)\.\.\.$/m);
+    expect(c.out()).toMatch(/^Downloading Claude Code 9\.1\.999 from npm \(about 1 MB\)\.\.\.$/m);
+    expect(readFileSync(c.at(BIN, "claude.exe"), "utf8")).toBe("stand-in for the Claude Code binary");
+    expect(readFileSync(c.at(SDK, "sdk.mjs"), "utf8")).toBe("export const query = () => {};");
+    expect(c.scope()).toEqual(["claude-agent-sdk", "claude-agent-sdk-win32-x64", "sdk"]); // no leftovers
     await expect(c.fetch()).resolves.toBe("present");
-    expect(c.urls).toHaveLength(1);
+    expect(c.urls).toHaveLength(2);
   });
 
-  it("replaces an older Claude Code left by extracting a new download over an old folder", async () => {
+  it("replaces only what is missing or older, as after extracting a new download over an old folder", async () => {
     const c = companion();
-    mkdirSync(c.target, { recursive: true });
-    writeFileSync(join(c.target, "package.json"), JSON.stringify({ name: NAME, version: "0.9.8" }));
-    writeFileSync(join(c.target, "claude.exe"), "older binary");
+    await c.fetch();
+    writeFileSync(c.at(BIN, "package.json"), JSON.stringify({ name: BIN, version: "0.9.8" }));
+    writeFileSync(c.at(BIN, "claude.exe"), "older binary");
     await expect(c.fetch()).resolves.toBe("installed");
-    expect(readFileSync(join(c.target, "claude.exe"), "utf8")).toBe("stand-in for the Claude Code binary");
-    expect(c.leftovers()).toEqual([]);
+    expect(c.urls.slice(2)).toEqual([url(BIN)]);
+    expect(readFileSync(c.at(BIN, "claude.exe"), "utf8")).toBe("stand-in for the Claude Code binary");
+    expect(c.scope()).toEqual(["claude-agent-sdk", "claude-agent-sdk-win32-x64", "sdk"]);
   });
 
-  it("refuses a download that does not match the lockfile's sha512, and installs nothing", async () => {
+  it.each([["the SDK", SDK], ["Claude Code", BIN]])("refuses a download of %s that does not match the lockfile's sha512, and installs neither", async (_, tampered) => {
     const c = companion();
-    const tampered = Buffer.from(c.bytes);
-    tampered[tampered.length >> 1] ^= 0xff;
-    await expect(c.fetch(tampered)).rejects.toThrow(/does not match package-lock\.json's sha512 integrity/);
-    expect(existsSync(c.target)).toBe(false);
-    expect(c.leftovers()).toEqual([]);
+    await expect(c.fetch(tampered)).rejects.toThrow(new RegExp(`^${tampered}@0\\.9\\.9: the download does not match package-lock\\.json's sha512 integrity`));
+    expect(c.scope()).toEqual(["sdk"]);
   });
 
   it("downloads only over https from registry.npmjs.org", async () => {
-    for (const resolved of [URL_.replace("https:", "http:"), URL_.replace("registry.npmjs.org", "registry.example.com"), `https://registry.npmjs.org/other-package/-/other-package-0.9.9.tgz`]) {
-      const c = companion({ resolved });
-      await expect(c.fetch()).rejects.toThrow(/refusing to download/);
-      expect(c.urls).toEqual([]);
-    }
+    for (const name of [SDK, BIN])
+      for (const bad of [url(name).replace("https:", "http:"), url(name).replace("registry.npmjs.org", "registry.example.com"), "https://registry.npmjs.org/other-package/-/other-package-0.9.9.tgz"]) {
+        const c = companion({ resolved: { [name]: bad } });
+        await expect(c.fetch()).rejects.toThrow(/refusing to download/);
+        expect(c.urls).toEqual([]);
+      }
   });
 });
 

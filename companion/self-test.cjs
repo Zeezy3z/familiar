@@ -33,7 +33,8 @@ function selfTest({ appRoot, addonDir, claudeExe }) {
     return `${koffi.version}, native call ok`;
   });
   const claude = "Claude Code (claude --version)";
-  if (!claudeExe && fs.existsSync(path.join(appRoot, ".prebuilt"))) lines.push(`skip ${claude}: not downloaded yet (first run fetches it)`);
+  const sdk = path.join(appRoot, "node_modules", "@anthropic-ai", "claude-agent-sdk", "package.json");
+  if ((!claudeExe || !fs.existsSync(sdk)) && fs.existsSync(path.join(appRoot, ".prebuilt"))) lines.push(`skip ${claude}: not downloaded yet (first run fetches it)`);
   else check(claude, () => {
     if (!claudeExe) throw new Error("bundled Claude Code binary not found");
     // A cold first start of a ~250 MB binary can be slow while antivirus scans it.

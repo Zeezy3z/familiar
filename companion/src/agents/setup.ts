@@ -8,6 +8,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { peekConfig } from "../hub/config";
+import { claudeNotDownloaded } from "./claude-download";
 import { findCodexExe } from "./codex";
 import { hermesHome } from "./hermes";
 import { AcpProviderConfig, DEFAULT_ACP_PROVIDERS, providerInfo } from "./providers";
@@ -34,6 +35,8 @@ interface Known {
   installUrl: string;
   installCommand?: string;
   installed(): string | null;
+  /** Why it isn't installed, when Familiar knows the fix (shown instead of "Not installed" and Install…). */
+  why?(): string | undefined;
   signedIn(): boolean;
   how: string;
   /** Product name for "<name> found (<exe>)"; set when the path tells the user which install is used. */
@@ -49,7 +52,8 @@ const KNOWN: Record<string, Known> = {
   claude: {
     installUrl: "https://docs.claude.com/en/docs/claude-code/setup",
     // The Agent SDK ships its own Claude Code; the CLI is only needed to sign in.
-    installed: () => resolveCommand("claude") ?? "sdk",
+    installed: () => (claudeNotDownloaded() ? null : resolveCommand("claude") ?? "sdk"),
+    why: claudeNotDownloaded,
     signedIn: () => exists(home, ".claude", ".credentials.json") || !!process.env.ANTHROPIC_API_KEY,
     how: "ANTHROPIC_API_KEY, or your installed Claude Code's existing sign-in",
     login: (exe) => (exe === "sdk" ? null : [exe, "/login"]),
@@ -108,6 +112,7 @@ export function providerSetup(enabled: (id: string) => boolean, custom: Record<s
     }
     const exe = k.installed();
     const signedIn = !!exe && k.signedIn();
+    const why = exe ? undefined : k.why?.();
     return {
       id,
       label: info.label,
@@ -117,8 +122,8 @@ export function providerSetup(enabled: (id: string) => boolean, custom: Record<s
       enabled: !!exe && enabled(id),
       detail: k.found
         ? exe ? `${k.found} found (${exe}) · ${signedIn ? "signed in" : "not signed in"}` : `Not installed · ${k.how}`
-        : !exe ? "Not installed" : signedIn ? `Signed in · ${k.how}` : `Not signed in · ${k.how}`,
-      installUrl: k.installUrl,
+        : !exe ? why ?? "Not installed" : signedIn ? `Signed in · ${k.how}` : `Not signed in · ${k.how}`,
+      installUrl: why ? undefined : k.installUrl,
       installCommand: k.installCommand,
       canLogin: !!exe && !!k.login(exe),
     };

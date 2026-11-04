@@ -111,6 +111,8 @@ export interface BackendStatus {
   account?: string; // plan label only; never email/tokens
   models: { id: string; label: string; isDefault?: boolean }[];
   error?: string;
+  /** Why it can't start, in Familiar's own words, safe to show and save as is (unlike error). */
+  setup?: string;
 }
 
 export interface AgentBackend {

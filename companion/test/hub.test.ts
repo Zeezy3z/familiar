@@ -2045,3 +2045,58 @@ describe("game-side budgets and the start toast", () => {
     }
   });
 });
+
+// The release download carries no Anthropic code until Run Familiar.cmd's first run fetches the
+// Claude Agent SDK and Claude Code (fetch-claude.cjs). The real Claude backend and Familiars card,
+// pointed at a prebuilt companion folder without them.
+const { CLAUDE_NOT_DOWNLOADED, companionDir } = await import("../src/agents/claude-download");
+const { ClaudeBackend } = await import("../src/agents/claude");
+const { providerSetup } = await import("../src/agents/setup");
+describe("release download before Claude is downloaded", () => {
+  function prebuilt() {
+    const root = fs.mkdtempSync(path.join(tmp, "prebuilt-"));
+    fs.writeFileSync(path.join(root, ".prebuilt"), "version=0.0.0\n");
+    const before = companionDir.root;
+    companionDir.root = root;
+    const download = () => {
+      const scope = path.join(root, "node_modules", "@anthropic-ai");
+      fs.mkdirSync(path.join(scope, "claude-agent-sdk"), { recursive: true });
+      fs.writeFileSync(path.join(scope, "claude-agent-sdk", "package.json"), "{}");
+      fs.mkdirSync(path.join(scope, `claude-agent-sdk-${process.platform}-${process.arch}`), { recursive: true });
+      fs.writeFileSync(path.join(scope, `claude-agent-sdk-${process.platform}-${process.arch}`, process.platform === "win32" ? "claude.exe" : "claude"), "");
+    };
+    return { download, restore: () => (companionDir.root = before) };
+  }
+
+  it("the Familiars card says to run Run Familiar.cmd again, with no Install… or Sign in, until both packages are there", () => {
+    const p = prebuilt();
+    try {
+      const row = () => providerSetup(() => true).find((r) => r.id === "claude")!;
+      expect(CLAUDE_NOT_DOWNLOADED).toBe("Not downloaded yet — run Run Familiar.cmd again to download Claude Code (about 112 MB)");
+      expect(row()).toMatchObject({ installed: false, enabled: false, signedIn: false, detail: CLAUDE_NOT_DOWNLOADED, installUrl: undefined, canLogin: false });
+      p.download();
+      expect(row()).toMatchObject({ installed: true, enabled: true, installUrl: "https://docs.claude.com/en/docs/claude-code/setup" });
+      expect(row().detail).not.toContain("Not downloaded");
+    } finally {
+      p.restore();
+    }
+  });
+
+  it("a Claude quest started anyway fails with the same sentence and keeps the message, not the SDK's reinstall advice", async () => {
+    const p = prebuilt();
+    try {
+      const real = new ClaudeBackend({ log: () => {}, version: "test" });
+      expect(await real.init()).toMatchObject({ ready: false, setup: CLAUDE_NOT_DOWNLOADED });
+      const h = new Hub(() => cfg, { claude: real, codex }, () => {});
+      h.projects.scanRoots();
+      await h.quick("claude", "@familiar Fix the tooltip").catch(() => {});
+      const t = [...h.threads.values()].find((x) => x.agent === "claude")!;
+      expect(t.status).toBe("error");
+      expect(t.lastError).toBe(`${CLAUDE_NOT_DOWNLOADED}. Your message is saved: after that, use Ctrl+Up in the composer and send again.`);
+      expect(t.lastError).not.toMatch(/Reinstall|optional|pathToClaudeCodeExecutable|couldn't start/);
+      expect(t.entries).toMatchObject([{ kind: "user", text: "Fix the tooltip" }, { kind: "notice", level: "error", text: t.lastError }]);
+    } finally {
+      p.restore();
+    }
+  });
+});

@@ -1,9 +1,9 @@
 // The release download FamiliarApp-<tag>-windows.zip: the repository as `git archive` exports it,
 // plus companion/dist, the production node_modules and the stock Electron binary, so Run
 // Familiar.cmd starts it with no Node or npm on the player's PC. Same folder layout as a clone.
-// Windows only: npm installs the win32 builds of Electron and koffi. Claude Code is left out (it is
-// Anthropic's, not ours to redistribute): Run Familiar.cmd's first run fetches the version the
-// lockfile pins from npm with companion/fetch-claude.cjs.
+// Windows only: npm installs the win32 builds of Electron and koffi. The Claude Agent SDK and its
+// Claude Code binary package are left out (Anthropic's, not ours to redistribute): Run
+// Familiar.cmd's first run fetches the versions the lockfile pins from npm (companion/fetch-claude.cjs).
 //
 //   node companion/scripts/prebuilt.mjs build <out.zip> [git ref, default HEAD]
 //   node companion/scripts/prebuilt.mjs check <out.zip>
@@ -11,7 +11,7 @@
 // check extracts the zip into a temp folder, checks the files, and with every folder holding
 // node.exe removed from PATH runs the companion's --self-test there (Claude Code skipped: not
 // downloaded yet), then fetch-claude.cjs as Run Familiar.cmd does (a real npm download), then the
-// self-test again, which now runs claude --version.
+// self-test again, which now runs claude --version, and imports the downloaded SDK.
 import { createHash } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -26,9 +26,10 @@ const ELECTRON = "companion/node_modules/electron/dist/electron.exe";
 /** What Run Familiar.cmd, boot.cjs and the release checks rely on. */
 const REQUIRED = ["Run Familiar.cmd", "addon/Familiar/Familiar.toc", "companion/package-lock.json", "companion/.prebuilt",
   "companion/boot.cjs", "companion/self-test.cjs", "companion/fetch-claude.cjs", "companion/dist/main.js", ELECTRON];
-/** Claude Code's platform packages (the binary) under companion/node_modules/@anthropic-ai/. */
-const CLAUDE_BINARY = /^claude-agent-sdk-/;
-const claudeLeft = (app) => readdirSync(join(app, "companion", "node_modules", "@anthropic-ai")).filter((n) => CLAUDE_BINARY.test(n));
+/** Anthropic's proprietary packages under companion/node_modules/@anthropic-ai/: the Claude Agent
+ * SDK and its Claude Code binary packages. (@anthropic-ai/sdk, the MIT API client, stays.) */
+const CLAUDE = /^claude-agent-sdk(-|$)/;
+const claudeLeft = (app) => readdirSync(join(app, "companion", "node_modules", "@anthropic-ai")).filter((n) => CLAUDE.test(n));
 
 function run(cmd, args, opts = {}) {
   console.log(`> ${[cmd, ...args].join(" ")}`);
@@ -110,7 +111,7 @@ function check(zip) {
     const app = join(dir, "Familiar");
     const missing = REQUIRED.filter((f) => !existsSync(join(app, f)));
     if (missing.length) throw new Error(`missing from ${zip}: ${missing.join(", ")}`);
-    if (claudeLeft(app).length) throw new Error(`${zip} must not contain Claude Code: ${claudeLeft(app).join(", ")}`);
+    if (claudeLeft(app).length) throw new Error(`${zip} must not contain Anthropic's Claude packages: ${claudeLeft(app).join(", ")}`);
     const cmd = readFileSync(join(app, "Run Familiar.cmd"), "latin1");
     const lf = cmd.split("\n").length - 1;
     const crlf = cmd.split("\r\n").length - 1;
@@ -140,7 +141,10 @@ function check(zip) {
     // Run Familiar.cmd's first-run step: download from npm, check the lockfile's sha512, unpack.
     electron(["fetch-claude.cjs"], { ELECTRON_RUN_AS_NODE: "1" }, 600_000);
     selfTest(/^ok {3}Claude Code/m);
-    if (electron(["fetch-claude.cjs"], { ELECTRON_RUN_AS_NODE: "1" }).trim()) throw new Error("a second fetch-claude.cjs run should find Claude Code in place and print nothing");
+    // The companion loads the SDK lazily, as ESM: this proves it and its dependencies (left in the zip) load.
+    const sdk = electron(["-e", 'import("@anthropic-ai/claude-agent-sdk").then((m) => console.log("SDK query:", typeof m.query))'], { ELECTRON_RUN_AS_NODE: "1" });
+    if (!/SDK query: function/.test(sdk)) throw new Error("the downloaded Claude Agent SDK does not load");
+    if (electron(["fetch-claude.cjs"], { ELECTRON_RUN_AS_NODE: "1" }).trim()) throw new Error("a second fetch-claude.cjs run should find Claude in place and print nothing");
     console.log(`checked ${zip}: ${mb(statSync(zip).size)}, ${mb(extracted)} extracted, ${mb(size(app))} with Claude Code`);
   } finally {
     rmSync(dir, { recursive: true, force: true });

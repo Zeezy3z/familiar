@@ -1460,7 +1460,8 @@ export class Hub {
       t.status = "error";
       // Initialization diagnostics may contain credentials or private paths. Keep setup failures
       // actionable in the saved transcript and toast without copying the provider's exception.
-      t.lastError = ready ? String(e?.message ?? e) :
+      const setup = !ready && b.status().setup; // Familiar's own words, unlike the provider's exception
+      t.lastError = ready ? String(e?.message ?? e) : setup ? `${setup}. Your message is saved: after that, use Ctrl+Up in the composer and send again.` :
         `${agentName(t.agent)} couldn't start. Your message is saved. Check setup and sign-in in the control panel's Familiars card, then use Ctrl+Up in the composer and send again.`;
       this.note(t, t.lastError, "error");
       this.saveNow(); // Keep the error/catch-up note too, even if Familiar closes immediately.
