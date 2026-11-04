@@ -26,6 +26,9 @@
      growing chrome would take the reading lines and wrap narrow header rows. Content that
      scrolls (entries, cards, markdown) keeps --u. */
   --u-fixed:min(var(--u), 4px);
+  /* Motion: state changes · arrivals (toast, card, seal, badge) · the moment settling; nothing longer, nothing loops but the caret.
+     control.html carries the same three; test/motion.test.ts checks both files. */
+  --m-fast: 150ms; --m-arrive: 350ms; --m-settle: 600ms;
 }
 
 html, body {
@@ -271,18 +274,18 @@ body.short-detail .welcome .portrait { display: none; }
 /* ---- toasts ---- */
 /* Above the panes' sticky quest header (z-index 2), which otherwise covers a raid warning. */
 #toasts { position: absolute; z-index: 10; left: 0; right: 0; top: 14%; display: flex; flex-direction: column; align-items: center; gap: var(--u); pointer-events: none; }
-.toast { font-family: var(--display); font-size: max(15px, 2.1vh); color: var(--gold); background: rgba(0, 0, 0, 0.55); padding: calc(var(--u) * 0.75) calc(var(--u) * 3.25); border-bottom: 1px solid rgba(255, 209, 0, 0.5); border-radius: var(--r-btn); text-shadow: 0 0 2px #000, 0 0 5px #000; max-width: 70vw; text-align: center; animation: toastIn 0.35s ease-out; }
+.toast { font-family: var(--display); font-size: max(15px, 2.1vh); color: var(--gold); background: rgba(0, 0, 0, 0.55); padding: calc(var(--u) * 0.75) calc(var(--u) * 3.25); border-bottom: 1px solid rgba(255, 209, 0, 0.5); border-radius: var(--r-btn); text-shadow: 0 0 2px #000, 0 0 5px #000; max-width: 70vw; text-align: center; animation: toastIn var(--m-arrive) ease-out; }
 .toast.approval::before { content: "! "; }
 .toast.approval { color: var(--warn); }
 .toast.info { color: var(--text); font-size: max(13px, 1.7vh); }
 /* Quest Complete / Quest Failed: the moment. The painted seal (cracked on failure) above the title, a
    rewards line under it, a plain rule below; gold (or red) glow. The seal is an <img> (overlay.ts). */
 .toast.done, .toast.error { font-size: max(18px, 2.6vh); letter-spacing: 0.04em; min-width: 14em; padding: var(--u) calc(var(--u) * 6);
-  background: radial-gradient(ellipse at center, rgba(0, 0, 0, 0.7) 35%, rgba(0, 0, 0, 0.35) 58%, rgba(0, 0, 0, 0) 74%); border-bottom: 0; animation: settle 0.6s ease-out;
+  background: radial-gradient(ellipse at center, rgba(0, 0, 0, 0.7) 35%, rgba(0, 0, 0, 0.35) 58%, rgba(0, 0, 0, 0) 74%); border-bottom: 0; animation: settle var(--m-settle) ease-out;
   text-shadow: 0 0 2px #000, 0 0 6px rgba(255, 209, 0, 0.55), 0 0 14px rgba(255, 170, 0, 0.3); }
 .toast.error { color: var(--err); text-shadow: 0 0 2px #000, 0 0 6px rgba(255, 90, 79, 0.55), 0 0 14px rgba(255, 60, 40, 0.3); }
 .toast .seal { display: block; width: 2.2em; height: 2.2em; margin: 0 auto calc(var(--u) * 0.75); }
-.toast.done .seal { animation: stamp 350ms ease-out; }
+.toast.done .seal { animation: stamp var(--m-arrive) ease-out; }
 .toast .sub { margin-top: calc(var(--u) * 0.5); font-family: var(--sans); font-size: 0.62em; letter-spacing: normal; color: var(--text-dim); text-shadow: 0 0 2px #000, 0 0 5px #000, 0 0 9px #000; }
 .toast.done::after, .toast.error::after { content: ""; display: block; height: 1px; margin-top: var(--u); background: linear-gradient(90deg, transparent, var(--gold-dim) 22%, var(--gold-dim) 78%, transparent); }
 .toast.error::after { background: linear-gradient(90deg, transparent, var(--err) 22%, var(--err) 78%, transparent); }
@@ -303,7 +306,7 @@ body.short-detail .welcome .portrait { display: none; }
 
 /* ---- Stream-safe: blur what was said, never what you approve ---- */
 body.blur .entry.user .body, body.blur .entry.assistant .body, body.blur .entry.reasoning, body.blur .tool-line .tsum, body.blur .tout,
-body.blur .obj, body.blur .tl-a, body.blur .catch-excerpt, body.blur .confirm pre, body.blur .held pre { filter: blur(6px); transition: filter 0.15s; }
+body.blur .obj, body.blur .tl-a, body.blur .catch-excerpt, body.blur .confirm pre, body.blur .held pre { filter: blur(6px); transition: filter var(--m-fast); }
 body.blur .entry.revealed .body, body.blur .entry.reasoning.revealed { filter: none; }
 body.blur .card .approval-preview, body.blur .entry.approval .card { filter: none; }
 

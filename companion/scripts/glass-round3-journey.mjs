@@ -301,5 +301,18 @@ export async function glassRound3Journey(page, origin) {
   heard = await cues();
   check('cues: volume 0, an unknown cue and a malformed event play nothing and break nothing', heard.contexts === 1 && heard.oscillators === silent.oscillators && heard.buffers === silent.buffers
     && heard.started === silent.started && heard.peaks.length === silent.peaks.length);
+
+  // ---- round 6 §2.4 one motion vocabulary: the durations come from --m-fast / --m-arrive / --m-settle (motion on, as a player has it)
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  await open('quest-complete');
+  await push(() => { window.preview.model.toasts.push({ kind: 'approval', text: 'Needs approval · Quest log', at: 2 }); });
+  const motion = await page.evaluate(() => { const cs = (sel, pseudo) => getComputedStyle(document.querySelector(sel), pseudo), root = getComputedStyle(document.documentElement);
+    return { tokens: ['--m-fast', '--m-arrive', '--m-settle'].map(n => root.getPropertyValue(n).trim()), arrive: cs('.toast.approval').animationDuration, settle: cs('.toast.done').animationDuration,
+      seal: cs('.toast.done .seal').animationDuration }; });
+  check('motion: the tokens are 150 / 350 / 600 ms', motion.tokens.join() === '150ms,350ms,600ms');
+  check('motion: a banner arrives in --m-arrive, Quest Complete settles in --m-settle, and its seal stamps in --m-arrive', motion.arrive === '0.35s' && motion.settle === '0.6s' && motion.seal === '0.35s');
+  await open('stream-safe');
+  check('motion: the Stream-safe blur changes state in --m-fast', await page.evaluate(() => getComputedStyle(document.querySelector('.entry.assistant .body')).transitionDuration) === '0.15s');
+  await page.emulateMedia({ reducedMotion: 'reduce' });
   return results;
 }
