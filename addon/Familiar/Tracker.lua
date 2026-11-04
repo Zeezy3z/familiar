@@ -12,7 +12,8 @@ function Tracker.Init()
   frame = CreateFrame("Frame", "FamiliarTracker", UIParent, "BackdropTemplate")
   Tracker.frame = frame
   frame:SetBackdrop(ns.BACKDROP_PANE)
-  frame:SetBackdropColor(0, 0, 0, 0.35)
+  -- No native fill: the Glass paints the tracker's background, and a second one made a double box.
+  frame:SetBackdropColor(0, 0, 0, 0)
   frame:SetBackdropBorderColor(0.5, 0.4, 0.2, 0.6)
   frame:SetSize(db.w, db.h)
   frame:SetPoint(db.point, UIParent, db.point, db.x, db.y)

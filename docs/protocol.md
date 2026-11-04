@@ -75,9 +75,9 @@ Capacity = ⌊(cols·rows − 8)·6/8⌋ bytes; a 64×4 strip carries 171 payloa
 | `quick` | agent, text, id | `/fam claude|codex <text>` |
 | `quests` | text? | empty text means no quests; omitted text means context sharing is off/unavailable. The quest log, one line per quest with objective progress (`[x]`/`[ ]`); sent when it changes (debounced 4 s) and every 5 min; read-only; used by chats |
 | `ask` | text, id, new?, ctx? | `/fam ask [new] <text>`: continue the latest chat (or start one). `ctx` (also on `prompt`): one line of character context, "level 20 Night Elf Rogue (Alliance) in Darkshore - Auberdine"; used for chats only |
-| `key` | k ∈ newClaude, newCodex, back, mode, model, native, approve, deny, always, stop, next, prev, tools, pin, hide, hidden, unhide, show, autostart, newChat; optional `view` (`full`/`focus`, see below), optional `a` (argument, e.g. `show` → "claude,codex" / "all"), `src` (`button` / `bind` / `slash`). approve / always / mode are acted on only when the companion matches them to physical input on the PC; `src` only tells it which check to run | buttons, keybinds, slash |
+| `key` | k ∈ newClaude, newCodex, back, mode, model, native, approve, deny, always, stop, next, prev, tools, pin, hide, hidden, unhide, show, autostart, newChat, stream, tutorial; optional `view` (`full`/`focus`, see below), optional `a` (argument, e.g. `show` → "claude,codex" / "all"; `stream` → "on" / "off" / ""), `src` (`button` / `bind` / `slash`). approve / always / mode are acted on only when the companion matches them to physical input on the PC; `src` only tells it which check to run | buttons, keybinds, slash |
 | `click` | r (list/detail/tracker/status), x, y (0..1 within the region), b (L/R) | hit-tested by the Glass |
-| `wheel` | r, d (accumulated notches) | scroll the Glass region |
+| `wheel` | r, d (accumulated notches); `d` ≤ −9999 on `detail` means jump to the latest reply and follow | scroll the Glass region; sent by the mouse wheel and by the Scroll keybindings |
 | `hover` | r, x, y (−1 = left) | hover highlight, low priority |
 | `dragstart` | kind (move/size), target (win/tracker), rect, cx, cy, min?, max? | a Familiar frame is being dragged or resized: its rect, the cursor and the resize limits (physical px). The companion then follows the OS cursor itself (read-only) until `dragstop` |
 | `dragstop` | | the drag ended; the exact `layout` follows |
@@ -97,7 +97,15 @@ submit a new message ID; Familiar never retries it automatically.
 
 `generatedAt` (companion clock, epoch s; rewritten at least every 5 min), `stoppedAt` (clean quit),
 `acked` (ids of handled `prompt`/`quick`/`ask` messages), `providers` (agent ids for
-`/fam <id> <text>` and `/fam show <id>`), `list` (Quest Log rows), `selected` (native transcript).
+`/fam <id> <text>` and `/fam show <id>`), `list` (Quest Log rows), `selected` (native transcript), `fontScale` (text size 0.8–1.6; optional).
+
+`fontScale` is the companion's text size setting. At login the addon adopts it when present (clamped to
+0.8–1.6, steps of 0.1) and sizes the native quest-list rows to `round(16 × fontScale)` — the Glass
+sizes its row text from `layout.rowH`, so both follow. A change in the control panel therefore reaches
+the quest list after the next `/reload`. `/fam font …` also applies the size to the list at once in
+the addon (same words as the companion: bigger, smaller, reset, 80–160) and still sends the `font`
+key, so the companion's setting stays the source after the next login. Without a snapshot the addon
+keeps the last size `/fam font` set (`FamiliarDB.fontScale`).
 
 
 ## Unfinished composer recovery (local only)
