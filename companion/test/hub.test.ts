@@ -2093,6 +2093,8 @@ describe("physical corroboration (any addon can forge strip messages)", () => {
     expect(hub.toasts.at(-1)).toMatchObject({ kind: "approval", text: "Needs approval · Claude · familiar · Allow Bash? · Open Familiar on your PC to approve",
       generic: "Needs approval · Claude · Open Familiar on your PC to approve" });
     expect(alerts).toBe(1);
+    hub.action({ type: "decide", thread: id, requestId: "long", decision: "allow" }, NO_PROOF);
+    expect(hub.threads.get(id)!.entries.find((e) => e.requestId === "long")!.refused?.why).toBe("cut"); // not "click again"
     hub.action({ type: "decide", thread: id, requestId: "long", decision: "allow" }, OK);
     hub.action({ type: "decide", thread: id, requestId: "long", decision: "allowAlways" }, OK);
     await hub.key("approve", undefined, "full", OK);
@@ -2241,8 +2243,10 @@ describe("A Familiar Face (the tutorial quest)", () => {
     await h.prompt("anything else?");
     expect(t.entries.findLast((e) => e.kind === "assistant")!.text).toMatch(/^Nothing more to teach/);
     expect(t.status).toBe("idle");
-    // The first real quest completes the last objective.
-    await h.quick("claude", "@familiar a real one");
+    // The first real quest completes the last objective; typed with the tutorial selected, it never
+    // starts in the tutorial's folder (Familiar's own data).
+    await h.quick("claude", "a real one");
+    expect(h.selectedThread()!.cwd).not.toBe(t.cwd);
     expect(t.todos.every((x) => x.status === "completed")).toBe(true);
     expect(t.entries.some((e) => e.kind === "notice" && e.text === "Set out on a real quest ✓")).toBe(true);
     h.saveNow();

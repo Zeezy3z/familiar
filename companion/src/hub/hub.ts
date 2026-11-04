@@ -1388,7 +1388,9 @@ export class Hub {
       await this.sendTo(t, at[2].trim());
       return;
     }
-    const base = this.selectedThread()?.cwd ?? (this.view.selected ? this.external.get(this.view.selected)?.cwd : undefined) ?? this.projects.list()[0]?.path;
+    // Never the tutorial's folder (Familiar's own data): it is not a zone.
+    const sel = this.selectedThread();
+    const base = (sel?.kind === "tutorial" ? undefined : sel?.cwd) ?? (this.view.selected ? this.external.get(this.view.selected)?.cwd : undefined) ?? this.projects.list()[0]?.path;
     if (!text || !base) {
       this.view.list = "pick";
       this.view.pickAgent = agent;
@@ -1901,9 +1903,10 @@ function settle(e: Entry, approval: NonNullable<Entry["approval"]>) {
   delete e.refused;
 }
 
-/** Write a refusal on the pending card it was about, where it stays until a decision (toasts expire). */
+/** Write a refusal on the pending card it was about, where it stays until a decision (toasts expire).
+ * A cut card always says why it matters most: it can only be approved on the PC. */
 function refuse(e: Entry | undefined, why: Refusal) {
-  if (e?.kind === "approval" && e.approval === "pending") e.refused = { why, at: Date.now() };
+  if (e?.kind === "approval" && e.approval === "pending") e.refused = { why: e.cut ? "cut" : why, at: Date.now() };
 }
 
 function stripUndef(o: any) {
