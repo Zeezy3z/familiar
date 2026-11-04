@@ -226,7 +226,11 @@ function createOverlay() {
   } catch (e) {
     log("[overlay] style: " + e);
   }
-  overlay.webContents.on("did-finish-load", () => pushAll());
+  overlay.webContents.on("did-finish-load", () => {
+    // A Glass loaded while the game is behind another window still learns the dev-input flag.
+    overlay?.webContents.send("vis", { visible: overlayShown, devInput: devEnabled() });
+    pushAll();
+  });
 }
 
 function createCapture() {
