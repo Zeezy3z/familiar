@@ -22,6 +22,12 @@ parity and the journey tests; remove a test only with a concrete obsolete/duplic
 retained coverage. List deliberate expectation changes in the PR (see `AGENTS.md`). If a local
 check cannot run, say so in the PR.
 
+If you changed what ships in the release download (`Run Familiar.cmd`, `boot.cjs`,
+`self-test.cjs`, `scripts/prebuilt.mjs`, dependencies), commit, then also build and check it on
+Windows: `node scripts/prebuilt.mjs build <scratch>\FamiliarApp-test-windows.zip` and
+`node scripts/prebuilt.mjs check <same zip>`. The Windows verify workflow does the same on pull
+requests and manual runs (not on pushes) and keeps the zip as an artifact for 3 days.
+
 For documentation-only edits, check links and documented commands against their actual
 definitions. The workflow does not run for ordinary docs changes; a filtered or absent check is
 not a passing check.
@@ -47,6 +53,10 @@ the failed job only.
 - `scripts/preview-smoke.mjs` runs only on GitHub Actions; do not spoof `GITHUB_ACTIONS` to claim
   a local substitute. Its browser journeys exercise built renderers, hit testing and reading
   continuity.
+- The prebuilt check's `--self-test` proves the extracted download loads koffi, runs the bundled
+  `claude.exe` and has its bundle and addon, with no Node on PATH. It never starts the companion,
+  so it says nothing about windows, the overlay or WoW, nor about SmartScreen or antivirus on a
+  file downloaded with a browser.
 - Hosted browser evidence does not establish native Windows/WGC/FakeWoW or live in-game
   behaviour. Keep those checks distinct. If you are running inside Familiar, the `AGENTS.md`
   restart prohibition applies.

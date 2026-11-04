@@ -2,13 +2,16 @@
 
 A `v*` tag push runs [`release.yml`](../.github/workflows/release.yml), which packages the addon
 with the [BigWigs packager](https://github.com/BigWigsMods/packager) (pinned by commit) and
-publishes a GitHub release. Configuration: [`.pkgmeta`](../.pkgmeta).
+publishes a GitHub release, then builds the prebuilt app zip on Windows and attaches it.
+Configuration: [`.pkgmeta`](../.pkgmeta).
 
 ## Cut a release
 
 1. Set the same version in `addon/Familiar/Familiar.toc` (`## Version: X.Y.Z`) and
    `companion/package.json` (`"version": "X.Y.Z"`). Plain numbers; no `beta` suffix.
-2. Run the checks in [ci.md](ci.md), then commit and get it onto `main`.
+2. Run the checks in [ci.md](ci.md), then commit and get it onto `main`. The pull request's
+   Windows verify run uploads the app zip as an artifact (kept 3 days): try it on a PC without
+   Node before tagging.
 3. From `main`:
 
    ```sh
@@ -26,13 +29,23 @@ release in place. Open the release afterwards and check that all four files are 
   the Lua/XML files and `LICENSE`. The workflow downloads it again and fails unless that holds.
 * `release.json`: packager metadata (file name, flavor `forever`, Interface numbers) that addon
   managers read.
-* `FamiliarApp-vX.Y.Z-windows.zip`: the app users download (companion plus addon, root folder
-  `Familiar/`, `Run Familiar.cmd` inside). The workflow builds it from the tag with `git archive`,
-  checks it holds `Run Familiar.cmd`, `companion/package-lock.json` and `addon/Familiar/Familiar.toc`
-  and that `Run Familiar.cmd` has CRLF line endings, then uploads it. Its name must not start with
-  `Familiar-`: the addon zip check expects exactly one `Familiar-*.zip`.
+* `FamiliarApp-vX.Y.Z-windows.zip`: the app users download, prebuilt so it runs without Node or
+  npm (about 260 MB, 600 MB unpacked). Root folder `Familiar/` with the repository layout, as
+  `git archive` exports the tag, plus `companion/dist/`, the production `companion/node_modules/`
+  and the stock Electron binary in `companion/node_modules/electron/dist/`. Dev tooling, source
+  maps, type declarations, docs and Electron locales other than en-US are pruned. The marker
+  `companion/.prebuilt` (version and `package-lock.json` hash) makes `Run Familiar.cmd` skip Node,
+  npm and the build, and keeps `boot.cjs` from ever rebuilding. A Windows job runs
+  [`companion/scripts/prebuilt.mjs`](../companion/scripts/prebuilt.mjs) `build`, then `check`:
+  it extracts the zip to a temp folder, checks the required files and CRLF line endings in
+  `Run Familiar.cmd`, and runs `electron.exe companion --self-test` there with every `node.exe`
+  removed from PATH (koffi loads and makes a native call, `claude.exe --version` runs,
+  `dist/main.js` and `Familiar.toc` exist). Only then is it uploaded. Its name must not start with
+  `Familiar-`: the addon zip check expects exactly one `Familiar-*.zip`. To build and check one
+  locally on Windows (Node 24): `node companion/scripts/prebuilt.mjs build <out>.zip`, then
+  `... check <out>.zip`; `build` packs the committed `HEAD`, not uncommitted changes.
 * `SHA256SUMS.txt`: SHA-256 of the app zip and the addon zip, written by the workflow after it
-  re-downloads the addon zip. Re-running a tag replaces both new files.
+  re-downloads the addon zip. Re-running a tag (or just its failed app job) replaces both files.
 * GitHub's automatic "Source code (zip)": not the supported download; the README points to the
   `FamiliarApp` zip.
 * Notes: the commit log since the previous tag. While Familiar is in beta the workflow marks the

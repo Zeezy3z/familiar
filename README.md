@@ -30,17 +30,15 @@ window (see [Signing in](#signing-in)).
 |---|---|
 | OS | Windows 11 (Windows 10, macOS and Linux are not supported) |
 | Game | World of Warcraft: Forever installed through Battle.net (client folder `_forever_`), display mode **Windowed** or **Windowed (Fullscreen)** |
-| Runtime | [Node.js](https://nodejs.org) 24 or newer (LTS) |
-| Disk | ~800 MB for dependencies (Electron, Claude Agent SDK) |
+| Runtime | Nothing extra for the release download. [Node.js](https://nodejs.org) 24 or newer (LTS) only to run from a git clone |
+| Disk | ~600 MB unpacked (Electron, Claude Code); a git clone installs ~800 MB of dependencies |
 | Agents | At least one, already installed and signed in: **Claude Code** (signed in, or an `ANTHROPIC_API_KEY`) or **Codex** (desktop app). Optional extras: an ACP agent such as Hermes or Grok Build |
 
 ### Before you start
 
-1. Install Node.js: go to [nodejs.org](https://nodejs.org), click the green **LTS** button, open the
-   downloaded file and keep clicking **Next** until it says **Finish**.
+1. Download and extract the app ([Install](#install), step 1). Nothing else to install.
 2. Double-click `Run Familiar.cmd` in the Familiar folder.
-3. A black window opens and scrolls while Familiar installs. The first run takes several minutes:
-   leave it open. When it finishes, Familiar's window and a tray icon (bottom right) appear.
+3. Within a few seconds Familiar's window and a tray icon (bottom right) appear.
 
 ## Safety at a glance
 
@@ -55,11 +53,12 @@ window (see [Signing in](#signing-in)).
 1. Get the app: download **`FamiliarApp-v<version>-windows.zip`** (for example
    `FamiliarApp-v0.1.1-windows.zip`) from the
    [Releases page](https://github.com/Zeezy3z/familiar/releases) and extract it so that
-   `Run Familiar.cmd` ends up in `C:\Familiar`. That ZIP is the whole thing: companion and addon.
-   Or `git clone https://github.com/Zeezy3z/familiar.git C:\Familiar`. Not inside OneDrive, a
-   synced folder or a network drive: WoW's AddOns folder is linked to this folder. If you
-   downloaded a ZIP, right-click it → **Properties** → **Unblock** before extracting (see
-   [Troubleshooting](#troubleshooting) for the SmartScreen warning).
+   `Run Familiar.cmd` ends up in `C:\Familiar`. That ZIP (about 260 MB) is the whole thing, ready
+   to run: companion, addon, Electron and Claude Code. No Node.js needed.
+   Or `git clone https://github.com/Zeezy3z/familiar.git C:\Familiar` (needs Node.js 24, see
+   step 2). Not inside OneDrive, a synced folder or a network drive: WoW's AddOns folder is linked
+   to this folder. If you downloaded a ZIP, right-click it → **Properties** → **Unblock** before
+   extracting (see [Troubleshooting](#troubleshooting) for the SmartScreen warning).
 
    `Familiar-v<version>-forever.zip` on the same page is the addon alone, for addon managers such
    as WowUp. It does nothing without the app, so most people want the `FamiliarApp` ZIP.
@@ -67,10 +66,11 @@ window (see [Signing in](#signing-in)).
    `Get-FileHash .\FamiliarApp-v0.1.1-windows.zip -Algorithm SHA256` with the line for that file
    in `SHA256SUMS.txt` on the same release page.
 2. Double-click **`Run Familiar.cmd`**. Windows may show "Windows protected your PC". That is
-   SmartScreen seeing a new file, not a malware verdict: **More info → Run anyway**. Leave the
-   black window open until the control panel appears. It checks for Node.js 24+, installs
-   dependencies with `npm ci` (first run: a few minutes), builds the companion, puts it in the
-   system tray and opens the Familiar control panel.
+   SmartScreen seeing a new file, not a malware verdict: **More info → Run anyway**. From the ZIP,
+   Familiar starts in a few seconds: it goes to the system tray and opens its control panel. From
+   a git clone, leave the black window open until the control panel appears: it checks for
+   Node.js 24+ (and offers to install it with winget), installs dependencies with `npm ci` (first
+   run: a few minutes, about 800 MB) and builds the companion first.
 3. The companion finds WoW: Forever — from the running game first, otherwise from `wowRoot` /
    `wowFlavor` in `%APPDATA%\Familiar\config.json` — and links the addon into
    `<WoW>\_forever_\Interface\AddOns\Familiar`, plus a small `FamiliarSync` data addon. If it can't
@@ -321,9 +321,9 @@ guarantee otherwise. Use at your own discretion.
 | Symptom | Fix |
 |---|---|
 | "Windows protected your PC" / "Open File – Security Warning" on `Run Familiar.cmd` | Familiar is new and not code-signed; this is Windows not having seen the file before, not a malware detection. Only continue if you got it from this repository: **More info → Run anyway**, or unblock the ZIP before extracting (Properties → Unblock). `Run Familiar.cmd` is a plain batch file you can read; `git clone` avoids the prompt. |
-| Antivirus quarantines or slows the first install | The first run downloads Electron and the Claude Agent SDK from npm into `companion\node_modules`. Restore the file, then run `Run Familiar.cmd` again. |
-| "Node.js 24 or newer is required" | Install the LTS from nodejs.org, open a new window, run `Run Familiar.cmd` again. |
-| Install stops half-way | Run `Run Familiar.cmd` again. Last resort: delete `companion\node_modules` and rerun. |
+| Antivirus quarantines a file, or "This Familiar download is incomplete" | The ZIP holds Electron and the Claude Code binary under `companion\node_modules` (a git clone downloads them there on the first run). Restore the file, or extract the whole ZIP again, then run `Run Familiar.cmd` again. |
+| "Running Familiar from a git clone needs Node.js 24 or newer" | Only a git clone needs Node.js; the `FamiliarApp` ZIP does not. Answer **Y** to install the LTS with winget, or install it from nodejs.org, then close the window and run `Run Familiar.cmd` again. |
+| Install stops half-way (git clone) | Run `Run Familiar.cmd` again. Last resort: delete `companion\node_modules` and rerun. With the ZIP, extract it again instead. |
 | "World of Warcraft was not found" / wrong client | Start WoW: Forever first (Familiar uses the running game's folder), or set `"wowRoot": "D:\\Games\\World of Warcraft"` and `"wowFlavor": "_forever_"` in `config.json`, then **Reload config** and **Reinstall addon**. |
 | Retail and Forever both installed | Make sure the addon was linked into `_forever_`, not `_retail_`: start Forever before Familiar, or set `"wowFlavor": "_forever_"`, then **Reinstall addon**. |
 | Familiar is "out of date" in the AddOns list | The client is newer than the addon's `## Interface:` list. Tick **Load out of date AddOns**; update Familiar when a release lists the new number. |
@@ -341,9 +341,9 @@ panel opens a pre-filled issue (text and versions only) that you review and subm
 
 ## Updating / Uninstalling
 
-**Update:** quit Familiar from the tray, `git pull` (or extract the new ZIP over the folder), run
-`Run Familiar.cmd` (it reinstalls dependencies and rebuilds). If the release notes say the addon's
-`.toc` changed, restart WoW; otherwise `/reload` is enough.
+**Update:** quit Familiar from the tray, extract the new ZIP over the folder (or `git pull`), run
+`Run Familiar.cmd` (after a pull it reinstalls dependencies and rebuilds). If the release notes
+say the addon's `.toc` changed, restart WoW; otherwise `/reload` is enough.
 
 **Uninstall:**
 

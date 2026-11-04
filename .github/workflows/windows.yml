@@ -3,7 +3,7 @@ on:
   # addon/** too: npm test runs the addon API-conformance and Lua<->TS codec parity checks.
   # Never pull_request_target: PR code must not run with repository privileges.
   pull_request:
-    paths: ['companion/**', 'addon/**', '.github/workflows/windows.yml']
+    paths: ['companion/**', 'addon/**', 'Run Familiar.cmd', '.github/workflows/windows.yml']
   push:
     branches: [main]
     # Path filters are not evaluated for tag pushes, so v* tags always run.
@@ -19,7 +19,7 @@ concurrency:
 jobs:
   verify:
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: companion
@@ -52,3 +52,21 @@ jobs:
             echo "::error file=companion/dist/main.js::crashReporter/autoUpdater found in the main bundle"
             exit 1
           fi
+      # The release download, built and checked the way release.yml does it (scripts/prebuilt.mjs),
+      # on pull requests and manual runs only: pushes to main skip it, and a tag builds the real one.
+      # The artifact is the zip to try by hand on a PC; it is kept for 3 days.
+      - name: Build the prebuilt app zip
+        if: github.event_name != 'push'
+        run: node scripts/prebuilt.mjs build "$RUNNER_TEMP/app/FamiliarApp-check-windows.zip" HEAD
+      - name: Check the zip and self-test it without Node
+        if: github.event_name != 'push'
+        run: node scripts/prebuilt.mjs check "$RUNNER_TEMP/app/FamiliarApp-check-windows.zip"
+      - name: Upload the app zip for a manual test
+        if: github.event_name != 'push'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: FamiliarApp-${{ github.event.pull_request.head.sha || github.sha }}-windows
+          path: ${{ runner.temp }}/app/FamiliarApp-check-windows.zip
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 0 # already a zip
