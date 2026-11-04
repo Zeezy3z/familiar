@@ -187,7 +187,8 @@ function fetchClaude(o) {
 
 async function install(o) {
   const log = o.log || ((s) => process.stdout.write(s));
-  const pins = o.pins === undefined ? pinned(o.root, o.platform, o.arch) : typeof o.pins === "string" ? pinsFrom(o.pins) : checked(o.pins, "pins");
+  const from = o.pins === undefined ? "package-lock.json" : typeof o.pins === "string" ? path.basename(o.pins) : "the pins";
+  const pins = o.pins === undefined ? pinned(o.root, o.platform, o.arch) : typeof o.pins === "string" ? pinsFrom(o.pins) : checked(o.pins, from);
   const todo = pins.map((p) => ({ ...p, dir: path.join(o.root, "node_modules", ...p.name.split("/")) })).filter((p) => !holds(p.dir, p));
   if (!todo.length) return "present";
 
@@ -218,7 +219,7 @@ async function install(o) {
       });
       if (tty && last !== -1) log("\n");
 
-      if ((await sha512(tgz)) !== p.sha512) throw new Error(`${p.name}@${p.version}: the download does not match package-lock.json's sha512 integrity; refused and deleted`);
+      if ((await sha512(tgz)) !== p.sha512) throw new Error(`${p.name}@${p.version}: the download does not match ${from}'s sha512 integrity; refused and deleted`);
       const unpack = path.join(work, `x${i}`);
       fs.mkdirSync(unpack);
       await untar(o.tar || systemTar(), tgz, unpack, p.name);

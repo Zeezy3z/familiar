@@ -304,7 +304,7 @@ describe("fetch-claude.cjs, the release download's first-run Claude download", (
 
   it("refuses a download that does not match the pins file's sha512, and installs neither", async () => {
     const c = companion();
-    await expect(c.fetch(BIN, { root: c.home, pins: c.pinsFile() })).rejects.toThrow(new RegExp(`^${BIN}@0\\.9\\.9: the download does not match`));
+    await expect(c.fetch(BIN, { root: c.home, pins: c.pinsFile() })).rejects.toThrow(new RegExp(`^${BIN}@0\\.9\\.9: the download does not match claude-pins\\.json's sha512 integrity`));
     expect(c.scope(c.home)).toEqual([]);
   });
 
