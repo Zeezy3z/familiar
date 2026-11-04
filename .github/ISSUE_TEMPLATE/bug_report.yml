@@ -11,7 +11,7 @@ body:
     attributes:
       label: Companion version / build
       description: The copyable build line under "Companion controls" in the control panel.
-      placeholder: "Familiar v0.3.0 | Running commit: abcdef… | Source: clean"
+      placeholder: "Familiar v0.4.0 | Running commit: abcdef… | Source: clean"
     validations:
       required: true
   - type: input
