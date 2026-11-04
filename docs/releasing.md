@@ -63,8 +63,12 @@ release in place. Open the release afterwards and check that all four files are 
   re-downloads the addon zip. Re-running a tag (or just its failed app job) replaces both files.
 * GitHub's automatic "Source code (zip)": not the supported download; the README points to the
   `FamiliarApp` zip.
-* Notes: the commit log since the previous tag. While Familiar is in beta the workflow marks the
-  release as a prerelease titled `Familiar X.Y.Z beta`.
+* Notes: [`release-body.md`](release-body.md) (the GIF, `docs/media/familiar.gif`, or else
+  `approval.png` when the tag has one; "Familiar in one minute"; the downloads), then the commit log
+  since the previous tag. The workflow fills in the tag, version and repository and keeps the
+  block between `<!-- release-body -->` markers, so a rerun replaces it. Edit the notes by hand
+  afterwards as usual. While Familiar is in beta the workflow marks the release as a prerelease
+  titled `Familiar X.Y.Z beta`.
 
 ## Addon managers
 
