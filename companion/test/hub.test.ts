@@ -2173,6 +2173,115 @@ describe("physical corroboration (any addon can forge strip messages)", () => {
   });
 });
 
+describe("A Familiar Face (the tutorial quest)", () => {
+  const local = () => ({ ...cfg, tutorialSeen: false });
+  const tutorialOf = (h: InstanceType<typeof Hub>) => [...h.threads.values()].filter((t) => t.kind === "tutorial");
+
+  it("first run teaches the approval path", async () => {
+    const c = local();
+    const sounds: string[] = [];
+    let saved: any;
+    const h = new Hub(() => c, { claude, codex }, () => {});
+    h.minCardAgeMs = 0;
+    h.onSound = (k) => sounds.push(k);
+    h.onConfigChanged = (x) => (saved = { ...x });
+    await h.start();
+    const [t] = tutorialOf(h);
+    expect(t).toMatchObject({ agent: "familiar", title: "A Familiar Face", status: "idle", mode: "ask", unread: true });
+    expect(t.entries[0].text).toMatch(/^Well met, adventurer\. I'm your familiar/);
+    expect(t.todos.map((x) => x.text)).toEqual(["Speak to your familiar", "Answer a practice request", "Set out on a real quest"]);
+    expect(saved.tutorialSeen).toBe(true);
+    const m = buildModel(h, { linked: true, fps: 30 });
+    expect(m.list.rows.find((r) => r.kind === "zone" && r.key === t.projectKey)?.text).toBe("Familiar");
+    expect(m.list.rows.find((r) => r.key === t.id)).toMatchObject({ agent: "familiar", unread: true, text: "A Familiar Face" });
+    expect(m.providers.familiar).toEqual({ label: "Familiar", glyph: "◆" });
+    expect(h.projects.list().some((p) => p.path === t.cwd)).toBe(false); // never offered as a zone
+    expect(buildSnapshot(h)).toContain("[Familiar] A Familiar Face");
+
+    h.action({ type: "select", id: t.id });
+    await h.prompt("hi");
+    const card = t.entries.find((e) => e.kind === "approval")!;
+    expect(card).toMatchObject({ approval: "pending", title: "Practice: light the hearth", canAlways: false });
+    expect(card.cut).toBeUndefined();
+    expect(t.status).toBe("approval");
+    expect(h.toasts.at(-1)!.text).toMatch(/^Needs approval · Familiar/);
+    expect(sounds).toEqual(["approval"]);
+    expect(buildModel(h, { linked: true, fps: 30 }).keys.approve).toBe(true);
+    // No mode, no model, and Stop has nothing to stop.
+    await h.key("mode", undefined, "full", OK);
+    expect(h.toasts.at(-1)!.text).toBe("The practice quest has no mode or model. Those are for real quests.");
+    await h.key("model");
+    expect(h.view.picker).toBeFalsy();
+    await h.key("stop");
+    expect(t.status).toBe("approval");
+    // The real corroboration path: refused without proof, written on the card.
+    h.action({ type: "decide", thread: t.id, requestId: card.requestId, decision: "allow" });
+    expect(card).toMatchObject({ approval: "pending", refused: { why: "proof" } });
+    h.action({ type: "decide", thread: t.id, requestId: card.requestId, decision: "allow" }, OK);
+    expect(card.approval).toBe("approved");
+    expect(card.refused).toBeUndefined();
+    expect(t.status).toBe("idle");
+    expect(t.todos.map((x) => x.status)).toEqual(["completed", "completed", "pending"]);
+    expect(t.entries.findLast((e) => e.kind === "assistant")!.text).toMatch(/^The hearth is lit/);
+    expect(h.toasts.map((x) => x.text)).toContain("Quest Complete · A Familiar Face");
+    expect(sounds).toEqual(["approval", "done"]);
+    expect([claude.sent, codex.sent, claude.decisions, codex.decisions]).toEqual([[], [], [], []]); // nothing ran
+    await h.prompt("anything else?");
+    expect(t.entries.findLast((e) => e.kind === "assistant")!.text).toMatch(/^Nothing more to teach/);
+    expect(t.status).toBe("idle");
+    // The first real quest completes the last objective.
+    await h.quick("claude", "@familiar a real one");
+    expect(t.todos.every((x) => x.status === "completed")).toBe(true);
+    expect(t.entries.some((e) => e.kind === "notice" && e.text === "Set out on a real quest ✓")).toBe(true);
+    h.saveNow();
+
+    // Restarts never seed a second one, nor one after it was archived and threads.json removed.
+    const again = new Hub(() => c, { claude, codex }, () => {});
+    await again.start();
+    expect(tutorialOf(again)).toHaveLength(1);
+    await again.archive(t.id);
+    expect(tutorialOf(again)).toHaveLength(0);
+    fs.rmSync(path.join(appData, "Familiar", "threads.json"));
+    const third = new Hub(() => c, { claude, codex }, () => {});
+    await third.start();
+    expect(tutorialOf(third)).toHaveLength(0);
+    // /fam tutorial (and the welcome page's link) bring a fresh one.
+    await third.key("tutorial");
+    expect(tutorialOf(third)).toHaveLength(1);
+    expect(third.selectedThread()).toMatchObject({ kind: "tutorial", todos: [{ status: "pending" }, { status: "pending" }, { status: "pending" }] });
+    third.action({ type: "tutorial" });
+    expect(tutorialOf(third)).toHaveLength(1);
+  });
+
+  it("Deny completes the practice too, and never needs proof", async () => {
+    const c = local();
+    const h = new Hub(() => c, { claude, codex }, () => {});
+    h.minCardAgeMs = 0;
+    await h.start();
+    const [t] = tutorialOf(h);
+    h.action({ type: "select", id: t.id });
+    await h.prompt("hello there");
+    const card = t.entries.find((e) => e.kind === "approval")!;
+    await h.prompt("what now?"); // the card is still waiting
+    expect(t.entries.findLast((e) => e.kind === "assistant")!.text).toMatch(/practice request is waiting/);
+    expect(t.status).toBe("approval");
+    h.handleAddon({ t: "key", k: "deny", view: "full" });
+    await tick();
+    expect(card.approval).toBe("denied");
+    expect(t.entries.findLast((e) => e.kind === "assistant")!.text).toMatch(/^Denied — also a fine answer/);
+    expect(h.toasts.map((x) => x.text)).toContain("Quest Complete · A Familiar Face");
+  });
+
+  it("an existing profile is not given the tutorial by itself", async () => {
+    await hub.quick("claude", "@familiar existing work");
+    hub.saveNow();
+    const c = local();
+    const h = new Hub(() => c, { claude, codex }, () => {});
+    await h.start();
+    expect(tutorialOf(h)).toHaveLength(0);
+  });
+});
+
 describe("game-side budgets and the start toast", () => {
   it("every quest start shows a Started toast with its zone", async () => {
     await hub.quick("claude", "@familiar fix the login bug");

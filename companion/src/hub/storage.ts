@@ -84,6 +84,8 @@ export class ThreadStore {
   private writeError = false;
   private notice?: RecoveryNotice;
   code = "other";
+  /** The last read found no saved-quest file at all: Familiar's first run on this profile. */
+  firstRun = false;
   constructor(private file: string) {}
 
   get warning(): StorageWarning | undefined {
@@ -101,6 +103,7 @@ export class ThreadStore {
     catch (e) {
       this.code = storageCode(e);
       if (this.code !== "ENOENT") this.blocked = "read";
+      else this.firstRun = true;
       return { threads: [] };
     }
     let result: ReturnType<typeof decode>;

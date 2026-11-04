@@ -29,6 +29,7 @@ import { providerAvailable } from "../agents/setup";
 import { CHAT_INSTRUCTIONS, withGameContext } from "./chat";
 import { CHATS_KEY, Project, ProjectRegistry, projectRootOf } from "./projects";
 import { SUGGEST_TOAST, suggestionUrl, type SuggestVersions } from "./suggest";
+import { TUTORIAL_AGENT, TUTORIAL_NO_MODE, tutorialDecide, tutorialReply, tutorialSetOut, tutorialThread } from "./tutorial";
 
 export type EntryKind = "user" | "assistant" | "reasoning" | "tool" | "approval" | "notice";
 
@@ -305,9 +306,36 @@ export class Hub {
   async start() {
     this.projects.scanRoots();
     this.load();
-    for (const t of this.threads.values()) this.projects.add(t.cwd, t.updatedAt);
+    for (const t of this.threads.values()) if (t.kind !== "tutorial") this.projects.add(t.cwd, t.updatedAt);
+    // A Familiar Face, once, on a first run (no saved quests yet); /fam tutorial brings it back.
+    const c = this.cfg();
+    if (!c.tutorialSeen && this.threadStore.firstRun) {
+      this.addTutorial();
+      c.tutorialSeen = true;
+      this.onConfigChanged(c);
+    }
     setInterval(() => this.pruneToasts(), 1000);
     this.changed("start");
+  }
+
+  // ---- A Familiar Face (hub/tutorial.ts) -------------------------------------------------------
+  private addTutorial(): Thread {
+    const t = tutorialThread(uid("q"), appDataDir(), this.addon.char || "adventurer", uid);
+    this.threads.set(t.id, t);
+    return t;
+  }
+
+  /** /fam tutorial, or the welcome page's link: the tutorial quest, a fresh one if it was archived. */
+  private openTutorial() {
+    const t = [...this.threads.values()].find((x) => x.kind === "tutorial") ?? this.addTutorial();
+    this.select(t.id);
+  }
+
+  /** The tutorial's lines take the same path as an agent's events (toasts, chimes, markers). */
+  private play(t: Thread, events: AgentEvent[]) {
+    for (const e of events) this.onAgent(TUTORIAL_AGENT, e);
+    this.refreshStatus(t); // a practice card still waiting keeps its "!"
+    if (t.status === "running") t.status = "idle";
   }
 
   private waking?: Promise<void>;
@@ -640,6 +668,9 @@ export class Hub {
         this.setPrivate(a === "on" ? true : a === "off" ? false : !this.cfg().privateMode);
         break;
       }
+      case "tutorial":
+        this.openTutorial();
+        break;
       case "caughtup": {
         const t = this.selectedThread();
         const e = t && attentionEntry(t);
@@ -727,7 +758,7 @@ export class Hub {
         return;
       }
       case "stop":
-        if (t && (t.status === "running" || t.status === "approval")) {
+        if (t && t.kind !== "tutorial" && (t.status === "running" || t.status === "approval")) {
           // Before the provider has opened the quest, interrupt has nothing to stop: sendTo sees this.
           this.stops.set(t.id, (this.stops.get(t.id) ?? 0) + 1);
           await this.backends[t.agent].interrupt(t.id);
@@ -737,6 +768,7 @@ export class Hub {
       case "mode": {
         if (this.view.draft?.chat || (!this.view.draft && t?.kind === "chat"))
           return this.toast("Chats have no permission modes: they can only search the web.", "info");
+        if (!this.view.draft && t?.kind === "tutorial") return this.toast(TUTORIAL_NO_MODE, "info");
         // The game only cycles Ask first <-> Plan only; from Accept edits or Auto the key goes to Ask.
         const target = this.view.draft ?? t;
         if (!target) return this.toast("Select a quest first.", "info");
@@ -754,6 +786,7 @@ export class Hub {
       case "model":
         // Opens (or closes) the model list in the details pane; a click there picks one.
         if (!this.view.draft && !t) return this.toast("Select a quest or chat first.", "info");
+        if (!this.view.draft && t?.kind === "tutorial") return this.toast(TUTORIAL_NO_MODE, "info");
         this.view.picker = !this.view.picker;
         break;
       case "native":
@@ -870,9 +903,12 @@ export class Hub {
         // Mark it answered first, so the backend's approvalResolved doesn't call it "expired".
         const q = t.entries.find((x) => x.requestId === a.requestId && x.approval === "pending");
         if (q) settle(q, "approved");
-        this.backends[t.agent].answerQuestion?.(t.id, a.requestId, a.label);
+        this.backends[t.agent]?.answerQuestion?.(t.id, a.requestId, a.label);
         return;
       }
+      case "tutorial": // the welcome page's "Replay A Familiar Face"
+        this.openTutorial();
+        break;
       case "agent":
         this.view.pickAgent = a.agent;
         if (this.view.draft) this.view.draft.agent = a.agent;
@@ -1026,13 +1062,20 @@ export class Hub {
     const x = this.external.get(id);
     const own = this.threads.get(id);
     if (!x && !own) return this.toast("Select a quest or desktop thread to archive.", "info");
+    if (own?.kind === "tutorial") {
+      // Nothing runs in it and no app holds it: gone at once, and a fresh one is a /fam tutorial away.
+      this.threads.delete(own.id);
+      if (this.view.selected === id) this.view.selected = undefined;
+      this.toast(`Archived: ${own.title} (/fam tutorial brings it back)`, "info", undefined, "Archived (/fam tutorial brings it back).");
+      return this.changed("archive");
+    }
     if (own && (own.status === "running" || own.status === "approval")) return this.toast("Stop the quest before archiving it.", "info");
     const agent = (x ?? own)!.agent;
     const nativeId = x?.nativeId ?? own?.nativeId;
     const title = (x ?? own)!.title;
     if (own) {
       this.threads.delete(own.id);
-      await this.backends[agent].close(own.id).catch(() => {});
+      await this.backends[agent]?.close(own.id).catch(() => {});
     } else this.external.delete(id);
     if (this.view.selected === id) this.view.selected = undefined;
     let inSource = false;
@@ -1092,7 +1135,7 @@ export class Hub {
       return;
     }
     const target = d ?? t;
-    if (!target) return;
+    if (!target || (!d && t?.kind === "tutorial")) return;
     target.model = model;
     if (t && target === t) this.backends[t.agent].setModel(t.id, model).catch((e) => this.fail(e));
     this.toast(`Model: ${label}`, "info");
@@ -1202,7 +1245,8 @@ export class Hub {
     }
     settle(e, d === "allow" ? "approved" : d === "allowAlways" ? "always" : "denied");
     this.lastDecisionAt = Date.now();
-    this.backends[t.agent].respondApproval(t.id, requestId, d);
+    if (t.kind === "tutorial") this.play(t, tutorialDecide(t, grants, uid)); // the practice card: nothing runs
+    else this.backends[t.agent].respondApproval(t.id, requestId, d);
     this.dropToasts((x) => x.kind === "approval" && x.threadId === t.id);
     this.refreshStatus(t);
     this.changed("decide");
@@ -1380,6 +1424,7 @@ export class Hub {
     this.view.collapsed.delete(t.projectKey);
     // Every start is visible on the Glass, so one another addon makes can't pass unnoticed.
     this.toast(`Started: ${t.title} (${this.projectName(t)})`, "info", t.id, `${agentName(t.agent)} quest started`);
+    for (const x of this.threads.values()) if (x.kind === "tutorial") this.play(x, tutorialSetOut(x));
     return t;
   }
 
@@ -1469,6 +1514,7 @@ export class Hub {
       this.note(t, t.lastError, "error");
       throw new Error(t.lastError); // Outside provider-init handling: never claim this message is saved.
     }
+    if (t.kind === "tutorial") return this.play(t, tutorialReply(t, uid)); // answered by the hub, no backend
     const stopsBefore = this.stops.get(t.id) ?? 0;
     const stopped = () => {
       if ((this.stops.get(t.id) ?? 0) === stopsBefore) return false;
