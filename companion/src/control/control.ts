@@ -1,5 +1,5 @@
-// Desktop control panel: link health, game window, agents, addon install, logs.
-import { journey } from "./journey";
+// Desktop control panel: three setup steps, the essentials, "Requests waiting on your PC", and one Advanced section.
+import { approveKeyStatus, journey } from "./journey";
 import { buildPresentation, restartGuidance } from "./build";
 import type { ControlBridge } from "../shared/bridge";
 const bridge = window.familiar as ControlBridge;
@@ -8,6 +8,7 @@ const $ = (id: string) => document.getElementById(id)!;
 const esc = (s: unknown) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 const kv = (rows: [string, unknown, string?][]) => rows.map(([k, v, cls]) => `<div>${esc(k)}</div><div class="${cls ?? ""}">${esc(v)}</div>`).join("");
 const text = (id: string, value: string) => { if ($(id).textContent !== value) $(id).textContent = value; };
+const feedback = (message: string, level: "ok" | "warn" | "err") => { $("feedback").textContent = message; $("feedback").className = `wide ${level}`; };
 
 let paused = false;
 
@@ -18,7 +19,7 @@ function render(s: any) {
   text("journey-title", j.title);
   $("journey-title").className = j.level;
   text("journey-text", j.text);
-  $("journey-steps").innerHTML = j.steps.map((step, i) => `<li><b class="${step.done ? "ok" : ""}">${step.done ? "✓" : i + 1} ${esc(step.label)}</b><span class="hint">${esc(step.text)}</span></li>`).join("");
+  $("journey-steps").innerHTML = j.steps.map((step, i) => `<li${i === j.current ? ' class="cur" aria-current="step"' : ""}><b class="${step.done ? "ok" : ""}">${i + 1} ${esc(step.label)}${step.done ? " ✓" : ""}</b><span class="hint">${esc(step.text)}</span></li>`).join("");
   const next = $("journey-action") as HTMLAnchorElement;
   next.hidden = !j.action;
   next.dataset.action = j.action ?? "";
@@ -30,6 +31,12 @@ function render(s: any) {
     text("journey-text", s.storage.text);
     next.hidden = true;
   }
+  // The first undone step's content sits under the strip: the Familiars card for step 1 (and while the first-run
+  // choice is still open), the journey text itself for steps 2 and 3. Everything done: one line.
+  $("all-set").hidden = !(j.current === -1 && j.level === "ok" && !s.storage);
+  const familiarsInStep = j.current === 0 || !s.providersChosen;
+  if (familiarsInStep && j.action === "providers") next.hidden = true; // the card is already right below
+  placeFamiliars(familiarsInStep);
   $("ver").textContent = `v${s.version}`;
   const build = buildPresentation(s.version, s.build);
   text("build-summary", build.summary);
@@ -82,11 +89,112 @@ function render(s: any) {
   ]);
   ($("c-login") as HTMLInputElement).checked = !!s.launchAtLogin;
   renderUi(s.ui);
+  renderRequests(s.requests, s.providers ?? []);
   renderProviders(s.providers ?? [], s.backends ?? {});
   renderChat(s);
   ($("onboard") as HTMLElement).hidden = !!s.providersChosen;
   $("notes").innerHTML = (s.installNotes ?? []).map((n: string) => `<li>${esc(n)}</li>`).join("");
 }
+
+// The Familiars card lives under the step strip while step 1 needs it, and in Advanced afterwards.
+function placeFamiliars(inStep: boolean) {
+  const card = $("familiars");
+  const target = $(inStep ? "step-slot" : "adv-familiars");
+  if (card.parentElement === target) return;
+  const active = card.contains(document.activeElement) ? document.activeElement as HTMLElement : null;
+  target.append(card);
+  active?.focus(); // moving a node drops focus; put it back (a no-op while Advanced is closed)
+}
+
+// Requests waiting on your PC: approvals the game card cannot show in full. Shapes per the round-3 spec
+// (status.requests[] and the "decide" command are the hub lane's). Only a real click or key press decides.
+interface PanelRequest { thread: string; questTitle: string; project: string; agent: string; requestId: string; title: string; full: string; canAlways: boolean; at: number }
+const DECISIONS: [decision: string, label: string, done: string][] = [["allow", "Approve", "Approved"], ["deny", "Deny", "Denied"], ["allowAlways", "Always (this quest)", "Approved for this quest"]];
+const SETTLE_MS = 800; // a row that just appeared ignores clicks briefly, so a layout shift cannot land one on it
+const requestRows = new Map<string, HTMLElement>();
+let requestSeq = 0;
+const validRequest = (r: any): r is PanelRequest => !!r && typeof r.thread === "string" && typeof r.requestId === "string" && typeof r.full === "string";
+
+function buildRequest(r: PanelRequest): HTMLElement {
+  const id = `req-${++requestSeq}`;
+  const make = (tag: string, cls: string, attrs: Record<string, string> = {}) => {
+    const el = document.createElement(tag);
+    el.className = cls;
+    for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
+    return el;
+  };
+  const row = make("article", "req", { "aria-labelledby": `${id}-title` });
+  row.dataset.thread = r.thread;
+  row.dataset.request = r.requestId;
+  const btns = make("div", "btns");
+  for (const [decision, label] of DECISIONS) {
+    const b = make("button", decision === "allowAlways" ? "always" : "", { type: "button", "data-decide": decision, "aria-describedby": `${id}-title` }) as HTMLButtonElement;
+    b.textContent = label;
+    b.disabled = true;
+    btns.append(b);
+  }
+  setTimeout(() => { if (!row.dataset.sent) btns.querySelectorAll("button").forEach((b) => (b.disabled = false)); }, SETTLE_MS);
+  // The whole text comes first; the buttons follow it.
+  row.append(make("h3", "req-title", { id: `${id}-title` }), make("p", "hint req-meta"), make("pre", "req-full", { id: `${id}-full`, tabindex: "0", "aria-label": "The full request" }), btns, make("p", "req-msg", { role: "status" }));
+  return row;
+}
+
+function renderRequests(list: unknown, providers: any[]) {
+  const rows = (Array.isArray(list) ? list : []).filter(validRequest).sort((a, b) => (a.at ?? 0) - (b.at ?? 0));
+  $("requests").hidden = !rows.length;
+  text("requests-live", rows.length ? `${rows.length} request${rows.length === 1 ? "" : "s"} waiting on your PC` : "");
+  const host = $("requests-list");
+  const seen = new Set<string>();
+  for (const r of rows) {
+    const key = `${r.thread}\0${r.requestId}`;
+    seen.add(key);
+    let row = requestRows.get(key);
+    if (!row) { row = buildRequest(r); requestRows.set(key, row); host.append(row); } // newcomers join at the end: nothing above moves
+    const agent = providers.find((p) => p.id === r.agent)?.label ?? r.agent;
+    const since = Number.isFinite(r.at) ? ` · waiting since ${new Date(r.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "";
+    const set = (sel: string, value: string) => { const el = row!.querySelector(sel)!; if (el.textContent !== value) el.textContent = value; };
+    set(".req-title", r.title || "Request");
+    set(".req-meta", [agent, r.project, r.questTitle].filter(Boolean).join(" · ") + since);
+    set(".req-full", r.full); // left alone while unchanged, so a reader's scroll position stays put
+    row.querySelector<HTMLElement>("[data-decide=allowAlways]")!.hidden = !r.canAlways;
+  }
+  for (const [key, row] of requestRows) if (!seen.has(key)) { row.remove(); requestRows.delete(key); }
+}
+
+$("requests-list").addEventListener("click", async (e) => {
+  // Never automatic: a click made by script (isTrusted false) decides nothing.
+  if (!e.isTrusted) return;
+  const button = (e.target as HTMLElement).closest<HTMLButtonElement>("button[data-decide]");
+  const row = button?.closest<HTMLElement>(".req");
+  if (!button || !row || button.disabled || !row.dataset.thread) return;
+  const done = DECISIONS.find(([d]) => d === button.dataset.decide)?.[2] ?? "Answered";
+  const title = row.querySelector(".req-title")!.textContent;
+  const msg = row.querySelector(".req-msg")!;
+  const buttons = row.querySelectorAll<HTMLButtonElement>("button");
+  row.dataset.sent = "1";
+  buttons.forEach((b) => (b.disabled = true));
+  let answer: { ok?: boolean; why?: string } | undefined;
+  let failure = "";
+  try { answer = await bridge.invoke("decide", { thread: row.dataset.thread, requestId: row.dataset.request, decision: button.dataset.decide }); }
+  catch (err) { failure = err instanceof Error ? err.message : String(err); }
+  if (answer?.ok === true) {
+    msg.textContent = `${done}.`;
+    msg.className = "req-msg ok";
+    feedback(`${done}: ${title}`, "ok");
+  } else {
+    delete row.dataset.sent;
+    buttons.forEach((b) => (b.disabled = false));
+    const gone = answer?.why === "no longer pending";
+    const reason = failure ? `Could not send that answer: ${failure}`
+      : gone ? "Already answered."
+      : answer?.why === "fresh" ? "This request just appeared. Read it, then click again."
+      : `Not applied${answer?.why ? `: ${answer.why}` : ""}.`;
+    msg.textContent = reason;
+    msg.className = `req-msg ${gone ? "warn" : "err"}`;
+    feedback(reason, gone ? "warn" : "err");
+  }
+  await refreshStatus().catch(() => {});
+});
 
 // One row per agent: installed? signed in? used in Familiar? — plus Install / Sign in buttons.
 function renderProviders(list: any[], backends: Record<string, any>) {
@@ -198,11 +306,10 @@ function localFeedback(group: HTMLElement, message: string) {
 }
 async function act(message: string, fn: () => unknown, local?: { group: HTMLElement; label: string }) {
   if (local) localFeedback(local.group, "");
-  try { await fn(); $("feedback").textContent = message; $("feedback").className = "wide ok"; }
+  try { await fn(); feedback(message, "ok"); }
   catch (e) {
     const reason = e instanceof Error ? e.message : String(e);
-    $("feedback").textContent = local ? `${local.label} failed: ${reason}` : `Could not complete that action: ${reason}`;
-    $("feedback").className = "wide err";
+    feedback(local ? `${local.label} failed: ${reason}` : `Could not complete that action: ${reason}`, "err");
     if (local) localFeedback(local.group, `${local.label}: ${reason}`);
     await refreshStatus().catch(() => {});
   }
@@ -237,7 +344,12 @@ btn("b-refresh", "Desktop conversations rescanned", async () => { await bridge.i
 $("c-login").addEventListener("change", (e) => act("Windows startup preference updated", () => bridge.invoke("launchAtLogin", (e.target as HTMLInputElement).checked)));
 $("journey-action").addEventListener("click", (e) => {
   const action = $("journey-action").dataset.action;
-  if (action === "providers") return;
+  if (action === "providers") {
+    // The link jumps to #familiars; when the card is inside the closed Advanced section, open that first.
+    const advanced = $("advanced") as HTMLDetailsElement;
+    if (advanced.contains($("familiars"))) advanced.open = true;
+    return;
+  }
   e.preventDefault();
   $(action === "pause" ? "b-pause" : "b-config").click();
 });
@@ -247,22 +359,38 @@ const fontSel = $("ui-font") as HTMLSelectElement;
 for (let p = 80; p <= 160; p += 10) fontSel.add(new Option(`${p}%${p === 100 ? " (default)" : ""}`, String(p / 100)));
 // Display only: warn while the chosen default lets new quests act without asking.
 const risky = (v: string) => v === "edits" || v === "auto";
+let wasRisky = false;
 function setModeWarn(v: string) {
   $("ui-mode-warn").hidden = !risky(v);
+  // Open Advanced once when the default turns risky (the first render included), so the warning box is not
+  // hidden; after that the player may close it again.
+  if (risky(v) && !wasRisky) ($("advanced") as HTMLDetailsElement).open = true;
+  wasRisky = risky(v);
   const b = $("modebadge");
   b.hidden = !risky(v);
   b.textContent = risky(v) ? `Default: ${v === "auto" ? "Auto" : "Accept edits"}` : "";
 }
-function renderUi(ui?: { fontScale: number; sound: boolean; raidWarnings: boolean; quiet?: boolean; privateMode?: boolean; defaultMode?: string; approveKey?: string }) {
+function renderUi(ui?: { fontScale: number; sound: boolean; raidWarnings: boolean; quiet?: boolean; privateMode?: boolean; streamSafe?: boolean; defaultMode?: string; approveKey?: string }) {
   if (!ui) return;
   if (document.activeElement !== fontSel) fontSel.value = String(Math.round(ui.fontScale * 10) / 10);
   ($("ui-sound") as HTMLInputElement).checked = ui.sound;
   ($("ui-raid") as HTMLInputElement).checked = ui.raidWarnings;
   ($("ui-quiet") as HTMLInputElement).checked = !!ui.quiet;
   ($("ui-private") as HTMLInputElement).checked = !!ui.privateMode;
+  ($("ui-stream") as HTMLInputElement).checked = !!ui.streamSafe;
   if (ui.defaultMode) { ($("ui-mode") as HTMLSelectElement).value = ui.defaultMode; setModeWarn(ui.defaultMode); }
   const key = $("ui-approve-key") as HTMLInputElement;
   if (document.activeElement !== key) key.value = ui.approveKey ?? "";
+  savedKey = ui.approveKey ?? "";
+  showApproveKey();
+}
+// The live line under the Approve key field: what is registered, and a warning for keys used for playing.
+let savedKey = "";
+function showApproveKey() {
+  const st = approveKeyStatus(savedKey, ($("ui-approve-key") as HTMLInputElement).value);
+  text("approve-key-line", st.text);
+  $("approve-key-line").className = st.level === "muted" ? "" : st.level;
+  text("approve-key-warn", st.warning);
 }
 const setUi = (patch: object, message = "In-game display preferences updated") => act(message, () => bridge.invoke("uiSettings", patch).then(renderUi));
 const modeNames: Record<string, string> = { ask: "Ask first", edits: "Accept edits", plan: "Plan only", auto: "Auto" };
@@ -270,11 +398,16 @@ fontSel.addEventListener("change", () => setUi({ fontScale: Number(fontSel.value
 $("ui-sound").addEventListener("change", (e) => setUi({ sound: (e.target as HTMLInputElement).checked }));
 $("ui-quiet").addEventListener("change", (e) => setUi({ quiet: (e.target as HTMLInputElement).checked }));
 $("ui-private").addEventListener("change", (e) => setUi({ privateMode: (e.target as HTMLInputElement).checked }));
+$("ui-stream").addEventListener("change", (e) => {
+  const on = (e.target as HTMLInputElement).checked;
+  setUi({ streamSafe: on }, on ? "Stream-safe on: names hidden and replies blurred on the Glass. Approval cards stay readable." : "Stream-safe off");
+});
 $("ui-mode").addEventListener("change", (e) => {
   const mode = (e.target as HTMLSelectElement).value;
   setModeWarn(mode);
   setUi({ defaultMode: mode }, `New quests will start in ${modeNames[mode] ?? mode}`);
 });
+$("ui-approve-key").addEventListener("input", showApproveKey);
 $("ui-approve-key").addEventListener("change", (e) => setUi({ approveKey: (e.target as HTMLInputElement).value }));
 $("ui-raid").addEventListener("change", (e) => setUi({ raidWarnings: (e.target as HTMLInputElement).checked }));
 btn("b-pause", "Overlay preference updated", async () => {
