@@ -16,7 +16,7 @@ import { providerSetup, startLogin } from "../agents/setup";
 import type { AgentBackend, Mode } from "../agents/types";
 import { MODES } from "../agents/types";
 import { resolveCommand } from "../agents/which";
-import { claudeDownloadError, claudeExePath, claudeHome, claudeRoute, claudeStatus, companionDir, downloadClaude, type ClaudeFetch } from "../agents/claude-download";
+import { claudeDownloadError, claudeHome, claudeRoute, claudeStatus, companionDir, downloadClaude, type ClaudeFetch } from "../agents/claude-download";
 import { appDataDir, DEFAULT_CONFIG, loadConfig, saveConfig } from "../hub/config";
 import { FONT_MAX, FONT_MIN, Hub, type Toast } from "../hub/hub";
 import { buildModel } from "../hub/viewmodel";
@@ -80,7 +80,7 @@ function selfTestAndExit(): never {
     const appRoot = path.resolve(__dirname, "..");
     const { selfTest } = require(path.join(appRoot, "self-test.cjs"));
     // Claude Code is downloaded on first run (claudeHome()); the self-test skips it until then.
-    ({ ok, lines } = selfTest({ appRoot, addonDir: REPO_ADDON, claudeExe: claudeExePath(), claudeHome: claudeHome() }));
+    ({ ok, lines } = selfTest({ appRoot, addonDir: REPO_ADDON, claudeHome: claudeHome() }));
   } catch (e: any) {
     lines = ["FAIL self-test: " + (e?.stack ?? e)];
   }

@@ -246,7 +246,6 @@ describe("where Claude Code lives (claude-download.ts)", () => {
     await withRoute("installed", (home, dl) => {
       install(home, ["sdk", "binary"]);
       expect(dl.claudeSdkSpecifier()).toBe(pathToFileURL(path.join(scope(home), "claude-agent-sdk", "entry.mjs")).href);
-      expect(dl.claudeExePath()).toBe(path.join(scope(home), `claude-agent-sdk-${process.platform}-${process.arch}`, exe));
     });
     for (const route of ["clone", "zip"] as const) await withRoute(route, (_home, dl) => expect(dl.claudeSdkSpecifier()).toBe("@anthropic-ai/claude-agent-sdk"));
   });

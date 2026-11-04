@@ -93,11 +93,6 @@ export function claudeExecutable(): string | undefined {
   return fs.existsSync(exe) ? exe : undefined;
 }
 
-/** Where the installed app's claude.exe will be (for --self-test, which skips it until downloaded). */
-export function claudeExePath(): string {
-  return path.join(binaryDir(claudeHome()), exeName());
-}
-
 /** What to import() for the SDK: the package by name where Node resolves it (a clone, the zip:
  * companion\node_modules), the downloaded file for the installed app (outside app.asar). The entry
  * comes from the package's own "exports", so a renamed entry file keeps working. */
