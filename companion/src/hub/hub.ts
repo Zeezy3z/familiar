@@ -1719,7 +1719,7 @@ export class Hub {
   private refreshStatus(t: Thread) {
     const pending = t.entries.some((x) => x.kind === "approval" && x.approval === "pending");
     if (pending) t.status = "approval";
-    else if (t.status === "approval") t.status = "running";
+    else if (t.status === "approval") t.status = t.kind === "tutorial" ? "idle" : "running"; // the tutorial never has a turn running
   }
 
   private note(t: Thread, text: string, level: "info" | "error" = "info") {
