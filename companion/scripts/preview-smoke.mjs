@@ -601,7 +601,7 @@ async function focusJourney() {
   // approval-long is a cut request: Deny is its only decision in the game (UX round 3).
   check('focus approval: explicit request-bound decisions remain reachable', await page.locator(action('decide')).count() === 1
     && await page.locator(`${action('decide')}[data-act*='"decision":"deny"']`).count() === 1);
-  await point(action('decide') + ':first-child');
+  await point(`${action('decide')}[data-act*='"decision":"deny"']`);
   await snapshot('focus-approval-bottom');
   await open('running');
   await page.evaluate(l => window.preview.emit('layout', l), layoutFor(720, true));
