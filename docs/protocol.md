@@ -70,7 +70,7 @@ Capacity = ⌊(cols·rows − 8)·6/8⌋ bytes; a 64×4 strip carries 171 payloa
 | `t` | fields | meaning |
 |---|---|---|
 | `hello` | addon, build, iface, char, realm, locale, syncAt, viewKeys? | sent at login and every 20 s |
-| `layout` | scr[w,h], px, fpx, panel, native, focus?, drag, combat, ui, win/list/detail/status/tracker rects `[x,y,w,h]` (physical px, client origin top-left), rowH, keys{name:rect}, occ[rects], op (window background opacity %, omitted at 100) | where the Glass may paint; on change and every 4 s |
+| `layout` | scr[w,h], px, fpx, panel, native, focus?, drag, combat, ui, win/list/detail/status/tracker rects `[x,y,w,h]` (physical px, client origin top-left), mini (the minimap button's rect, same units; sent whether or not the window is open, omitted when the button is hidden or disabled), rowH, keys{name:rect}, occ[rects] (frames above the window, tracker or minimap button), op (window background opacity %, omitted at 100) | where the Glass may paint; on change and every 4 s |
 | `prompt` | text, id, ctx? | composer / `/fam <text>`; `id` is handled once (resends are dropped) and echoed in `FamiliarSync.acked` |
 | `quick` | agent, text, id | `/fam claude|codex <text>` |
 | `quests` | text? | empty text means no quests; omitted text means context sharing is off/unavailable. The quest log, one line per quest with objective progress (`[x]`/`[ ]`); sent when it changes (debounced 4 s) and every 5 min; read-only; used by chats |

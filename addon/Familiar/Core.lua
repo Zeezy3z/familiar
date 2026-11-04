@@ -464,6 +464,8 @@ SlashCmdList.FAMILIAR = function(input)
       names[i] = ok and desc or "?"
     end
     ns.Print("icon: " .. (ns.iconSource == "own" and "own" or ns.iconSource == "fallback" and "fallback (game imp)" or "not drawn"))
+    local mini = ns.Layout.prect(ns.Minimap.button)
+    ns.Print(mini and ("minimap: %d,%d %d\195\151%d"):format(mini[1], mini[2], mini[3], mini[4]) or "minimap: hidden")
     ns.Print("under cursor: " .. (#names > 0 and table.concat(names, ", ") or "nothing"))
     ns.Print(("native JSON %s - snapshot %s - window %s - tracker %s"):format(
       (C_EncodingUtil and C_EncodingUtil.SerializeJSON) and "yes" or "no",

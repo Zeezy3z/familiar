@@ -76,22 +76,25 @@ function Layout.Build()
     msg.keys = keys
   end
   msg.tracker = ns.Tracker.IsShown() and prect(ns.Tracker.content) or nil
+  -- The minimap button's rect, window open or not; absent when the button was never created
+  -- (db.minimap.hide) or is not visible. The overlay paints a mark on it only when it has a rect.
+  msg.mini = prect(ns.Minimap.button)
   local occ = {}
-  local guard = msg.win or msg.tracker
+  local guard = msg.win or msg.tracker or msg.mini
   for _, name in ipairs(OCCLUDERS) do
     local f = usable(name)
     local ok, r = pcall(function() return f and f:IsVisible() and prect(f) or nil end)
-    if ok and r and (overlaps(r, msg.win) or overlaps(r, msg.tracker)) then occ[#occ + 1] = r end
+    if ok and r and (overlaps(r, msg.win) or overlaps(r, msg.tracker) or overlaps(r, msg.mini)) then occ[#occ + 1] = r end
   end
   if guard and #occ > 0 then msg.occ = occ end
   return msg
 end
 
 -- Tooltips show and hide constantly while you mouse over the world; only resend the layout when
--- the set of frames actually covering our window/tracker changes.
+-- the set of frames actually covering our window/tracker/minimap button changes.
 local lastOccSig = ""
 function Layout.CheckOccluders()
-  if not (ns.UI.IsShown() or ns.Tracker.IsShown()) then return end
+  if not (ns.UI.IsShown() or ns.Tracker.IsShown() or ns.Minimap.button) then return end
   local m = Layout.Build()
   local parts = {}
   for i, r in ipairs(m.occ or {}) do parts[i] = table.concat(r, ",") end
