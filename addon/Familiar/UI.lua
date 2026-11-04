@@ -630,7 +630,7 @@ function UI.Init()
   title:SetPoint("TOP", header, "TOP", 0, -14)
   title:SetText("Familiar")
   local icon = frame:CreateTexture(nil, "OVERLAY")
-  icon:SetTexture("Interface\\Icons\\Spell_Shadow_SummonImp")
+  ns.SetIcon(icon)
   icon:SetSize(16, 16)
   icon:SetPoint("RIGHT", title, "LEFT", -4, 0)
 
