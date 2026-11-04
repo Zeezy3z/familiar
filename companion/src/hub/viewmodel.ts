@@ -574,7 +574,7 @@ function targetLine(hub: Hub): RenderModel["target"] {
     const x = hub.external.get(v.selected);
     if (x) return { text: `Desktop ${agentName(x.agent)} conversation in ${zone(x.projectKey, x.cwd)} (asks before continuing)`, warn: true };
   }
-  return { text: "Nothing selected — pick a quest on the left, or + Chat / + Claude / + Codex.", warn: true };
+  return { text: "Nothing selected — pick a quest, or + Chat / + Claude.", warn: true };
 }
 
 function trackerLines(hub: Hub): TrackerLine[] {

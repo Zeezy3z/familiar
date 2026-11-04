@@ -136,7 +136,7 @@
       chat: { ...backends.find(b => b.id === state.chat.agent), model: state.chat.model, act: { type: "newIn", key: "chats" } },
       counts: { total: scenario === "welcome-empty" || scenario === "welcome-noprojects" ? 0 : 2, running: scenario === "welcome-working" ? 1 : 0, approval: 0 },
       zones: scenario === "welcome-noprojects" ? 0 : 2 };
-    model.target = { text: "Nothing selected — pick a quest on the left, or + Chat / + Claude / + Codex.", warn: true };
+    model.target = { text: "Nothing selected — pick a quest, or + Chat / + Claude.", warn: true };
     model.keys.mode = undefined;
     model.list.rows = [{ kind: "zone", key: "chats", text: "Chats" },
       { kind: "hint", key: "chat-hint", text: "Ask anything: + Chat or /fam ask", act: { type: "newIn", key: "chats" } }];
