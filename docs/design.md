@@ -61,6 +61,13 @@ or at login, and is the fallback when the Glass cannot be shown.
   agent's live todo/plan list); the transcript (markdown, syntax-highlighted code, collapsible tool
   calls with output); **approval cards** with Approve / Deny / Always (this quest) (or the agent's
   multiple-choice options).
+* **Welcome (right pane, nothing selected):** the quest giver. A round portrait of the familiar
+  (idle, working, asleep or puzzled, chosen from the render model: link, ready agents, running
+  quests), "Well met." and who it is linked to, then the three offers as quest rows (ask a game
+  question, work on a project, continue a conversation) and the tutorial replay. With no quests it
+  says so and how to wake it; unlinked or with no agent ready it says what it cannot see. The portrait
+  is hidden when the pane is too short for it. It is a picture only: the page has no hit areas besides
+  its buttons and links.
 * **Chats zone (top of the Quest Log):** `+ Chat` / `/fam ask` — talk to a cheap model with web
   search and nothing else (no repo, files or shell), for game questions and lookups; the character's
   class/level/zone go along. Codex desktop chats without a project are listed here too.
@@ -118,7 +125,23 @@ Suggest a change. The header's mode badge stays outside Advanced as the always-v
 a line beside the version says when the addon and the app are different versions. Journey wording
 and step state come from `control/journey.ts` (version and update wording from `control/build.ts`);
 nothing there changes a setting. Everything that came from an agent, the game or the network is set
-as text, never as markup.
+as text, never as markup. The header carries a small portrait that follows the journey (puzzled while
+the Link step is undone, working while Claude Code downloads or a quest runs, otherwise idle).
+
+**UI voice.** How Familiar's own words read, on the PC and in the Glass:
+
+1. The familiar speaks in the first person only about its own state: "I can't see the game yet.",
+   "I'm waiting for WoW.", "Ready when you are."
+2. One sentence, then the action. The line under it says what to do, plainly and literally.
+3. Safety copy is literal and never in character: approval cards, refusals, mode warnings, cut
+   banners, the Link Doctor's sentence and the Windows notice keep their words and their chrome.
+4. No exclamation marks.
+5. WoW flavour lives in nouns (quest, zone, familiar, Quest Log), never in verbs.
+6. Titles can be in voice; the explanation beneath a title never is.
+7. State is a glyph plus a word, never colour or a picture alone; a portrait never carries state
+   on its own.
+8. Numbers are plain ("3/3 objectives · 2 edits · $0.21"); no names, paths or reply text in
+   decoration.
 
 ## 4. Agent integration
 
