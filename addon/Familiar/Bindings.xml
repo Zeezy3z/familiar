@@ -6,6 +6,9 @@
   <Binding name="FAMILIAR_STOP" category="ADDONS">Familiar.Key("stop")</Binding>
   <Binding name="FAMILIAR_NEXT" category="ADDONS">Familiar.Key("next")</Binding>
   <Binding name="FAMILIAR_PREV" category="ADDONS">Familiar.Key("prev")</Binding>
+  <Binding name="FAMILIAR_SCROLL_UP" category="ADDONS">Familiar.Scroll("up")</Binding>
+  <Binding name="FAMILIAR_SCROLL_DOWN" category="ADDONS">Familiar.Scroll("down")</Binding>
+  <Binding name="FAMILIAR_LATEST" category="ADDONS">Familiar.Scroll("latest")</Binding>
   <Binding name="FAMILIAR_TRACKER" category="ADDONS">Familiar.ToggleTracker()</Binding>
   <Binding name="FAMILIAR_LOG" category="ADDONS">Familiar.ToggleLog()</Binding>
   <Binding name="FAMILIAR_VIEW" category="ADDONS">Familiar.ToggleView()</Binding>

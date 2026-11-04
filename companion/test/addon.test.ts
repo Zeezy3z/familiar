@@ -838,3 +838,113 @@ describe("continue in the agent's own app", () => {
     expect(last("prompt").text).toBe("open the settings file");
   });
 });
+
+describe("UX round 3: keys, text size, combat, tracker", () => {
+  it("Scroll keybindings send wheel messages on the detail pane; Latest is a huge step", () => {
+    const xml = fs.readFileSync(path.join(ADDON_DIR, "Bindings.xml"), "utf8");
+    for (const [name, call] of [["FAMILIAR_SCROLL_UP", 'Familiar.Scroll("up")'], ["FAMILIAR_SCROLL_DOWN", 'Familiar.Scroll("down")'], ["FAMILIAR_LATEST", 'Familiar.Scroll("latest")']]) {
+      expect(xml).toContain(`<Binding name="${name}" category="ADDONS">${call}</Binding>`);
+      expect(vm.run(`return tostring(_G.BINDING_NAME_${name})`)).not.toBe("nil");
+    }
+    const wheel = (call: string) => {
+      const before = messages.length;
+      vm.run(call);
+      advance(0.5);
+      return messages.slice(before).filter((m) => m.t === "wheel");
+    };
+    expect(wheel(`Familiar.Scroll("down")`)).toEqual([expect.objectContaining({ r: "detail", d: -4 })]);
+    expect(wheel(`Familiar.Scroll("up")`)).toEqual([expect.objectContaining({ r: "detail", d: 4 })]);
+    expect(wheel(`Familiar.Scroll("latest")`)).toEqual([expect.objectContaining({ r: "detail", d: -9999 })]);
+    expect(wheel(`Familiar.Scroll("sideways") Familiar.Scroll()`)).toEqual([]);
+  });
+
+  it("/fam font sizes the quest list at once, still tells the companion, and follows its words", () => {
+    vm.run(`NS.UI.Show()`);
+    vm.run(`SlashCmdList.FAMILIAR("font reset")`);
+    advance(1);
+    const base = last("layout").rowH / 16; // physical pixels per row unit at 100%
+    expect(base).toBeGreaterThan(0);
+    const rowH = (cmd: string) => {
+      const before = messages.length;
+      vm.run(`SlashCmdList.FAMILIAR(${JSON.stringify(cmd)})`);
+      advance(1);
+      return { rowH: last("layout").rowH / base, keys: messages.slice(before).filter((m) => m.t === "key") };
+    };
+    let r = rowH("font 130");
+    expect(r.rowH).toBeCloseTo(21, 1);
+    expect(r.keys).toEqual([expect.objectContaining({ k: "font", a: "130" })]);
+    expect(vm.run(`return NS.db.fontScale`)).toBe("1.3");
+    expect(rowH("font bigger").rowH).toBeCloseTo(22, 1); // 1.4
+    expect(rowH("font smaller").rowH).toBeCloseTo(21, 1); // back to 1.3
+    expect(rowH("font 500").rowH).toBeCloseTo(26, 1); // clamped to 160%
+    expect(rowH("font 10").rowH).toBeCloseTo(13, 1); // clamped to 80%
+    r = rowH("font is too small in the log"); // a prompt, not a size
+    expect(r.rowH).toBeCloseTo(13, 1);
+    expect(r.keys.map((k: any) => k.k)).toEqual([]);
+    expect(rowH("font reset").rowH).toBeCloseTo(16, 1);
+  });
+
+  it("login adopts the companion's text size from FamiliarSync; without it, the saved size stays", () => {
+    const rowHAt = (saved: string) => {
+      const s = draftBoot(saved);
+      s.run(`NS.UI.Show()`);
+      return { rowH: Number(s.run(`return NS.Layout.Build().rowH`)), rows: Number(s.run(`return NS.UI.ROW_H`)) };
+    };
+    const base = rowHAt(`FamiliarSyncData = { generatedAt = GetServerTime(), acked = {}, list = {} }`);
+    expect(base.rows).toBe(16);
+    const synced = rowHAt(`FamiliarSyncData = { generatedAt = GetServerTime(), acked = {}, list = {}, fontScale = 1.2 }`);
+    expect(synced.rows).toBe(19);
+    expect(synced.rowH / base.rowH).toBeCloseTo(19 / 16, 2);
+    // The companion wins over a size set earlier with /fam font.
+    expect(rowHAt(`FamiliarDB = { fontScale = 1.5 } FamiliarSyncData = { generatedAt = GetServerTime(), acked = {}, list = {}, fontScale = 1 }`).rows).toBe(16);
+    // No snapshot (or none with a size): keep the saved size.
+    expect(rowHAt(`FamiliarDB = { fontScale = 1.5 }`).rows).toBe(24);
+    expect(rowHAt(`FamiliarDB = { fontScale = 1.5 } FamiliarSyncData = { generatedAt = GetServerTime(), acked = {}, list = {} }`).rows).toBe(24);
+    // Out-of-range or unusable values never break the list.
+    expect(rowHAt(`FamiliarSyncData = { fontScale = 9 }`).rows).toBe(26);
+    expect(rowHAt(`FamiliarSyncData = { fontScale = 0.1 }`).rows).toBe(13);
+    expect(rowHAt(`FamiliarSyncData = { fontScale = "big" }`).rows).toBe(16);
+  });
+
+  it("/fam stream and /fam tutorial go to the companion and are listed in /fam help", () => {
+    const keysSince = (before: number) => messages.slice(before).filter((m) => m.t === "key");
+    let before = messages.length;
+    vm.run(`SlashCmdList.FAMILIAR("stream on") SlashCmdList.FAMILIAR("stream OFF") SlashCmdList.FAMILIAR("stream")`);
+    advance(2);
+    expect(keysSince(before)).toEqual([
+      expect.objectContaining({ k: "stream", a: "on" }),
+      expect.objectContaining({ k: "stream", a: "off" }),
+      expect.objectContaining({ k: "stream", a: "" }),
+    ]);
+    before = messages.length;
+    vm.run(`NS.UI.Hide() SlashCmdList.FAMILIAR("tutorial")`);
+    advance(1);
+    expect(keysSince(before)).toEqual([expect.objectContaining({ k: "tutorial", src: "slash", view: "full" })]);
+    expect(vm.run(`return tostring(NS.UI.IsShown())`)).toBe("true");
+    // With extra words these are prompts for the selected quest, as for every other command.
+    before = messages.length;
+    vm.run(`SlashCmdList.FAMILIAR("tutorial for dummies") SlashCmdList.FAMILIAR("stream is blurry")`);
+    advance(2);
+    expect(keysSince(before).filter((k) => k.k === "tutorial" || k.k === "stream")).toEqual([]);
+    expect(messages.slice(before).filter((m) => m.t === "prompt").map((m) => m.text)).toEqual(["tutorial for dummies", "stream is blurry"]);
+    vm.run(`MOCK.chat = {} SlashCmdList.FAMILIAR("help")`);
+    const help = vm.run(`return table.concat(MOCK.chat, " || ")`);
+    expect(help).toMatch(/\/fam stream \[on \| off\]/);
+    expect(help).toMatch(/\/fam tutorial/);
+    expect(help).toMatch(/jump to the latest reply/);
+  });
+
+  it("the combat flag keeps flowing: PLAYER_REGEN_DISABLED / ENABLED set layout.combat", () => {
+    vm.run(`MOCK.event("PLAYER_REGEN_DISABLED")`);
+    advance(1);
+    expect(last("layout").combat).toBe(true);
+    vm.run(`MOCK.event("PLAYER_REGEN_ENABLED")`);
+    advance(1);
+    expect(last("layout").combat).toBe(false);
+  });
+
+  it("the tracker has no native fill (the Glass paints it): clear background, border kept", () => {
+    expect(Number(vm.run(`return NS.Tracker.frame.__bg[4]`))).toBe(0);
+    expect(Number(vm.run(`return NS.Tracker.frame.__border[4]`))).toBeGreaterThan(0);
+  });
+});

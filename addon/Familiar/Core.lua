@@ -8,7 +8,11 @@ ns.VERSION = (C_AddOns and C_AddOns.GetAddOnMetadata or GetAddOnMetadata)(ADDON,
 -- Send, Link or the saved settings. Any addon can still call these, so each is exactly what a
 -- keypress does and nothing more (the companion verifies approvals against real input anyway).
 local BIND_KEYS = { approve = true, deny = true, stop = true, next = true, prev = true }
+-- Scroll bindings reuse the wheel message; the Glass treats a huge negative step on "detail" as
+-- "jump to the latest reply" (the same as clicking Latest).
+local SCROLL_STEPS = { up = 4, down = -4, latest = -9999 }
 _G.Familiar = {
+  Scroll = function(dir) if SCROLL_STEPS[dir] then ns.UI.Wheel("detail", SCROLL_STEPS[dir]) end end,
   Toggle = function() ns.UI.Toggle() end,
   Focus = function() ns.UI.Focus() end,
   Key = function(k) if BIND_KEYS[k] then ns.UI.Key(k, "bind") end end,
@@ -25,6 +29,9 @@ BINDING_NAME_FAMILIAR_DENY = "Deny pending request"
 BINDING_NAME_FAMILIAR_STOP = "Stop the running turn"
 BINDING_NAME_FAMILIAR_NEXT = "Next quest"
 BINDING_NAME_FAMILIAR_PREV = "Previous quest"
+BINDING_NAME_FAMILIAR_SCROLL_UP = "Scroll the quest up"
+BINDING_NAME_FAMILIAR_SCROLL_DOWN = "Scroll the quest down"
+BINDING_NAME_FAMILIAR_LATEST = "Jump to the latest reply"
 BINDING_NAME_FAMILIAR_TRACKER = "Toggle quest tracker"
 BINDING_NAME_FAMILIAR_VIEW = "Toggle conversation-only focus view"
 BINDING_NAME_FAMILIAR_LOG = "Collapse / expand the quest log"
@@ -41,6 +48,7 @@ local defaults = {
   shown = false,
   tracker = { shown = true, point = "RIGHT", x = -60, y = 120, w = 240, h = 150 },
   minimap = { angle = 210, hide = false },
+  fontScale = 1, -- quest list text size, 0.8-1.6 (/fam font; the companion's setting is adopted at login)
   opacity = 100, -- window background, percent (Options -> AddOns -> Familiar, /fam opacity)
   hideInCombat = false,
   hover = false, -- stream hover positions to the Glass (more strip traffic)
@@ -50,6 +58,33 @@ local defaults = {
   outbox = {}, -- prompts not yet confirmed by the companion (see ns.SendTracked)
   chatContext = true, -- tell chats your class / level / zone (/fam ask context off)
 }
+
+-- Text size words, the same as the companion's /fam font: bigger | smaller | reset | 80-160 (or a
+-- factor). Returns the new scale (0.8-1.6, steps of 0.1), or nil if the words aren't a size.
+local FONT_MIN, FONT_MAX = 0.8, 1.6
+local function clampFont(s)
+  return math.floor(math.min(FONT_MAX, math.max(FONT_MIN, s)) * 10 + 0.5) / 10
+end
+function ns.FontScaleFor(cur, arg)
+  local a = (arg or ""):lower()
+  local s
+  if a == "bigger" or a == "larger" or a == "up" or a == "+" then s = cur + 0.1
+  elseif a == "smaller" or a == "down" or a == "-" then s = cur - 0.1
+  elseif a == "reset" or a == "default" then s = 1
+  else
+    local digits = a:match("^(%d+)%%?$")
+    if not digits then return nil end
+    local n = tonumber(digits)
+    s = n > 4 and n / 100 or n
+  end
+  return clampFont(s)
+end
+-- A scale read from FamiliarSync or saved settings: anything unusable means 100%.
+function ns.SanitizeFontScale(v)
+  v = tonumber(v)
+  if not v or v ~= v then return 1 end
+  return clampFont(v)
+end
 
 local function applyDefaults(dst, src)
   for k, v in pairs(src) do
@@ -235,6 +270,10 @@ ev:SetScript("OnEvent", ns.Guard("events", function(_, event, arg1)
     ns.Link.cols, ns.Link.rows, ns.Link.cell, ns.Link.hold = ns.db.cols, ns.db.rows, ns.db.cell, ns.db.hold
     ns.Link.SetPalette(ns.db.palette)
   elseif event == "PLAYER_LOGIN" then
+    -- The companion's text size is the source at login (so the control panel's setting reaches the
+    -- quest list after a /reload); without a snapshot, keep what /fam font last set here.
+    local synced = FamiliarSyncData and FamiliarSyncData.fontScale
+    ns.db.fontScale = ns.SanitizeFontScale(synced ~= nil and synced or ns.db.fontScale)
     -- Each module starts independently: one failing must not take the others (or the link) down.
     initStep("link", ns.Link.Init)
     initStep("window", ns.UI.Init)
@@ -270,6 +309,7 @@ local HELP = {
   "/fam deny | stop - act on the selected quest (approve / always: click the card, or your Approve keybind)",
   "Mode button - permission mode for the selected quest: Ask first <-> Plan only. Accept edits and Auto are chosen in the desktop control panel.",
   "/fam tracker - toggle the quest tracker",
+  "Keybindings (Options -> Keybindings -> AddOns -> Familiar): scroll the quest up / down, jump to the latest reply. Page Up / Page Down / End work well.",
   "/fam view focus | full - conversation-only view, or restore full controls (session only)",
   "/fam log - collapse / expand the quest log (just the quest you're in)",
   "/fam strip [tl|tr|bl|br] - move the Runestrip (link) to a screen corner",
@@ -291,7 +331,9 @@ local HELP = {
   "/fam quiet [on | off] - defer ordinary completion notices; approvals and failures remain",
   "/fam private [on | off] - hide names (streaming): zones and quests become Project 1 / Quest #1; replies and what you type stay visible",
   "/fam caughtup - mark the selected quest's saved update caught up (never approves a request)",
-  "/fam font bigger | smaller | reset | 80-160 - text size in the Familiar window",
+  "/fam stream [on | off] - Stream-safe: hide names and blur replies on the Glass (approval cards stay readable; click a blurred reply to read it)",
+  "/fam tutorial - replay A Familiar Face, the practice quest",
+  "/fam font bigger | smaller | reset | 80-160 - text size in the Familiar window (the quest list follows at once)",
   "/fam opacity [0-100] - window background opacity; no number opens Options -> AddOns -> Familiar",
   "/fam sound [on | off] - chimes when a quest finishes, needs approval or fails",
   "/fam warnings [on | off] - notices as raid warnings (mid-screen) or small in the Familiar window",
@@ -303,7 +345,7 @@ local KEYWORDS = { approve = true, deny = true, always = true, stop = true }
 -- Commands that take no argument; with extra words the line is a prompt ("/fam help me fix X").
 local COMMANDS = { help = true, diag = true, tracker = true, native = true, reload = true, sync = true, tools = true, caughtup = true,
   pin = true, hide = true, hidden = true, unhide = true, resend = true, discard = true,
-  archive = true, unarchive = true, archived = true, log = true, open = true }
+  archive = true, unarchive = true, archived = true, log = true, open = true, tutorial = true }
 -- No-argument commands handled by the companion.
 local COMPANION_KEYS = { caughtup = true, tools = true, pin = true, hide = true, hidden = true, unhide = true,
   archive = true, unarchive = true, archived = true, open = true }
@@ -381,9 +423,12 @@ SlashCmdList.FAMILIAR = function(input)
     local n = #ns.db.outbox
     ns.db.outbox = {}
     ns.Print(("dropped %d unsent message%s."):format(n, n == 1 and "" or "s"))
-  elseif (cmd == "autostart" or cmd == "sound" or cmd == "warnings" or cmd == "quiet" or cmd == "private") and (rest == "" or rest:lower() == "on" or rest:lower() == "off") then
+  elseif (cmd == "autostart" or cmd == "sound" or cmd == "warnings" or cmd == "quiet" or cmd == "private" or cmd == "stream") and (rest == "" or rest:lower() == "on" or rest:lower() == "off") then
     ns.Send({ t = "key", k = cmd, a = rest:lower(), view = ns.UI.focusMode and "focus" or "full" }, true)
   elseif cmd == "font" and IsFontArg(rest) then
+    -- The quest list's rows are native, so they follow here and now; the companion sets the rest.
+    local scale = ns.FontScaleFor(ns.db.fontScale, rest)
+    if scale then ns.UI.SetFontScale(scale) end
     ns.Send({ t = "key", k = "font", a = rest:lower(), view = ns.UI.focusMode and "focus" or "full" }, true)
   elseif cmd == "opacity" and (rest == "" or rest:match("^%d+%%?$")) then
     if rest == "" then ns.Options.Open() else ns.Options.SetOpacity(rest:match("%d+")) end
@@ -413,6 +458,11 @@ SlashCmdList.FAMILIAR = function(input)
     ns.Tracker.Toggle()
   elseif cmd == "log" and rest == "" then
     ns.UI.ToggleLog()
+  elseif cmd == "tutorial" then
+    -- The hub selects the practice quest; make sure the window is open to show it.
+    ns.UI.SetFocusMode(false)
+    ns.UI.Key("tutorial", "slash")
+    ns.UI.Show()
   elseif COMPANION_KEYS[cmd] then
     ns.UI.Key(cmd, "slash")
   elseif cmd == "show" and IsAgentFilter(rest) then

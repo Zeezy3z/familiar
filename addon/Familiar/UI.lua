@@ -7,7 +7,8 @@ local UI = {}
 ns.UI = UI
 
 local floor, max, min = math.floor, math.max, math.min
-UI.ROW_H = 16
+UI.BASE_ROW_H = 16
+UI.ROW_H = UI.BASE_ROW_H -- scaled by ns.db.fontScale (UI.SetFontScale)
 
 local BACKDROP_MAIN = {
   bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background-Dark",
@@ -133,6 +134,12 @@ function UI.Key(k, src)
   if k == "native" then UI.ToggleNative() end
 end
 
+-- Row height follows the text size (0.8-1.6, the companion's font scale). The Glass sizes its row
+-- text from layout.rowH, so the list and the pixels drawn on it stay aligned.
+local function rowHeight(scale)
+  return floor(UI.BASE_ROW_H * (tonumber(scale) or 1) + 0.5)
+end
+
 -- Rows (native fallback labels + hover highlight; clicks go through the list surface) -----------
 local function layoutRows()
   local c = listPane.content
@@ -142,7 +149,6 @@ local function layoutRows()
     if i <= n then
       if not r then
         r = CreateFrame("Frame", nil, c)
-        r:SetHeight(UI.ROW_H)
         r.hl = r:CreateTexture(nil, "BACKGROUND")
         r.hl:SetTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight")
         r.hl:SetBlendMode("ADD")
@@ -155,6 +161,7 @@ local function layoutRows()
         r.text:SetWordWrap(false)
         rows[i] = r
       end
+      r:SetHeight(UI.ROW_H)
       r:ClearAllPoints()
       r:SetPoint("TOPLEFT", c, "TOPLEFT", 0, -(i - 1) * UI.ROW_H)
       r:SetPoint("TOPRIGHT", c, "TOPRIGHT", 0, -(i - 1) * UI.ROW_H)
@@ -165,6 +172,14 @@ local function layoutRows()
   end
   UI.rowCount = n
   UI.RefreshNative()
+end
+
+-- Apply a text size to the quest list now (the setting itself is ns.db.fontScale).
+function UI.SetFontScale(scale)
+  ns.db.fontScale = scale
+  UI.ROW_H = rowHeight(scale)
+  if listPane then layoutRows() end
+  ns.Layout.Dirty()
 end
 
 -- Hover highlight follows the cursor without stealing mouse events from the surface.
@@ -573,6 +588,7 @@ end
 
 function UI.Init()
   local w = ns.db.window
+  UI.ROW_H = rowHeight(ns.db.fontScale)
   UI.focusMode = false -- safe full view at login/reload; close/reopen keeps the session choice
   frame = CreateFrame("Frame", "FamiliarFrame", UIParent, "BackdropTemplate")
   UI.frame = frame
