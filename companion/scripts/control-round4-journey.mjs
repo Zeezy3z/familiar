@@ -63,16 +63,30 @@ export async function controlRound4Journey(page, origin, width, snapshot = async
   check('portrait: back to idle when nothing is running', await face() === 'idle-192.png');
   await status({ game: null });
   check('portrait: waiting for WoW is still idle, in the familiar\'s voice', await face() === 'idle-192.png' && await title() === "I'm waiting for WoW.");
+  // Round 7: a request waiting on a finished journey makes it ask (assets/asking-192.png, lane A's art). A build
+  // without that picture falls back to idle, once, and never shows a broken image.
+  await open();
+  const asking = await page.evaluate(() => fetch('assets/asking-192.png').then(r => r.ok, () => false));
+  await status({ 'work.approvals': 1, 'work.working': 1 });
+  await page.waitForFunction(() => { const i = document.getElementById('portrait'); return i.complete && i.naturalWidth > 0; });
+  now = await portrait();
+  check(`portrait: a waiting request makes it ask${asking ? '' : ' (no asking picture in this build: idle, loaded)'}`, (asking ? now.src === 'assets/asking-192.png' : now.src === 'assets/idle-192.png') && now.loaded);
+  await status({ 'work.approvals': 0 });
+  await page.waitForFunction(() => document.getElementById('portrait').getAttribute('src') === 'assets/working-192.png');
+  check('portrait: answered, it goes back to work', await face() === 'working-192.png');
   await open();
 
   // ---- Link Doctor and "Save what Familiar sees" ----
   await open();
   const doctor = 'Familiar sees the game but no coloured strip in its top-left corner. In game: is Familiar ticked in AddOns? Type /fam strip — it should say TOPLEFT.';
   await status({ linked: false, layout: null, doctor: { step: 'strip', level: 'warn', text: doctor } });
-  const link = () => page.locator('.steps li').nth(2).evaluate(li => { const h = li.querySelector('.hint'); return { text: h.textContent, warn: h.classList.contains('warn'), done: !!li.querySelector('b.ok') }; });
+  const link = () => page.locator('.steps li').nth(2).evaluate(li => { const h = li.querySelector('.hint'); return { text: h.textContent, title: h.title, warn: h.classList.contains('warn'), done: !!li.querySelector('b.ok') }; });
+  const body = () => page.locator('#journey-text').evaluate(el => ({ text: el.textContent, warn: el.classList.contains('warn') }));
   now = await link();
   check('portrait: the Link step undone makes it puzzled, and the title says so above the doctor\'s sentence', await face() === 'puzzled-192.png' && await title() === "I can't see the game yet.");
-  check('doctor: the Link step says why the link is not up, in the doctor\'s words and warn colour', now.text === doctor && now.warn && !now.done);
+  // Round 7 (deliberate): the strip says Not linked yet (the sentence is its title); the doctor's words, in warn colour, are the journey text.
+  check('doctor: the Link step says Not linked yet; the journey text says why, in the doctor\'s words and warn colour', now.text === 'Not linked yet' && now.title === doctor && !now.warn && !now.done
+    && JSON.stringify(await body()) === JSON.stringify({ text: doctor, warn: true }));
   await openLink();
   check('doctor: Link details repeat the sentence', (await page.locator('#link').textContent()).includes('Link doctor') && (await page.locator('#link').textContent()).includes('no coloured strip'));
   check('doctor: Save what Familiar sees sits under Link details and nothing is saved by itself', await page.locator('#b-snapshot').isVisible() && await sent() === '[]');
@@ -92,7 +106,9 @@ export async function controlRound4Journey(page, origin, width, snapshot = async
   await page.waitForFunction(() => !document.getElementById('snapshot-result').textContent);
   check('snapshot: a refusal clears the old result and says why beside the button', (await localError('.btns:has(#b-snapshot)')).includes('Familiar has no picture of the game yet.'));
   await status({ doctor: null });
-  check('doctor: without a doctor the Link step keeps its own wording', (await link()).text.startsWith('Restart WoW, tick Familiar and Familiar Sync'));
+  now = await link();
+  check('doctor: without a doctor the Link step keeps its own wording (as its title) and the journey text its own', now.text === 'Not linked yet' && now.title.startsWith('Restart WoW, tick Familiar and Familiar Sync')
+    && (await body()).text.startsWith('The coloured dots top-left') && !(await body()).warn);
   await status({ linked: true, layout: { panel: true }, doctor: { step: 'ok', level: 'ok', text: 'Game link working.' } });
   now = await link();
   check('doctor: once linked the step says Game link working', now.text === 'Game link working' && now.done);
@@ -306,7 +322,42 @@ export async function controlRound4Journey(page, origin, width, snapshot = async
   await page.locator('#ui-sound').uncheck();
   await page.waitForFunction(() => document.getElementById('ui-sound-hint').textContent.endsWith('Sounds are off in game.'));
   check('sounds: ticking Sounds drops the off line and unticking brings it back', (await hint()).endsWith('Sounds are off in game.'));
-  check('sounds: the line under the essentials lists /fam sound on | off | 0-100', (await page.locator('#essentials').textContent()).includes('/fam sound on | off | 0-100, /fam stream on | off'));
+  // Round 7 (deliberate): the "Also in game" line goes; each row's sub-label carries its command.
+  check('sounds: each In game row names its /fam command, and the Also in game line is gone', JSON.stringify(await page.locator('#essentials .set .sl > span').allTextContents()) === JSON.stringify(['/fam font', '/fam stream on | off', '/fam sound 0-100'])
+    && !(await page.locator('#essentials').textContent()).includes('Also in game'));
   await snapshot(`control-${width}-sounds`);
+
+  // ---- Round 7: a settings page ----
+  await open();
+  await openAdvanced();
+  const rows = await page.evaluate(() => [...document.querySelectorAll('.set')].map(set => {
+    const sh = [...set.children].filter(c => c.classList.contains('sh'));
+    const lh = sh[0] ? parseFloat(getComputedStyle(sh[0]).lineHeight) : 0;
+    return { label: set.querySelector('.sl > :first-child')?.textContent, sh: sh.length, oneLine: !!sh[0] && sh[0].scrollHeight <= 1.6 * lh, text: sh[0]?.textContent };
+  }));
+  check('settings: every setting is a row with exactly one hint line', rows.length === 9 && rows.every(r => r.sh === 1 && r.text));
+  if (width >= 700) check('settings: each hint line is one line at this width', rows.every(r => r.oneLine));
+  const how = await page.evaluate(() => [...document.querySelectorAll('details.how')].map(d => ({ card: d.closest('section')?.id, open: d.open,
+    summary: d.querySelector('summary').textContent, text: [...d.querySelectorAll('p')].map(p => p.textContent) })));
+  check('settings: every How it works is closed on load', how.length === 6 && how.every(h => !h.open && h.summary === 'How it works'));
+  const inGame = how.find(h => h.card === 'essentials')?.text ?? [];
+  // The old hint words, verbatim (round 7 moved them; deliberate test change: the selector, not the words).
+  check('settings: the In game card keeps its three explanations word for word', inGame[0] === 'Body text changes at once. The quest list follows after /reload (or use /fam font in game).'
+    && inGame[1] === 'Hide names and blur replies on the Glass. Approval cards stay readable: you must see what you approve. What you type in the box is still on screen.'
+    && inGame[2]?.startsWith('Cues for quest started, needs your approval, approved, Quest Complete, answer ready and Quest Failed. Silent while a quest works. Also /fam sound on | off | 0-100.'));
+  const quests = how.find(h => h.card === 'quests-card')?.text ?? [];
+  check('settings: the New quests card keeps the Approve key steps, Quiet play, the Windows notice and Hide names word for word', quests.length === 4
+    && quests[0].startsWith('1. In WoW: Esc → Options → Keybindings → AddOns → Familiar → Approve pending request.') && quests[1].endsWith('agents continue working.')
+    && quests[2].endsWith('Local only: nothing is sent anywhere.') && quests[3].endsWith('Also /fam private on | off.'));
+  check('settings: the mode warning stays out of How it works', await page.evaluate(() => !document.getElementById('ui-mode-warn').closest('details.how')));
+  const buttons = await page.evaluate(() => ({ quiet: [...document.querySelectorAll('button.quiet')].map(b => b.id).sort(), ok: document.querySelectorAll('button.ok').length,
+    red: ['b-install', 'b-chosen', 'b-sound-sample', 'b-project-add', 'b-suggest'].filter(id => { const b = document.getElementById(id); return b && !b.classList.contains('quiet') && !b.classList.contains('ok'); }).length }));
+  check('buttons: the nine utilities are ghosts, the actions stay red, and nothing is green without a request', JSON.stringify(buttons.quiet) === JSON.stringify(['b-config', 'b-diag', 'b-logs', 'b-pause', 'b-refresh', 'b-reload', 'b-snapshot', 'b-toast', 'b-update'])
+    && buttons.ok === 0 && buttons.red === 5);
+  const surfaces = await page.evaluate(() => ({ image: getComputedStyle(document.getElementById('journey')).backgroundImage, top: getComputedStyle(document.getElementById('journey')).borderTopWidth,
+    hints: [...document.querySelectorAll('.steps li .hint')].map(h => ({ title: h.title, one: h.scrollHeight <= 1.6 * parseFloat(getComputedStyle(h).lineHeight), ellipsis: getComputedStyle(h).textOverflow === 'ellipsis' })) }));
+  check('journey: a flat card with a 2 px rule on top', surfaces.image === 'none' && surfaces.top === '2px');
+  check('journey: each step hint is one line, with its whole sentence as the title', surfaces.hints.length === 3 && surfaces.hints.every(h => h.title && h.one && h.ellipsis));
+  check('version: the header shows the running version from the status', /^v\d+\.\d+\.\d+/.test(await page.locator('#ver').textContent()));
   return results;
 }

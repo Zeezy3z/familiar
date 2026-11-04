@@ -26,7 +26,7 @@ function Minimap_.Init()
   background:SetSize(24, 24)
   background:SetPoint("CENTER")
   local icon = btn:CreateTexture(nil, "ARTWORK")
-  ns.SetIcon(icon) -- our own round face; the game's imp, trimmed of its square bevel, if the client refuses it
+  ns.SetIcon(icon) -- our own round face; the game's owl icon, trimmed of its square bevel, if the client refuses it
   icon:SetSize(18, 18)
   icon:SetPoint("CENTER")
   local border = btn:CreateTexture(nil, "OVERLAY")

@@ -8,14 +8,14 @@
   @font-face { font-family: "Familiar Display"; src: url("assets/marcellus-latin-400-normal.woff2") format("woff2"); }
   :root {
     color-scheme: dark; accent-color: var(--gold);
-    /* Shared token block: the same names and values as overlay.css :root (the Glass is the source). */
+    /* Shared token block: the same names as overlay.css :root (the Glass is the source of the colours). */
     --gold:#ffd100; --gold-dim:#c9a227; --text:#ece4d4; --text-dim:#bfb6a4; --muted:#9c9384;
     --ok:#7dd96b; --warn:#ff8040; --err:#ff5a4f; --info:#71d5ff; --claude:#d98a60; --codex:#7fd1a8;
     --familiar:#b9a3ff; --line:rgba(143,115,64,.45); --line-soft:rgba(143,115,64,.22);
     --display:"Familiar Display","Palatino Linotype",Georgia,serif; --sans:"Segoe UI",system-ui,sans-serif; --mono:"Cascadia Mono",Consolas,monospace;
-    --small-font:12px; --body-font:14px;   /* the Glass derives these from the game layout; fixed here */
     --u:5px;                                /* Glass: calc(var(--small-font)*.4); control panel: 5px */
-    --fs-sm:var(--small-font); --fs-md:var(--body-font); --fs-lg:calc(var(--body-font)*1.25); --fs-xl:calc(var(--body-font)*1.7);
+    /* Four sizes and nothing else (test/type-scale.test.ts). The Glass derives its four from the game layout; the panel's are fixed. */
+    --fs-sm:12px; --fs-md:14px; --fs-lg:16px; --fs-xl:22px;
     --shadow:1px 1px 0 #000; --r:2px; --r-btn:3px;
     /* Motion: state changes · arrivals (toast, card, seal, badge) · the moment settling; nothing longer, nothing loops but the caret. */
     --m-fast:150ms; --m-arrive:350ms; --m-settle:600ms;
@@ -34,53 +34,83 @@
   #build-id { box-sizing: border-box; width: 100%; background: var(--bg); border: 1px solid var(--line); color: var(--text); padding: calc(var(--u)*1.2); font: var(--fs-sm) var(--mono); }
   main { padding: calc(var(--u)*2.4) calc(var(--u)*3.6); display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: calc(var(--u)*2.4); max-width: 1000px; margin: auto; }
   .card { background: var(--card); border: 1px solid var(--line-soft); border-radius: 4px; padding: calc(var(--u)*2) calc(var(--u)*2.4); }
-  .card h2 { font-family: var(--display); color: var(--gold); font-size: 15px; font-weight: normal; margin: 0 0 calc(var(--u)*1.2); }
+  .card h2 { font-family: var(--display); color: var(--gold); font-size: var(--fs-lg); font-weight: normal; margin: 0 0 calc(var(--u)*1.2); }
   .kv { display: grid; grid-template-columns: 160px 1fr; gap: 2px calc(var(--u)*1.6); }
   .kv > div:nth-child(odd) { color: var(--text); }
   .ok { color: var(--ok); } .warn { color: var(--warn); } .err { color: var(--err); } .muted { color: var(--muted); }
   .wide { grid-column: 1 / -1; }
   .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   #log { height: 190px; overflow: auto; font: var(--fs-sm) var(--mono); white-space: pre-wrap; color: var(--text-dim); }
-  button { background: linear-gradient(180deg, #5a1010, #2a0505); color: var(--gold); border: 1px solid #000; box-shadow: inset 0 1px 0 rgba(255,209,0,.25), inset 0 -1px 0 #000; border-radius: var(--r-btn); padding: 4px 12px; font-family: var(--display); cursor: pointer; }
+  /* Buttons, by what they do. button: acts on your behalf (red, the WoW idiom). button.ok: Approve in Requests waiting
+     and nothing else (the Glass's green). button.quiet: a utility (a ghost). button.always: the dashed ghost on a
+     request. Deny stays red: it is an action, and never looks quieter than Approve. */
+  button { background: linear-gradient(180deg, #5a1010, #2a0505); color: var(--gold); border: 1px solid #000; box-shadow: inset 0 1px 0 rgba(255,209,0,.25), inset 0 -1px 0 #000; border-radius: var(--r-btn); padding: 4px 12px; font-family: var(--display); font-size: var(--fs-md); cursor: pointer; }
   button { transition: filter var(--m-fast); }
   button:hover { filter: brightness(1.3); }
-  .btns { display: flex; gap: calc(var(--u)*1.2); flex-wrap: wrap; margin-top: calc(var(--u)*1.2); }
+  button.ok { background: linear-gradient(180deg, #1f4d14, #0c2207); color: var(--gold); }
+  button.quiet { background: none; border: 1px solid var(--line); box-shadow: none; color: var(--gold-dim); }
+  .btns { display: flex; gap: calc(var(--u)*1.2); flex-wrap: wrap; align-items: center; margin-top: calc(var(--u)*1.2); }
   ul { margin: 4px 0; padding-left: 18px; } li { margin: 2px 0; }
-  .hint { color: var(--muted); font-size: 13px; line-height: 1.5; max-width: 72ch; }
-  .warnbox { margin-top: calc(var(--u)*1.2); padding: calc(var(--u)*1.2) calc(var(--u)*1.6); border: 1px solid var(--warn); background: #2a1708; color: var(--text); font-size: 13px; line-height: 1.5; }
+  .hint { color: var(--text-dim); font-size: var(--fs-sm); line-height: 1.5; max-width: 72ch; }
+  .warnbox { margin-top: calc(var(--u)*1.2); padding: calc(var(--u)*1.2) calc(var(--u)*1.6); border: 1px solid var(--warn); background: #2a1708; color: var(--text); font-size: var(--fs-sm); line-height: 1.5; }
   #modebadge { margin-left: auto; font-family: var(--display); border: 1px solid var(--warn); border-radius: var(--r-btn); padding: 1px 8px; }
   #onboard { margin: 0 0 calc(var(--u)*2); border-color: var(--gold-dim); }
   .prov { display: grid; grid-template-columns: 22px 120px 1fr auto; gap: calc(var(--u)*1.2) calc(var(--u)*2); align-items: center; padding: calc(var(--u)*1.2) 0; border-top: 1px solid var(--line-soft); }
-  .prov:first-child, #chatset { border-top: none; }
-  .prov .g { color: var(--gold); font-size: 16px; text-align: center; }
-  .prov .n { font-family: var(--display); font-size: 14px; }
-  .prov .d { color: var(--muted); font-size: 12px; }
+  .prov:first-child { border-top: none; }
+  .prov .g { color: var(--gold); font-size: var(--fs-lg); text-align: center; }
+  .prov .n { font-family: var(--display); font-size: var(--fs-md); }
+  .prov .d { color: var(--muted); font-size: var(--fs-sm); }
   .prov .d code { color: var(--text-dim); user-select: all; }
   .prov .a { display: flex; gap: calc(var(--u)*1.2); align-items: center; white-space: nowrap; }
   .prov.off .n, .prov.off .g { opacity: .45; }
-  button.small { padding: 2px 8px; font-size: 12px; }
+  /* What each familiar's backend says right now (they start with WoW), under its own heading in the Familiars card. */
+  .prov-h { margin: calc(var(--u)*1.2) 0 0; padding-top: calc(var(--u)*1.6); border-top: 1px solid var(--line-soft); font-family: var(--display); font-weight: normal; font-size: var(--fs-sm); color: var(--gold-dim); }
+  .prov.status { grid-template-columns: 22px 120px minmax(0, 1fr); padding: calc(var(--u)*.6) 0; border-top: none; }
+  .prov.status .n { font-family: var(--sans); color: var(--text-dim); }
+  button.small { padding: 2px 8px; font-size: var(--fs-sm); }
   button.linklike { background: none; border: none; box-shadow: none; padding: 0; font: inherit; color: var(--gold); text-decoration: underline; }
   progress { display: block; width: 100%; height: 6px; margin-top: 4px; accent-color: var(--gold); }
   .res.ok { color: var(--ok); } .res.warn { color: var(--warn); }
   #projects[hidden] { display: none; }
   #project-rows:empty { display: none; }
   #project-rows .prov .d { user-select: all; }
-  textarea, select, input[type="text"] { background: var(--field); color: var(--text); border: 1px solid var(--gold-dim); border-radius: var(--r-btn); padding: 3px 6px; }
+  textarea, select, input[type="text"] { background: var(--field); color: var(--text); border: 1px solid var(--gold-dim); border-radius: var(--r-btn); padding: 3px 6px; font-family: var(--sans); font-size: var(--fs-md); }
   button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, a:focus-visible, summary:focus-visible, pre:focus-visible { outline: 2px solid var(--gold); outline-offset: 3px; }
   button:disabled { opacity: .6; cursor: wait; }
   a { color: var(--gold); }
 
-  /* Step 1-3 strip + the current step's content. */
-  #journey { border-color: var(--line); background: linear-gradient(120deg, #262016, var(--card)); }
-  #journey h2 { font-size: 21px; margin-bottom: calc(var(--u)*1.6); }
+  /* Settings rows: the label (with its /fam command beneath) · the control · one hint line. A card's long explanation
+     sits, word for word, in its closed "How it works" at the bottom. */
+  .set { display: grid; grid-template-columns: 170px minmax(0, 1fr); gap: 2px calc(var(--u)*3); align-items: center; padding: calc(var(--u)*2) 0; border-top: 1px solid var(--line-soft); }
+  .set:first-of-type { border-top: 0; padding-top: calc(var(--u)*1); }
+  .sl > :first-child { display: block; font-weight: 600; color: var(--text); }
+  .sl > span { display: block; color: var(--muted); font: var(--fs-sm) var(--mono); }
+  .sc { display: flex; align-items: center; gap: calc(var(--u)*.8) calc(var(--u)*1.6); flex-wrap: wrap; min-width: 0; }
+  .sc.col { flex-direction: column; align-items: flex-start; }
+  .sh, .sst, .set > .warnbox { grid-column: 2; }
+  .sh { color: var(--text-dim); font-size: var(--fs-sm); line-height: 1.45; }
+  .sst { font-size: var(--fs-sm); line-height: 1.45; }
+  .sh:empty, .sst:empty { display: none; }
+  #approve-key-warn:not(:empty) { display: block; } /* a warning about the key gets its own line under what is registered */
+  details.how { margin-top: calc(var(--u)*1.2); border-top: 1px solid var(--line-soft); padding-top: calc(var(--u)*1.6); }
+  details.how > summary { cursor: pointer; width: max-content; color: var(--gold-dim); font-family: var(--display); font-size: var(--fs-sm); }
+  details.how > p { margin: calc(var(--u)*1.2) 0 0; color: var(--text-dim); font-size: var(--fs-sm); line-height: 1.5; max-width: 72ch; }
+  .vol { display: inline-flex; align-items: center; gap: calc(var(--u)*1.6); flex: 0 1 220px; min-width: 120px; }
+  .vol input[type="range"] { flex: 1 1 auto; min-width: 0; margin: 0; }
+  .vol output { min-width: 3ch; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+  #sound-sample:empty { display: none; }
+
+  /* Step 1-3 strip + the current step's content. A flat card with a gold rule on top. */
+  #journey { border-color: var(--line); border-top: 2px solid var(--gold); background: var(--card); }
+  #journey > h2 { font-size: var(--fs-xl); margin: calc(var(--u)*1.2) 0 calc(var(--u)*1.6); }
   #journey-text { margin: 0; line-height: 1.5; max-width: 70ch; }
   .steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: calc(var(--u)*2.4); padding: 0 0 calc(var(--u)*2); margin: 0; list-style: none; }
-  .steps li { border-top: 2px solid var(--line-soft); padding-top: calc(var(--u)*1.2); margin: 0; }
+  .steps li { border-top: 2px solid var(--line-soft); padding-top: calc(var(--u)*1.2); margin: 0; min-width: 0; }
   .steps li.cur { border-top-color: var(--gold); }
   .steps b { display: block; font-weight: 600; margin-bottom: 3px; color: var(--muted); }
   .steps li.cur b { color: var(--text); }
   .steps b.ok { color: var(--ok); }
-  .steps .hint.warn { color: var(--warn); }
+  .steps .hint { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } /* one line; the whole sentence is its title */
   #journey-action { display: inline-block; margin-top: calc(var(--u)*2); }
   #journey-action[hidden] { display: none; }
   #all-set { margin: calc(var(--u)*2) 0 0; color: var(--ok); }
@@ -93,18 +123,19 @@
   [data-action-feedback] { margin: calc(var(--u)*1.6) 0; padding: calc(var(--u)*1.2) calc(var(--u)*1.6); border: 1px solid var(--err); background: #211114; }
   [data-action-feedback]:empty { display: none; }
 
-  /* Requests waiting: every pending approval is decided here, with the whole text in front of you. */
-  #requests { border-color: var(--warn); background: linear-gradient(120deg, #2a1708, var(--card)); }
-  #requests h2 { color: var(--warn); font-size: 18px; }
+  /* Requests waiting: every pending approval is decided here, with the whole text in front of you. A flat card with a warn rule on top. */
+  #requests { border-color: var(--warn); border-top: 2px solid var(--warn); background: var(--card); }
+  #requests h2 { color: var(--warn); font-size: var(--fs-lg); }
   #requests[hidden] { display: none; }
+  #requests > .hint { margin-bottom: calc(var(--u)*.8); }
   .req { padding: calc(var(--u)*2) 0 0; margin-top: calc(var(--u)*2); border-top: 1px solid var(--line); animation: arrive var(--m-arrive) ease-out; }
   .req:first-child { border-top: none; margin-top: 0; }
   .req-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: calc(var(--u)*.8) calc(var(--u)*1.6); }
-  .req h3 { margin: 0; font-family: var(--display); font-weight: normal; font-size: 16px; color: var(--text); overflow-wrap: anywhere; }
-  .badge { border: 1px solid var(--warn); border-radius: var(--r-btn); padding: 0 6px; font-size: 12px; color: var(--warn); white-space: nowrap; }
+  .req h3 { margin: 0; font-family: var(--display); font-weight: normal; font-size: var(--fs-md); color: var(--text); overflow-wrap: anywhere; }
+  .badge { border: 1px solid var(--warn); border-radius: var(--r-btn); padding: 0 6px; font-size: var(--fs-sm); color: var(--warn); white-space: nowrap; }
   .badge[hidden] { display: none; }
   .req-meta { margin: 2px 0 calc(var(--u)*1.2); }
-  .req-full { margin: 0; padding: calc(var(--u)*1.6); max-height: min(50vh, 420px); overflow: auto; background: var(--bg); border: 1px solid var(--line); border-radius: var(--r); font: var(--fs-sm) var(--mono); line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); }
+  .req-full { margin: 0; padding: calc(var(--u)*1.6); max-height: 160px; overflow: auto; background: var(--bg); border: 1px solid var(--line); border-radius: var(--r); font: var(--fs-sm) var(--mono); line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); }
   button.always { background: transparent; border: 1px dashed var(--line); box-shadow: none; margin-left: auto; }
   .req-msg { margin: calc(var(--u)*1.2) 0 0; }
   .req-msg:empty { display: none; }
@@ -115,19 +146,10 @@
   .arrive { animation: arrive var(--m-arrive) ease-out; }
   @media (prefers-reduced-motion: reduce) { *, ::before, ::after { animation: none !important; transition: none !important; } }
 
-  /* Essentials: always visible. */
-  .ess { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: calc(var(--u)*2.4); }
-  .ess > div > b, .ess label b { font-weight: 600; }
-  .ess .hint { margin-top: calc(var(--u)*.8); }
-  .vol { display: flex; flex-wrap: wrap; align-items: center; gap: calc(var(--u)*.8) calc(var(--u)*1.6); margin-top: calc(var(--u)*.8); }
-  .vol input[type="range"] { flex: 1 1 90px; min-width: 90px; max-width: 200px; margin: 0; }
-  .vol output { min-width: 3ch; color: var(--text-dim); font-variant-numeric: tabular-nums; }
-  #sound-sample:empty { display: none; }
-
   /* Advanced: everything else, collapsed by default. */
   #advanced { border: 1px solid var(--line-soft); border-radius: 4px; background: var(--card); }
   #advanced > summary { cursor: pointer; padding: calc(var(--u)*2) calc(var(--u)*2.4); color: var(--gold); font-family: var(--display); }
-  #advanced > summary .muted { font-family: var(--sans); font-size: 13px; }
+  #advanced > summary .muted { font-family: var(--sans); font-size: var(--fs-sm); }
   .adv-body { display: grid; gap: calc(var(--u)*2.4); padding: 0 calc(var(--u)*2.4) calc(var(--u)*2.4); }
   .adv-body .card { background: transparent; }
   .diagnostics summary { cursor: pointer; padding: calc(var(--u)*1.6) 0; color: var(--gold); font-family: var(--display); }
@@ -139,7 +161,8 @@
     .prov { grid-template-columns: 22px 90px minmax(0, 1fr); }
     .prov .a { grid-column: 2 / -1; flex-wrap: wrap; white-space: normal; }
     .steps { grid-template-columns: 1fr; gap: calc(var(--u)*.8); }
-    .ess { grid-template-columns: 1fr; }
+    .set { grid-template-columns: minmax(0, 1fr); gap: calc(var(--u)*.8); }
+    .sh, .sst, .set > .warnbox { grid-column: 1; }
   }
 </style>
 </head>
@@ -148,14 +171,16 @@
 <main>
   <section class="card wide" id="requests" aria-labelledby="requests-title" hidden>
     <h2 id="requests-title">Requests waiting</h2><span class="sr" id="requests-live" role="status"></span>
-    <div class="hint">Everything your familiars are waiting on. Approve here or in the game — in the game only a request shown in full can be approved. Nothing happens until you click. Real names are shown even with Hide names or Stream-safe on: this window is on your PC, not on stream.</div>
+    <div class="hint" id="requests-hint">Approve here or in the game. Nothing happens until you click.</div>
     <div id="requests-list"></div>
+    <details class="how"><summary>How it works</summary>
+      <p>Everything your familiars are waiting on. Approve here or in the game — in the game only a request shown in full can be approved. Nothing happens until you click. Real names are shown even with Hide names or Stream-safe on: this window is on your PC, not on stream.</p></details>
   </section>
   <section class="card wide" id="journey" aria-labelledby="journey-title">
     <ol class="steps" id="journey-steps" aria-label="Setup steps"></ol>
     <h2 id="journey-title" aria-live="polite"></h2><p id="journey-text"></p>
     <a id="journey-action" hidden></a>
-    <p id="all-set" hidden>All set. In WoW, type <b>/fam</b> or click the imp on your minimap.</p>
+    <p id="all-set" hidden>All set. In WoW, type <b>/fam</b> or click the owl on your minimap.</p>
     <div id="step-slot">
       <section class="card" id="onboard" hidden><h2>Choose your familiars</h2>
         <div class="hint">Familiar can talk to several agents. Tick the ones you want to use in game — each signs in with its own
@@ -174,67 +199,85 @@
     <p class="hint" id="project-result" role="status"></p>
   </section>
   <section class="card wide" id="essentials"><h2>In game</h2>
-    <div class="ess">
-      <div><b>Text size</b><div><select id="ui-font" aria-label="In-game text size" aria-describedby="ui-font-hint"></select></div>
-        <div class="hint" id="ui-font-hint">Body text changes at once. The quest list follows after /reload (or use /fam font in game).</div></div>
-      <div><label><input type="checkbox" id="ui-stream" aria-describedby="ui-stream-hint"> <b>Stream-safe</b></label>
-        <div class="hint" id="ui-stream-hint">Hide names and blur replies on the Glass. Approval cards stay readable: you must see what you approve. What you type in the box is still on screen.</div></div>
-      <div><label><input type="checkbox" id="ui-sound" aria-describedby="ui-sound-hint"> <b>Sounds</b></label>
-        <div class="vol"><label for="ui-volume">Volume</label><input type="range" id="ui-volume" min="0" max="100" step="5" value="70" aria-describedby="ui-sound-hint"><output id="ui-volume-out" for="ui-volume">70</output>
-          <button type="button" class="small" id="b-sound-sample">Play a sample</button></div>
-        <div class="hint" id="sound-sample" role="status"></div>
-        <div class="hint" id="ui-sound-hint">Cues for quest started, needs your approval, approved, Quest Complete, answer ready and Quest Failed. Silent while a quest works. Also /fam sound on | off | 0-100.</div></div>
-    </div>
-    <div class="hint" style="margin-top:calc(var(--u)*1.6)">Also in game: /fam font bigger | smaller | reset, /fam sound on | off | 0-100, /fam stream on | off</div></section>
+    <div class="set"><div class="sl"><label for="ui-font">Text size</label><span>/fam font</span></div>
+      <div class="sc"><select id="ui-font" aria-label="In-game text size" aria-describedby="ui-font-sh ui-font-hint"></select></div>
+      <div class="sh" id="ui-font-sh">Body text changes at once; the quest list after /reload.</div></div>
+    <div class="set"><div class="sl"><label for="ui-stream">Stream-safe</label><span>/fam stream on | off</span></div>
+      <div class="sc"><label><input type="checkbox" id="ui-stream" aria-describedby="ui-stream-sh ui-stream-hint"> Hide names and veil replies on the Glass</label></div>
+      <div class="sh" id="ui-stream-sh">Approval cards stay readable: you must see what you approve.</div></div>
+    <div class="set"><div class="sl"><label for="ui-sound">Sounds</label><span>/fam sound 0-100</span></div>
+      <div class="sc"><label><input type="checkbox" id="ui-sound" aria-describedby="ui-sound-sh ui-sound-hint"> On</label>
+        <span class="vol"><input type="range" id="ui-volume" min="0" max="100" step="5" value="70" aria-label="Volume" aria-describedby="ui-sound-sh"><output id="ui-volume-out" for="ui-volume">70</output></span>
+        <button type="button" class="small" id="b-sound-sample">Play a sample</button><span class="hint" id="sound-sample" role="status"></span></div>
+      <div class="sh" id="ui-sound-sh">Six short cues, so you know what happened without looking.</div></div>
+    <details class="how"><summary>How it works</summary>
+      <p id="ui-font-hint">Body text changes at once. The quest list follows after /reload (or use /fam font in game).</p>
+      <p id="ui-stream-hint">Hide names and blur replies on the Glass. Approval cards stay readable: you must see what you approve. What you type in the box is still on screen.</p>
+      <p id="ui-sound-hint">Cues for quest started, needs your approval, approved, Quest Complete, answer ready and Quest Failed. Silent while a quest works. Also /fam sound on | off | 0-100.</p></details>
+  </section>
   <details class="wide" id="advanced">
     <summary><b>Advanced</b> <span class="muted">— chat model, new-quest mode, Approve key, notices, logs</span></summary>
     <div class="adv-body">
       <div id="adv-familiars">
-        <section class="card" id="familiars"><h2>Familiars</h2><div id="providers"></div>
-          <div class="kv" id="agents"></div></section>
+        <section class="card" id="familiars"><h2>Familiars</h2><div id="providers"></div></section>
       </div>
       <div id="adv-projects"></div>
       <section class="card" id="chat-card"><h2>Chat defaults</h2>
-        <div class="prov" id="chatset"><span class="g">✉</span><span class="n">Chat</span>
-          <span class="d">Claude or Codex for the in-game Chats zone (no project; web search only)<span id="chat-status" class="hint" role="status" style="display:block"></span></span>
-          <span class="a"><select id="chat-agent" aria-label="Chat agent" aria-describedby="chat-status"></select><select id="chat-model" aria-label="Chat model" aria-describedby="chat-status"></select><select id="chat-effort" aria-label="Chat effort" aria-describedby="chat-status"><option>low</option><option>medium</option><option>high</option></select></span></div>
+        <div class="set" id="chatset"><div class="sl"><label for="chat-agent">Chat</label></div>
+          <div class="sc"><select id="chat-agent" aria-label="Chat agent" aria-describedby="chat-status"></select><select id="chat-model" aria-label="Chat model" aria-describedby="chat-status"></select><select id="chat-effort" aria-label="Chat effort" aria-describedby="chat-status"><option>low</option><option>medium</option><option>high</option></select></div>
+          <div class="sh">Claude or Codex for the in-game Chats zone (no project; web search only)</div>
+          <div class="sst" id="chat-status" role="status"></div></div>
       </section>
-      <section class="card"><h2>New quests, keys and notices</h2>
-        <div class="kv">
-          <div>New quests start in</div><div><select id="ui-mode" aria-label="Mode for new quests"><option value="ask">Ask first</option><option value="edits">Accept edits</option><option value="plan">Plan only</option><option value="auto">Auto</option></select><div class="hint" id="ui-mode-hint">Ask first is recommended. Change any quest with Mode.</div>
-            <div class="warnbox" id="ui-mode-warn" role="alert" hidden><b>Acts without asking.</b> Accept edits: agents change files in project folders without asking. Auto: the agent approves its own "routine" actions (the vendor's judgement, not Familiar's). In either mode any WoW addon, WeakAura or macro import can start quests that act without asking you.</div></div>
-          <div>Approve key</div><div><input type="text" id="ui-approve-key" maxlength="24" spellcheck="false" autocomplete="off" placeholder="F9" aria-label="Approve key (as bound in WoW, e.g. F9 or CTRL-F9)" aria-describedby="approve-key-status"><div class="hint">1. In WoW: Esc → Options → Keybindings → AddOns → Familiar → Approve pending request. 2. Type the same key here (F9 or CTRL-F9). Familiar checks it was really pressed; without it, approve by clicking the card or the Approve button.</div>
-            <div class="hint" id="approve-key-status" role="status"><span id="approve-key-line"></span> <span id="approve-key-warn" class="warn"></span></div></div>
-          <div>Quiet play</div><div><label class="hint"><input type="checkbox" id="ui-quiet"> Keep ordinary completion notifications quiet until I turn this off</label><div class="hint">Replies wait in your catch-up notes when you open /fam. Approvals and failures keep their attention cues; agents continue working.</div></div>
-          <div>Notices</div><div><label class="hint"><input type="checkbox" id="ui-raid"> As raid warnings (big, mid-screen); off: small, in the Familiar window</label>
-            <label class="hint" style="display:block"><input type="checkbox" id="ui-tray" aria-describedby="ui-tray-hint"> Windows notice when a request is waiting and WoW isn't in front</label>
-            <div class="hint" id="ui-tray-hint">A small notice from the tray icon; click it to open this panel. It stays generic with Hide names or Stream-safe on, and Windows quiet hours apply. Local only: nothing is sent anywhere.</div></div>
-          <div>Hide names</div><div><label class="hint"><input type="checkbox" id="ui-private"> Hide names only, no blur: zones and quests become Project 1 / Quest #1</label><div class="hint">Replies, tool lines, approval cards and what you type stay visible on screen. Desktop threads are hidden, notices are generic and nothing is spoken. Stream-safe (above) does this and also blurs replies. Also /fam private on | off.</div></div>
-        </div>
+      <section class="card" id="quests-card"><h2>New quests, keys and notices</h2>
+        <div class="set"><div class="sl"><label for="ui-mode">New quests start in</label></div>
+          <div class="sc"><select id="ui-mode" aria-label="Mode for new quests" aria-describedby="ui-mode-hint"><option value="ask">Ask first</option><option value="edits">Accept edits</option><option value="plan">Plan only</option><option value="auto">Auto</option></select></div>
+          <div class="sh" id="ui-mode-hint">Ask first is recommended. Change any quest with Mode.</div>
+          <div class="warnbox" id="ui-mode-warn" role="alert" hidden><b>Acts without asking.</b> Accept edits: agents change files in project folders without asking. Auto: the agent approves its own "routine" actions (the vendor's judgement, not Familiar's). In either mode any WoW addon, WeakAura or macro import can start quests that act without asking you.</div></div>
+        <div class="set"><div class="sl"><label for="ui-approve-key">Approve key</label></div>
+          <div class="sc"><input type="text" id="ui-approve-key" maxlength="24" spellcheck="false" autocomplete="off" placeholder="F9" aria-label="Approve key (as bound in WoW, e.g. F9 or CTRL-F9)" aria-describedby="approve-key-status approve-key-how"></div>
+          <div class="sh" id="approve-key-status" role="status"><span id="approve-key-line"></span> <span id="approve-key-warn" class="warn"></span></div></div>
+        <div class="set"><div class="sl"><label for="ui-quiet">Quiet play</label></div>
+          <div class="sc"><label><input type="checkbox" id="ui-quiet" aria-describedby="ui-quiet-sh"> Keep ordinary completion notifications quiet until I turn this off</label></div>
+          <div class="sh" id="ui-quiet-sh">Replies wait in your catch-up notes when you open /fam.</div></div>
+        <div class="set"><div class="sl"><b>Notices</b></div>
+          <div class="sc col"><label><input type="checkbox" id="ui-raid"> As raid warnings (big, mid-screen); off: small, in the Familiar window</label>
+            <label><input type="checkbox" id="ui-tray" aria-describedby="ui-tray-sh ui-tray-hint"> Windows notice when a request is waiting and WoW isn't in front</label></div>
+          <div class="sh" id="ui-tray-sh">A small notice from the tray icon; click it to open this panel.</div></div>
+        <div class="set"><div class="sl"><label for="ui-private">Hide names</label><span>/fam private on | off</span></div>
+          <div class="sc"><label><input type="checkbox" id="ui-private" aria-describedby="ui-private-sh ui-private-hint"> Hide names only, no blur: zones and quests become Project 1 / Quest #1</label></div>
+          <div class="sh" id="ui-private-sh">Replies, tool lines, approval cards and what you type stay visible on screen.</div></div>
+        <details class="how"><summary>How it works</summary>
+          <p id="approve-key-how">1. In WoW: Esc → Options → Keybindings → AddOns → Familiar → Approve pending request. 2. Type the same key here (F9 or CTRL-F9). Familiar checks it was really pressed; without it, approve by clicking the card or the Approve button.</p>
+          <p>Replies wait in your catch-up notes when you open /fam. Approvals and failures keep their attention cues; agents continue working.</p>
+          <p id="ui-tray-hint">A small notice from the tray icon; click it to open this panel. It stays generic with Hide names or Stream-safe on, and Windows quiet hours apply. Local only: nothing is sent anywhere.</p>
+          <p id="ui-private-hint">Replies, tool lines, approval cards and what you type stay visible on screen. Desktop threads are hidden, notices are generic and nothing is spoken. Stream-safe (above) does this and also blurs replies. Also /fam private on | off.</p></details>
       </section>
       <section class="card"><h2>Find your way back</h2>
-        <div class="hint"><b>/fam</b> opens your Quest Log; the minimap imp does too. Pick a quest to read or continue it. <b>Text</b> opens a copyable transcript from the last /reload. <b>Ctrl+Up</b> recalls your last message.</div>
+        <div class="hint"><b>/fam</b> opens your Quest Log; the minimap owl does too. Pick a quest to read or continue it. <b>Text</b> opens a copyable transcript from the last /reload. <b>Ctrl+Up</b> recalls your last message.</div>
         <div class="hint">Close this panel to keep Familiar in the tray. Double-click <b>Run Familiar.cmd</b> or choose <b>Open Familiar</b> from the tray to return.</div>
       </section>
       <section class="card"><h2>Companion controls</h2>
         <p id="build-summary" class="hint"></p>
         <input id="build-id" readonly aria-label="Copyable running build identity">
         <p><b id="restart-title"></b> <span class="hint" id="restart-state"></span></p>
-        <p class="hint">Companion source updates take effect after a full Familiar restart. Once quests have settled, choose <b>Quit</b> from the tray, then open <b>Run Familiar.cmd</b>. Opening the launcher while Familiar runs only opens this panel. Reload config changes settings; it does not reload app code. Addon changes load on your next WoW launch or a user-initiated /reload.</p>
-        <div class="btns"><button id="b-config">Open config</button><button id="b-reload">Reload config</button><button id="b-logs">Open log file</button><button id="b-diag" title="Copies a redacted summary for a bug report; review it before posting.">Copy diagnostics</button><button id="b-refresh">Rescan desktop threads</button><button id="b-pause">Pause overlay</button><button id="b-update" title="Makes one request to GitHub, only when you click">Check for updates</button>
+        <div class="btns"><button class="quiet" id="b-config">Open config</button><button class="quiet" id="b-reload">Reload config</button><button class="quiet" id="b-logs">Open log file</button><button class="quiet" id="b-diag" title="Copies a redacted summary for a bug report; review it before posting.">Copy diagnostics</button><button class="quiet" id="b-refresh">Rescan desktop threads</button><button class="quiet" id="b-pause">Pause overlay</button><button class="quiet" id="b-update" title="Makes one request to GitHub, only when you click">Check for updates</button>
           <label class="hint"><input type="checkbox" id="c-login"> Start Familiar when I sign in to Windows</label></div>
         <p class="hint" id="update-result" role="status"></p>
-        <p class="hint"><b>Check for updates</b> asks GitHub for the latest release once, when you click. Familiar never checks by itself. <b>Copy diagnostics</b> copies a redacted summary for a bug report; review it before posting.</p>
+        <details class="how"><summary>How it works</summary>
+          <p>Companion source updates take effect after a full Familiar restart. Once quests have settled, choose <b>Quit</b> from the tray, then open <b>Run Familiar.cmd</b>. Opening the launcher while Familiar runs only opens this panel. Reload config changes settings; it does not reload app code. Addon changes load on your next WoW launch or a user-initiated /reload.</p>
+          <p><b>Check for updates</b> asks GitHub for the latest release once, when you click. Familiar never checks by itself. <b>Copy diagnostics</b> copies a redacted summary for a bug report; review it before posting.</p></details>
       </section>
       <details class="diagnostics"><summary>Link details &amp; troubleshooting</summary><div class="diagnostic-grid">
         <section class="card"><h2>Runestrip link</h2><div class="kv" id="link"></div>
-          <div class="btns"><button id="b-snapshot" type="button" title="Saves a small picture of the top-left corner of the game window">Save what Familiar sees</button></div>
-          <p class="hint">Saves a picture of only the top-left 320×32 pixels of the game window, where the strip is drawn, so you can see what Familiar sees. It stays on your PC.</p>
-          <p class="hint" id="snapshot-result" role="status"></p></section>
+          <div class="btns"><button class="quiet" id="b-snapshot" type="button" title="Saves a small picture of the top-left corner of the game window">Save what Familiar sees</button></div>
+          <p class="hint" id="snapshot-result" role="status"></p>
+          <details class="how"><summary>How it works</summary>
+            <p>Saves a picture of only the top-left 320×32 pixels of the game window, where the strip is drawn, so you can see what Familiar sees. It stays on your PC.</p></details></section>
         <section class="card"><h2>World of Warcraft</h2><div class="kv" id="game"></div></section>
         <section class="card wide"><h2>Addon</h2><div class="kv" id="addon"></div><ul id="notes" class="hint"></ul>
-          <div class="btns"><button id="b-install">Reinstall addon</button><button id="b-toast">Test overlay</button></div>
-          <p class="hint">After a first install, restart WoW once and enable Familiar in AddOns. If messages did not arrive, /reload checks the saved outbox; /fam resend retries unconfirmed messages. Check the conversation before resending.</p>
+          <div class="btns"><button id="b-install">Reinstall addon</button><button class="quiet" id="b-toast">Test overlay</button></div>
+          <details class="how"><summary>How it works</summary>
+            <p>After a first install, restart WoW once and enable Familiar in AddOns. If messages did not arrive, /reload checks the saved outbox; /fam resend retries unconfirmed messages. Check the conversation before resending.</p></details>
         </section>
         <section class="card wide"><h2>Log</h2><div id="log" tabindex="0" aria-label="Companion log"></div></section>
       </div></details>

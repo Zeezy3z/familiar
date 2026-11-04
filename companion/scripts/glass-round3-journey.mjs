@@ -101,8 +101,10 @@ export async function glassRound3Journey(page, origin) {
   const done = await toast('.toast.done');
   check('toast: Quest Complete banner with the seal, its rewards line and the closing rule', !!done && done.title === 'Quest Complete · Quest log' && done.src === 'assets/seal-128.png' && done.alt === '' && done.loaded
     && done.seals === 1 && done.before === 'none' && done.after !== 'none' && done.font.includes('Familiar Display'));
+  // Round 7 §2.4: the sub is max(11px, 1.6vh) (it scales with the screen, like the banner), not 0.62em of the banner.
+  const subPx = await page.evaluate(() => Math.max(11, innerHeight * 0.016));
   check('toast: the rewards line is the hub sub, small, in the plain face and the dim text colour', done.sub === '3/3 objectives · 2 edits · $0.21' && done.subFont.includes('Segoe UI')
-    && Math.abs(done.subSize - 0.62) < 0.01 && done.subColor === 'rgb(191, 182, 164)');
+    && Math.abs(done.subSize * done.fontPx - subPx) < 0.05 && done.subColor === 'rgb(191, 182, 164)');
   check('toast: the seal is 2.2em of the banner text', Math.abs(done.sealW - 2.2 * done.fontPx) < 1);
   await open('quest-failed');
   await page.waitForFunction(() => { const i = document.querySelector('.toast img.seal'); return !i || i.complete; });
@@ -129,6 +131,56 @@ export async function glassRound3Journey(page, origin) {
     oneLine: t.getBoundingClientRect().height < 2.4 * parseFloat(getComputedStyle(t).fontSize) * 1.6, src: t.querySelector('img.seal')?.getAttribute('src') })));
   check('toast: a chat answer has no rewards line, a failure carries its own, and a line is text, never markup', stacked.length === 3 && stacked[2].sub === null && stacked[1].sub === '<b>1</b>/3 objectives' && stacked.every(t => !t.html)
     && stacked[1].src === 'assets/seal-cracked-128.png' && stacked[2].src === 'assets/seal-128.png' && stacked.every(t => t.oneLine));
+
+  // ---- round 7 §2.3 in-window notices take a row in the detail pane (first child), never painted over the quest header
+  await open('quest-complete-inwin');
+  await page.waitForFunction(() => [...document.querySelectorAll('.toast img.seal')].every(i => i.complete));
+  const strip = () => page.evaluate(() => { const t = document.getElementById('toasts'), toast = t.querySelector('.toast'), head = document.querySelector('.qhead'), s = document.getElementById('detail-scroll');
+    const cs = toast && getComputedStyle(toast);
+    return { parent: t.parentElement?.id || t.parentElement?.tagName, first: t.parentElement?.firstElementChild === t, inwin: t.classList.contains('inwin'), count: t.children.length,
+      toastBottom: toast?.getBoundingClientRect().bottom, headTop: head?.getBoundingClientRect().top, scrollH: document.getElementById('content').scrollHeight, bar: cs && cs.borderLeftWidth, barColor: cs && cs.borderLeftColor,
+      bg: cs && cs.backgroundColor, font: cs && parseFloat(cs.fontSize), small: parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--small-font')),
+      oneLine: !!toast && toast.getBoundingClientRect().height < 2 * parseFloat(cs.lineHeight || '0') + 1 || (!!toast && toast.getBoundingClientRect().height < parseFloat(cs.fontSize) * 2.6),
+      inside: !!toast && (() => { const r = toast.getBoundingClientRect(), d = document.getElementById('detail').getBoundingClientRect(); return r.left >= d.left - 0.5 && r.right <= d.right + 0.5 && r.top >= d.top - 0.5; })() }; });
+  const inStrip = await strip();
+  check('inwin: raid warnings off puts the notices in the detail pane, as its first child', inStrip.parent === 'detail' && inStrip.first && inStrip.inwin && inStrip.count === 1);
+  check('inwin: the notice takes a row above the quest header (no overlap), inside the pane', inStrip.headTop >= inStrip.toastBottom - 0.5 && inStrip.inside);
+  check('inwin: the strip is one small line with a 3 px gold bar on a near-opaque ground', inStrip.oneLine && inStrip.bar === '3px' && inStrip.barColor === 'rgb(255, 209, 0)'
+    && inStrip.bg === 'rgba(24, 19, 8, 0.96)' && Math.abs(inStrip.font - inStrip.small) < 0.05);
+  await push(() => { window.preview.model.toasts = []; });
+  const gone = await strip();
+  check('inwin: when the notice expires the transcript keeps its height and the header returns to the top', gone.count === 0 && gone.scrollH === inStrip.scrollH && gone.parent === 'detail');
+  await open('approval-always-inwin');
+  const appr = await strip();
+  check('inwin: a request notice is marked by the warn bar', appr.parent === 'detail' && appr.barColor === 'rgb(255, 128, 64)' && appr.headTop >= appr.toastBottom - 0.5);
+  await push(() => { window.preview.model.raidWarnings = true; });
+  check('inwin: raid warnings on moves the notices back to the page, as a banner', await page.evaluate(() => { const t = document.getElementById('toasts');
+    return t.parentElement === document.body && !t.classList.contains('inwin') && getComputedStyle(t).position === 'absolute'; }));
+  await open('quest-complete');
+  check('inwin: quest-complete (raid warnings on) keeps the raid banner on the page', await page.evaluate(() => document.getElementById('toasts').parentElement === document.body));
+
+  // ---- round 7 §2.3 the quest header: the mode and the state are chips; no helper sentence; Details carries a chevron
+  await open('approval-always');
+  const chips = () => page.evaluate(() => [...document.querySelectorAll('.qbar .chip')].map(c => { const cs = getComputedStyle(c);
+    return { text: c.textContent, border: cs.borderTopColor, color: cs.color, font: cs.fontFamily, size: parseFloat(cs.fontSize), radius: parseFloat(cs.borderTopLeftRadius) }; }));
+  let hc = await chips();
+  const small = await page.evaluate(() => parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--small-font')));
+  check('header: Ask first and ! Needs your approval are two chips in the display face at the small size', hc.length === 2 && hc[0].text === 'Ask first' && hc[1].text === '! Needs your approval'
+    && hc.every(c => c.font.includes('Familiar Display') && Math.abs(c.size - small) < 0.05 && c.radius > 0));
+  check('header: the state chip takes the warn colour on its border and text', hc[1].border === 'rgb(255, 128, 64)' && hc[1].color === 'rgb(255, 128, 64)');
+  check('header: the helper sentence is gone from the header', await page.locator('.qstate span').count() === 0
+    && !(await page.locator('.qhead').textContent()).includes('Review the request below'));
+  check('header: Details carries a chevron that turns when open', (await page.locator(".qbar [data-act*='\"what\":\"details\"']").textContent()) === 'Details ▾'
+    && (await click(".qbar [data-act*='\"what\":\"details\"']")).length === 0 && (await page.locator(".qbar [data-act*='\"what\":\"details\"']").textContent()) === 'Details ▴');
+  await open('running');
+  hc = await chips();
+  check('header: a working quest shows ◌ Working in the info colour', hc.length === 2 && hc[1].text === '◌ Working' && hc[1].border === 'rgb(113, 213, 255)');
+  await open('interrupted');
+  hc = await chips();
+  check('header: an interrupted quest shows ! Interrupted in warn, without its hint', hc[1]?.text === '! Interrupted' && hc[1].border === 'rgb(255, 128, 64)'
+    && !(await page.locator('.qhead').textContent()).includes('Send a message'));
+  await open('finished');
+  check('header: a routine state shows the mode chip alone', (await chips()).map(c => c.text).join() === 'Ask first');
 
   // ---- §5 cost and usage
   await open('running');
@@ -255,24 +307,82 @@ export async function glassRound3Journey(page, origin) {
   check('welcome: linked with no familiar ready is puzzled, with its own line', !!w && w.cls === 'welcome puzzled' && w.big === 'Well met.'
     && w.sub === 'No familiar is ready yet. Open Familiar from the tray icon on your PC to sign in.' && w.text.includes('Chat uses Claude or Codex'));
 
-  // Offers read as quest rows: a gold "!" in the display face; the practice-quest line keeps its own ◆. The sentences are unchanged.
+  // Round 7 §2.1: the offers are four quest rows: a gold "!" glyph in the display face, the name over one dim line, the
+  // actions on the right (siblings of the text, never inside a sentence); the practice quest is one line with its own ◆.
   await open('welcome');
-  const offers = await page.evaluate(() => [...document.querySelectorAll('.welcome .hint')].map(h => { const b = getComputedStyle(h, '::before');
-    return { cls: h.className, bullet: b.content, color: b.color, font: b.fontFamily, bold: h.querySelector('b')?.textContent }; }));
-  const offered = offers.filter(o => o.cls.includes('offer'));
-  check('welcome: the three offers carry a gold "!" bullet in the display face',
-    offered.map(o => o.cls.split(' ').pop()).join() === 'welcome-chat,welcome-project,welcome-continue'
-    && offered.every(o => o.bullet === '"!"' && o.color === 'rgb(255, 209, 0)' && o.font.includes('Familiar Display'))
-    && offered.map(o => o.bold).join() === 'Ask a game question,Work on a project,Continue a conversation');
-  check('welcome: the practice-quest line and the familiars list get no "!"', offers.filter(o => !o.cls.includes('offer')).every(o => o.bullet === 'none' || o.bullet === 'normal')
+  const rows = () => page.evaluate(() => [...document.querySelectorAll('.welcome .offers > *')].map(r => { const ob = r.querySelector('.ob'), cs = ob && getComputedStyle(ob), os = r.querySelector('.os');
+    return { cls: r.className, glyph: ob?.textContent, color: cs?.color, font: cs?.fontFamily, name: r.querySelector('.on')?.textContent, sub: os?.textContent,
+      subLines: os ? Math.round(os.getBoundingClientRect().height / parseFloat(getComputedStyle(os).lineHeight)) : 0,
+      actions: [...r.querySelectorAll('.oa > *')].map(a => a.textContent), line: r.querySelector('.ot')?.textContent, text: r.textContent.replace(/\s+/g, ' ').trim(), flex: getComputedStyle(r).display }; }));
+  let offerRows = await rows();
+  check('welcome: four rows, three offers and the practice quest, in order', offerRows.map(r => r.cls).join() === 'offer welcome-chat,offer welcome-project,offer welcome-continue,welcome-tutorial'
+    && offerRows.every(r => r.flex === 'flex'));
+  check('welcome: each offer carries a gold "!" in the display face, its name and one dim line', offerRows.slice(0, 3).every(r => r.glyph === '!' && r.color === 'rgb(255, 209, 0)' && r.font.includes('Familiar Display') && r.subLines === 1)
+    && offerRows.slice(0, 3).map(r => r.name).join() === 'Ask a game question,Work on a project,Continue a conversation');
+  check("welcome: the designer's copy, ready state", offerRows[0].sub === 'Web search only; no files, no commands.' && offerRows[0].actions.join() === '+ Chat'
+    && offerRows[1].sub === 'Pick a folder. I work while you play and ask before I change anything.' && offerRows[1].actions.join() === '+ Claude,+ Codex'
+    && offerRows[2].sub === 'Pick a quest on the left, desktop threads too.' && offerRows[2].actions.length === 0
+    && offerRows[3].line === 'Replay A Familiar Face · the practice quest');
+  check('welcome: the practice-quest row keeps its own ◆ in the familiar colour, no "!"', offerRows[3].glyph === '◆' && offerRows[3].color === 'rgb(185, 163, 255)'
     && (await page.locator('.welcome-tutorial .ag').textContent()) === '◆');
+  check('welcome: no button sits inside a text line; the only controls are an offer\'s actions and the practice-quest link', await page.evaluate(() => [...document.querySelectorAll('.welcome .btn, .welcome [data-act]')]
+    .every(b => b.closest('.oa') || (b.classList.contains('link') && b.closest('.welcome-tutorial'))) && !document.querySelector('.welcome .ot .btn, .welcome .os [data-act]')));
+  check('welcome: + Claude / + Codex are buttons that open the folder picker', await page.evaluate(() => { const keys = [...document.querySelectorAll('.welcome-project .oa .btn')];
+    return keys.length === 2 && keys.map(k => JSON.parse(k.dataset.act).agent).join() === 'claude,codex' && keys.every(k => JSON.parse(k.dataset.act).type === 'start'); }));
+  check('welcome: the old paragraphs, the familiars list and the counts line are gone', await page.evaluate(() => !document.querySelector('.welcome .hint, .welcome .kv')
+    && !/Your familiars|awaiting approval|Opens a draft/.test(document.querySelector('.welcome').textContent)));
+  const chatCalls = await click('.welcome-chat .btn');
+  check('welcome: + Chat sends only the chat draft action', chatCalls.length === 1 && chatCalls[0].type === 'newIn' && chatCalls[0].key === 'chats');
+  await open('welcome');
+  const tline = await page.evaluate(() => { const t = document.getElementById('target'); return { text: t.textContent, warn: t.classList.contains('warn'), color: getComputedStyle(t).color }; });
+  check('welcome: the target line is muted, not a warning, with the new words', tline.text === 'Messages go to: Nothing selected · pick a quest, or start one above.' && !tline.warn && tline.color === 'rgb(156, 147, 132)');
+  // Every row fits the pane at the fixture geometry (row height 24) and in the default 720 x 440 window at 1080p (the audit's 1x).
+  const fit = () => page.evaluate(() => { const s = document.getElementById('detail-scroll'), d = s.getBoundingClientRect();
+    const bottoms = [...document.querySelectorAll('.welcome .offers > *')].map(r => r.getBoundingClientRect().bottom);
+    return { third: bottoms[2] <= d.bottom + 0.5, all: bottoms.every(b => b <= d.bottom + 0.5), scroll: s.scrollHeight <= s.clientHeight + 1, wide: s.scrollWidth <= s.clientWidth + 1 }; });
+  let fits = await fit();
+  check('welcome: all four rows fit the pane at the fixture geometry', fits.third && fits.all && fits.scroll && fits.wide);
+  await page.evaluate(() => { const p = window.preview; p.emit('layout', { ...p.layout, px: 1.0476, rowH: 16, list: [44, 105, 230, 345], detail: [281, 105, 455, 268],
+    status: [179, 455, 210, 22], tracker: [773, 91, 239, 149], keys: {}, mini: [980, 5, 36, 36] }); });
+  await settle();
+  fits = await fit();
+  check('welcome: at the default window (a 455 x 268 pane, row height 16) the third row and the practice quest are inside the pane, with no scroll', fits.third && fits.all && fits.scroll && fits.wide);
+  check('welcome: at the default text size the face and the two-line greeting stay', await page.evaluate(() => !/(tight|faceless)/.test(document.querySelector('.welcome').className)
+    && getComputedStyle(document.querySelector('.welcome img.portrait')).display !== 'none'));
+  await push(() => { window.preview.model.fontScale = 1.3; });
+  fits = await fit();
+  check('welcome: at Text 130 % in the default window the face steps aside, the greeting takes one line, and the rows still fit', fits.all && fits.scroll && fits.wide
+    && await page.evaluate(() => document.querySelector('.welcome').classList.contains('tight') && getComputedStyle(document.querySelector('.welcome img.portrait')).display === 'none'));
+  await open('welcome-unready');
+  offerRows = await rows();
+  check('welcome-unready: with no chat provider the chat row says so and offers no + Chat; another ready familiar starts with /fam',
+    offerRows[0].sub === 'Chat uses Claude or Codex. Sign in from the tray on your PC.' && offerRows[0].actions.length === 0 && offerRows[1].actions.join() === '/fam hermes'
+    && (await page.locator('.welcome').textContent()).includes('Chat uses Claude or Codex'));
+  await open('welcome-noprojects');
+  offerRows = await rows();
+  check('welcome-noprojects: the project row says where to add a folder, in gold-dim', offerRows[1].sub === 'No project folders yet. Add one in Familiar on your PC (tray → Open Familiar → Projects).'
+    && offerRows[1].actions.join() === '+ Claude,+ Codex'
+    && await page.evaluate(() => { const n = document.querySelector('.welcome-project .welcome-noprojects'); return !!n && getComputedStyle(n).color === 'rgb(201, 162, 39)'; }));
+  await open('welcome');
+  await push(() => { const d = window.preview.model.detail; d.backends = d.backends.map(b => ({ ...b, ready: false })); d.chat = { ...d.chat, ready: false }; });
+  offerRows = await rows();
+  check('welcome: with no familiar ready the project row says so and offers no starter', offerRows[1].sub === 'No familiar is ready yet. Sign in from the tray on your PC.' && offerRows[1].actions.length === 0);
+  // Round 7 §2.6: a request waiting on you outranks a running quest: the asking face (idle until its file ships).
+  await open('welcome-asking');
+  w = await head();
+  const askingShipped = await page.evaluate(() => fetch('assets/asking-192.png').then(r => r.ok, () => false));
+  check('welcome: a request waiting on you shows the asking face and the count, ahead of working', !!w && w.cls === 'welcome asking' && w.big === 'Well met.'
+    && w.sub === 'Linked to Preview Rogue · 1 waiting on you.' && w.loaded && w.src === (askingShipped ? 'assets/asking-192.png' : 'assets/idle-192.png'));
+  await push();
+  w = await head();
+  check('welcome: a missing asking face falls back once and stays on the fallback across model pushes', !!w && w.loaded && w.src === (askingShipped ? 'assets/asking-192.png' : 'assets/idle-192.png'));
 
   // The portrait: a ring, sized from the row height, inert, inside the pane (so the opacity slider fades it), gone in a short pane.
   const face = () => page.evaluate(() => { const img = document.querySelector('.welcome img.portrait'), r = img.getBoundingClientRect(), cs = getComputedStyle(img),
     pane = getComputedStyle(document.getElementById('detail')), d = document.getElementById('detail').getBoundingClientRect();
     return { w: r.width, h: r.height, display: cs.display, radius: cs.borderRadius, ring: cs.boxShadow, bg: cs.backgroundColor, act: !!img.closest('[data-act]'),
       inside: r.left >= d.left && r.right <= d.right && r.top >= d.top && r.bottom <= d.bottom, paneBg: pane.backgroundColor, short: document.body.classList.contains('short-detail'),
-      offers: document.querySelectorAll('.welcome .hint.offer').length, cx: r.left + r.width / 2, cy: r.top + r.height / 2 }; });
+      offers: document.querySelectorAll('.welcome .offer').length, cx: r.left + r.width / 2, cy: r.top + r.height / 2 }; });
   const layout = (detail, over = {}) => ({ scr: [1280, 800], px: 1.25, panel: true, native: false, drag: false, combat: false, ui: true, rowH: 24,
     list: [30, 100, 250, 620], detail, status: [30, 735, 940, 28], ...over });
   const relayout = async l => { await page.evaluate(l => window.preview.emit('layout', l), l); await settle(); };
@@ -297,6 +407,33 @@ export async function glassRound3Journey(page, origin) {
   const narrow = await page.evaluate(() => { const s = document.getElementById('detail-scroll'), img = document.querySelector('.welcome img.portrait').getBoundingClientRect();
     return { fits: s.scrollWidth <= s.clientWidth + 1, face: img.width, text: document.querySelector('.welcome .big').textContent }; });
   check('welcome: in a narrow pane at large text the face shrinks to 48 px and nothing spills sideways', narrow.fits && narrow.face === 48 && narrow.text === "I can't see the game yet.");
+
+  // ---- round 7 §2.4 the list rhythm and the four sizes
+  await open('running');
+  const list = () => page.evaluate(() => { const fs = el => parseFloat(getComputedStyle(el).fontSize), root = getComputedStyle(document.documentElement), v = n => parseFloat(root.getPropertyValue(n));
+    const zone = document.querySelector('.row.zone'), sel = document.querySelector('.row.sel'), title = document.getElementById('list-title'), cnt = zone.querySelector('.s');
+    return { tw: [...document.querySelectorAll('.row.zone .tw')].map(t => t.textContent), twFont: getComputedStyle(zone.querySelector('.tw')).fontFamily, selImg: getComputedStyle(sel).backgroundImage,
+      selBg: getComputedStyle(sel).backgroundColor, selBar: getComputedStyle(sel).boxShadow, cnt: { size: fs(cnt), num: getComputedStyle(cnt).fontVariantNumeric, color: getComputedStyle(cnt).color },
+      rowH: v('--row-h'), rowFont: v('--row-font'), small: v('--small-font'), body: v('--body-font'), rows: [...document.querySelectorAll('.row')].map(r => r.getBoundingClientRect().height),
+      rowText: fs(sel), title: { h: title.getBoundingClientRect().height, size: fs(title), weight: getComputedStyle(title).fontWeight },
+      ag: [...document.querySelectorAll('.row .ag')].map(a => fs(a) === fs(a.parentElement) && getComputedStyle(a).fontFamily.includes('Familiar Display')),
+      st: [...document.querySelectorAll('.row .st')].map(s => fs(s) === fs(s.parentElement)),
+      tracker: [...document.querySelectorAll('.tl-a, .tl-h .s')].map(fs), tout: null, qtitleAg: fs(document.querySelector('.qtitle .ag')), content: fs(document.getElementById('content')) }; });
+  let L = await list();
+  check('rows: twisties are ▾ when open, in the display face', L.tw.every(t => t === '▾') && L.tw.length === 2 && L.twFont.includes('Familiar Display'));
+  check('rows: the selected row is a solid tint with a gold left bar, no gradient', L.selImg === 'none' && L.selBg === 'rgba(255, 209, 0, 0.12)' && L.selBar.includes('rgb(255, 209, 0)') && L.selBar.includes('inset'));
+  check('rows: counts are small, tabular and muted', Math.abs(L.cnt.size - L.small) < 0.05 && L.cnt.num.includes('tabular-nums') && L.cnt.color === 'rgb(156, 147, 132)');
+  check('rows: every row is --row-h tall and the pane title is too, in the row font at weight 700', L.rows.every(h => Math.abs(h - L.rowH) < 0.5) && Math.abs(L.title.h - L.rowH) < 1.5
+    && Math.abs(L.title.size - L.rowFont) < 0.05 && L.title.weight === '700');
+  check('rows: agent and status glyphs are the row size (one weight, one box)', L.ag.length > 0 && L.ag.every(Boolean) && L.st.every(Boolean));
+  check('type: the tracker and the header glyph use the small size; the transcript the body size', L.tracker.length > 0 && L.tracker.every(px => Math.abs(px - L.small) < 0.05)
+    && Math.abs(L.qtitleAg - L.small) < 0.05 && Math.abs(L.content - L.body) < 0.05);
+  await push(() => { window.preview.model.list.rows[0].collapsed = true; });
+  check('rows: a collapsed zone shows ▸', (await list()).tw[0] === '▸');
+  await page.evaluate(() => { const p = window.preview; p.emit('layout', { ...p.layout, rowH: 16, px: 1 }); });
+  await settle();
+  L = await list();
+  check('rows: at the 16 px row floor the row text is at least 10 px and rows stay --row-h', L.rowH === 16 && L.rowText >= 10 && L.rows.every(h => Math.abs(h - 16) < 0.5));
 
   // ---- round 6 §2.1 the cues: the Glass plays shared/cues.ts through one AudioContext of its own (a counting stub stands in for WebAudio)
   await open('finished');

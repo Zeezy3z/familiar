@@ -5,7 +5,7 @@
 ## Version: 0.5.0
 ## X-License: MIT
 ## X-Website: https://github.com/Zeezy3z/familiar
-## IconTexture: Interface\Icons\Spell_Shadow_SummonImp
+## IconTexture: Interface\Icons\Ability_Hunter_Pet_Owl
 ## AddonCompartmentFunc: Familiar_OnCompartmentClick
 ## SavedVariables: FamiliarDB
 ## SavedVariablesPerCharacter: FamiliarCharDB

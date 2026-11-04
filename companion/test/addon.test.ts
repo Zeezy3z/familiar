@@ -988,7 +988,7 @@ describe("minimap and title icons", () => {
     return state.run(`return table.concat(MOCK.chat, "|")`).split("|").find((l) => l.includes("icon:")) ?? "";
   };
 
-  it("minimap and title icons use the addon's own texture and fall back to the game's imp when the client refuses it", () => {
+  it("minimap and title icons use the addon's own texture and fall back to the game's owl icon when the client refuses it", () => {
     const own = draftBoot();
     const ownPath = own.run(`return NS.ICON`);
     expect(ownPath).toBe("Interface\\AddOns\\Familiar\\media\\familiar");
@@ -998,10 +998,10 @@ describe("minimap and title icons", () => {
 
     const refused = draftBoot(`MOCK.textureOk = false`);
     const fallback = refused.run(`return NS.ICON_FALLBACK`);
-    expect(fallback).toBe("Interface\\Icons\\Spell_Shadow_SummonImp");
+    expect(fallback).toBe("Interface\\Icons\\Ability_Hunter_Pet_Owl");
     expect(refused.run(`return NS.iconSource`)).toBe("fallback");
     expect(iconPaths(refused)).toBe(`FamiliarFrame=${fallback}|FamiliarMinimapButton=${fallback}`);
-    expect(diagLine(refused)).toMatch(/icon: fallback \(game imp\)$/);
+    expect(diagLine(refused)).toMatch(/icon: fallback \(game icon\)$/);
   });
 
   it("SetIcon reports which texture it left on the widget", () => {

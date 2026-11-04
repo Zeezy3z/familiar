@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { approveKeyStatus, claudeLine, journey, portraitFor } from "../src/control/journey";
 import { threadState } from "../src/overlay/thread-state";
 import { approvalPreview } from "../src/overlay/approval-preview";
-import { buildPresentation, compareVersions, restartGuidance, updateLine, versionMismatch } from "../src/control/build";
+import { buildPresentation, compareVersions, restartGuidance, updateLine, versionLabel, versionMismatch } from "../src/control/build";
 import type { DetailModel } from "../src/hub/viewmodel";
 
 const prepared = { id: "codex", label: "Codex", glyph: "◇", enabled: true, installed: true, signedIn: true, detail: "Sign-in found", canLogin: true };
@@ -93,7 +93,7 @@ describe("the familiar's voice and portrait", () => {
   it("speaks the titles that are about its own state; the texts under them stay literal", () => {
     expect(journey({ ...linked, game: null }).title).toBe("I'm waiting for WoW.");
     expect(journey({ ...linked, layout: { panel: false } }).title).toBe("Ready when you are.");
-    expect(journey({ ...linked, layout: { panel: false } }).text).toContain("click the minimap imp to open your Quest Log");
+    expect(journey({ ...linked, layout: { panel: false } }).text).toContain("click the minimap owl to open your Quest Log");
     expect(journey(linked).title).toBe("Linked. Your next quest awaits.");
     expect(journey({ ...linked, providers: [], backends: {} }).title).toBe("Choose your familiar");
   });
@@ -107,6 +107,36 @@ describe("the familiar's voice and portrait", () => {
     expect(at({ ...linked, providers: [], backends: {}, claude: { state: "failed" } })).toBe("idle");
     expect(at({ ...linked, linked: false, layout: null, work: { working: 2 } })).toBe("puzzled"); // an unlinked game is not "working"
   });
+  it("asks while a request waits on a finished journey, ahead of work; an undone Link step still puzzles it", () => {
+    expect(portraitFor({ work: { working: 1, approvals: 1 } }, -1)).toBe("asking");
+    expect(portraitFor({ work: { approvals: 1 } }, 2)).toBe("puzzled");
+    expect(portraitFor({ work: { approvals: 2 } }, 1)).toBe("idle"); // the WoW step undone: no request can be on screen
+    expect(portraitFor({ work: { approvals: 0, working: 1 } }, -1)).toBe("working");
+    expect(portraitFor({ work: { approvals: 1 }, claude: { state: "downloading" } }, -1)).toBe("asking");
+    const at = (s: Parameters<typeof journey>[0]) => portraitFor(s, journey(s).current);
+    expect(at({ ...linked, work: { working: 0, approvals: 2 } })).toBe("asking");
+  });
+});
+
+describe("the step strip's one-line hints", () => {
+  it("says each step in a few words; the whole sentence stays the step's text", () => {
+    const both = journey({ ...linked, providers: [{ ...prepared, id: "claude", label: "Claude" }, prepared], backends: { claude: { ready: true }, codex: { ready: true } } });
+    expect(both.hints).toEqual(["Claude and Codex ready", "Game window found", "Game link working"]);
+    expect(both.steps[0].text).toBe("Claude, Codex ready · change under Advanced");
+    expect(journey(linked).hints[0]).toBe("Codex ready");
+    const three = journey({ ...linked, providers: ["a", "b", "c"].map(id => ({ ...prepared, id, label: id.toUpperCase() })), backends: { a: { ready: true }, b: { ready: true }, c: { ready: true } } });
+    expect(three.hints[0]).toBe("A, B and C ready");
+    expect(journey({ ...linked, linked: false, backends: {} }).hints[0]).toBe("Sign-in found");
+    expect(journey({ ...linked, linked: false, game: null, layout: null }).hints.slice(1)).toEqual(["Not found yet", "Not linked yet"]);
+    expect(journey({ ...linked, providers: [], backends: {} }).hints[0]).toBe("No familiar chosen yet");
+    expect(journey({ ...linked, providers: [{ ...prepared, signedIn: false }], backends: {} }).hints[0]).toBe("Not signed in yet");
+    expect(journey({ ...linked, providers: [], backends: {}, claude: { state: "downloading", pct: 43, mb: 112 } }).hints[0]).toBe("Downloading Claude Code · 43 %");
+  });
+  it("keeps each hint short enough for one line of the strip (a step column at 760 px holds about 32 characters)", () => {
+    const states = [linked, { ...linked, linked: false, layout: null }, { ...linked, game: null }, { ...linked, backends: {} }, { install: {}, providers: [{ ...prepared, signedIn: undefined }] },
+      { ...linked, providers: [], backends: {}, claude: { state: "failed" } }, { ...linked, providers: [], backends: {}, claude: { state: "downloading", pct: 100, mb: 112 } }];
+    for (const s of states) for (const h of journey(s).hints) expect(h.length, h).toBeLessThanOrEqual(32);
+  });
 });
 
 describe("Link Doctor line in the Link step", () => {
@@ -115,6 +145,17 @@ describe("Link Doctor line in the Link step", () => {
   it("replaces the fixed Link text while the link is not up, and keeps its level", () => {
     expect(journey({ ...stuck, doctor: strip }).steps[2]).toEqual({ label: "Link", done: false, text: strip.text, level: "warn" });
     expect(journey({ ...stuck, doctor: { step: "game", level: "muted", text: "WoW isn't open." } }).steps[2]).toMatchObject({ level: "muted" });
+  });
+  it("is the journey text under the title while the link is not up, in its own level; the strip only says Not linked yet", () => {
+    const j = journey({ ...stuck, doctor: strip });
+    expect(j).toMatchObject({ title: "I can't see the game yet.", text: strip.text, textLevel: "warn", level: "warn" });
+    expect(j.hints[2]).toBe("Not linked yet");
+    expect(journey({ ...stuck, doctor: { step: "game", level: "muted", text: "WoW isn't open." } })).toMatchObject({ text: "WoW isn't open.", textLevel: "muted" });
+    for (const doctor of [undefined, null, { step: "ok", level: "ok", text: "Game link working." }]) {
+      const fixed = journey({ ...stuck, doctor });
+      expect(fixed.text).toContain("The coloured dots top-left are how Familiar talks to your PC.");
+      expect(fixed).not.toHaveProperty("textLevel");
+    }
   });
   it("falls back to the fixed wording without a doctor, with an empty one, or with the doctor's ok line", () => {
     const fixed = journey(stuck).steps[2].text;
@@ -154,6 +195,12 @@ describe("Claude Code download in the Agents step and the Familiars card", () =>
 });
 
 describe("addon and app versions", () => {
+  it("shows the running version as v<semver>, keeping a plain suffix, and nothing that is not a version", () => {
+    expect(versionLabel("0.5.0")).toBe("v0.5.0");
+    expect(versionLabel("0.1.0-beta")).toBe("v0.1.0-beta");
+    expect(versionLabel("0.1.0 · synthetic preview")).toBe("v0.1.0 · synthetic preview");
+    for (const odd of [undefined, "", "dev", "<b>1.0.0</b>", "1.0", 5]) expect(versionLabel(odd)).toBe("");
+  });
   it("orders versions like semver, a release above its own prerelease", () => {
     expect(compareVersions("0.2.0", "0.10.0")).toBe(-1);
     expect(compareVersions("v1.0.0", "1.0.0")).toBe(0);

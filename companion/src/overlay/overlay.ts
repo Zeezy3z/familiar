@@ -266,22 +266,21 @@ function applyLayout(moveOnly = false) {
   clipFor(els.modeLabel, layout.keys?.mode);
   fitModeLabel();
   placeMiniBadge();
-  // Toasts: centred near the top of the game, like raid warnings; or (raid warnings off) small,
-  // across the top of the transcript, only while the Familiar window is open.
+  // Toasts: centred near the top of the game, like raid warnings; or (raid warnings off) a strip that
+  // takes a row at the top of the detail pane (its first child), so it never paints over the quest
+  // header; the transcript moves down while it shows. Only while the Familiar window is open.
   const raid = model?.raidWarnings !== false;
   const d = layout.detail;
   els.toasts.classList.toggle("inwin", !raid);
-  const ts = els.toasts.style;
-  if (raid || !d) ts.left = ts.top = ts.width = ts.right = "";
-  else {
-    ts.left = `${d[0] * k}px`;
-    ts.top = `${(d[1] + 4) * k}px`;
-    ts.width = `${d[2] * k}px`;
-    ts.right = "auto";
+  const home = raid ? document.body : els.detail;
+  if (els.toasts.parentElement !== home) {
+    if (raid) document.body.appendChild(els.toasts);
+    else els.detail.prepend(els.toasts);
   }
-  ts.display = layout.ui !== false && (raid || (panelOn && !!d)) ? "" : "none";
+  els.toasts.style.display = layout.ui !== false && (raid || (panelOn && !!d)) ? "" : "none";
   if (layout.drag) els.toasts.style.opacity = "0.4";
   else els.toasts.style.opacity = "1";
+  fitWelcome();
   syncDetailScroll();
 }
 
@@ -331,6 +330,7 @@ function fitModeLabel() {
 let PROVIDERS: Record<string, { label: string; glyph: string }> = { claude: { label: "Claude", glyph: "✦" }, codex: { label: "Codex", glyph: "◈" } };
 const AGENT_ICON = new Proxy({} as Record<string, string>, { get: (_t, id: string) => PROVIDERS[id]?.glyph ?? "◇" });
 const agentLabel = (id: string) => PROVIDERS[id]?.label ?? id;
+const STATE_GLYPH: Record<string, string> = { ok: "✓ ", warn: "! ", error: "✗ ", working: "◌ " };
 const STATUS_ICON: Record<string, string> = { running: "◌", approval: "!", error: "✗", idle: "", new: "…" };
 
 function attr(o: unknown) {
@@ -345,7 +345,7 @@ function renderRows(rows: Row[], title: string) {
       const act = r.act ? ` data-act="${attr(r.act)}"` : "";
       const act2 = r.act2 ? ` data-act2="${attr(r.act2)}"` : "";
       let inner = "";
-      if (r.kind === "zone") inner = `<span class="tw">${r.collapsed ? "+" : "−"}</span><span class="t">${esc(r.text)}</span><span class="s">${r.count ?? ""}</span>`;
+      if (r.kind === "zone") inner = `<span class="tw">${r.collapsed ? "▸" : "▾"}</span><span class="t">${esc(r.text)}</span><span class="s">${r.count ?? ""}</span>`;
       else if (r.kind === "agent") inner = `<span class="ag">${AGENT_ICON[r.agent ?? ""]}</span><span class="t">${esc(r.text)}</span>`;
       else if (r.kind === "thread" || r.kind === "ext")
         inner = `<span class="ag">${AGENT_ICON[r.agent ?? "claude"]}</span><span class="t">${esc(r.text)}</span>${r.status && STATUS_ICON[r.status] ? `<span class="st">${STATUS_ICON[r.status]}</span>` : ""}${r.sub ? `<span class="s">${esc(r.sub)}</span>` : ""}`;
@@ -393,19 +393,21 @@ function renderDetail(d: DetailModel) {
   const routine = state.label === "Reply ready" || state.label === "Ready for your message";
   const focused = !!layout?.focus;
   const selectedPending = model?.attention?.find(item => item.thread === d.id && item.pending);
-  const detailControl = `<span class="btn qdetails-toggle" aria-expanded="${detailsOpen}" data-act="${attr({ type: "local", what: "details" })}">Details</span>`;
+  const detailControl = `<span class="btn qdetails-toggle" aria-expanded="${detailsOpen}" data-act="${attr({ type: "local", what: "details" })}">Details${focused ? "" : ` ${detailsOpen ? "▴" : "▾"}`}</span>`;
   const handoff = d.handOff ? `<span class="btn" aria-label="Continue in ${esc(d.handOff.app)} app" title="Continue in ${esc(d.handOff.app)} app" data-act="${attr({ type: "openInApp" })}">${focused ? "Continue" : `Continue in ${esc(d.handOff.app)} app`}</span>` : "";
   const focusHeader = `<div class="qfocus-line"><div class="qfocus-title"><span class="ag ag-${d.agent}">${AGENT_ICON[d.agent]} ${esc(agentLabel(d.agent))}</span><span class="qfocus-name">${esc(d.title)}</span></div><div class="qfocus-actions">${handoff}${detailControl}</div></div>`;
   const focusState = routine ? "" : `<div class="qstate ${state.level}"><b>${state.label}</b><span>${state.hint}</span>
     ${!d.external && (d.status === "running" || d.status === "approval") ? `<span class="btn" data-act="${attr({ type: "stop", thread: d.id })}">Stop</span>` : ""}
     ${selectedPending ? `<span class="btn" data-act="${attr({ type: "local", what: "openUpdate", thread: d.id, entry: selectedPending.entry })}">Review request</span>` : ""}</div>`;
   const hot = /^(Accept edits|Auto)/.test(d.mode);
+  // Round 7 §2.3: the mode and the state are two chips; the state's glyph is part of its text, so it is
+  // never colour alone. The helper sentence is the card's and the composer's job, not the header's.
   const fullHeader = `
     <div class="qtitle"><span class="ag ag-${d.agent}">${AGENT_ICON[d.agent]} ${agentLabel(d.agent)}</span> ${esc(d.title)}</div>
     <div class="qbar">
-      <span class="qmode${hot ? " hot" : ""}">${esc(d.mode)}</span>
+      <span class="chip qmode${hot ? " hot" : ""}">${esc(d.mode)}</span>
       ${d.handOff ? `<div class="qapp">${handoff}</div>` : ""}
-      ${routine ? "" : `<div class="qstate ${state.level}"><b>${state.label}</b><span>${state.hint}</span></div>`}
+      ${routine ? "" : `<span class="chip qstate ${state.level}">${STATE_GLYPH[state.level] ?? ""}${state.label}</span>`}
       ${detailControl}
     </div>`;
   const contextHtml = `${focused && detailsOpen ? `<div class="qmeta"><b>${esc(d.title)}</b>${d.handOff ? `<br>Continue opens this conversation in ${esc(d.handOff.app)} app.` : ""}</div>` : ""}
@@ -561,16 +563,47 @@ function entryHtml(e: EntryView, threadId: string, agent: string, cwd: string): 
 
 // The welcome page is the quest giver: its face and first lines follow what the model already says
 // (no new field). Unlinked, or linked with no familiar ready, it is puzzled; no quests, asleep;
-// something running, working; otherwise idle. Offer sentences below the head stay as they were.
+// a request waiting on you, asking; something running, working; otherwise idle.
 type WelcomeModel = Extract<DetailModel, { kind: "welcome" }>;
-function welcomeHead(d: WelcomeModel): { expr: "idle" | "working" | "asleep" | "puzzled"; big: string; sub: string } {
+type Expr = "idle" | "working" | "asleep" | "puzzled" | "asking";
+function welcomeHead(d: WelcomeModel): { expr: Expr; big: string; sub: string } {
   const link = d.linkedChar ? esc(d.linkedChar) : "the game";
   if (!d.linked) return { expr: "puzzled", big: "I can't see the game yet.", sub: "Waiting for the game link. Familiar on your PC says what it sees (tray → Open Familiar)." };
   if (!d.backends.some((b) => b.ready)) return { expr: "puzzled", big: "Well met.", sub: "No familiar is ready yet. Open Familiar from the tray icon on your PC to sign in." };
   if (d.counts.total === 0) return { expr: "asleep", big: "No quests yet.", sub: "Wake me with + Claude or + Codex, or ask a question with + Chat." };
+  if (d.counts.approval > 0) return { expr: "asking", big: "Well met.", sub: `Linked to ${link} · ${d.counts.approval} waiting on you.` };
   if (d.counts.running > 0) return { expr: "working", big: "Well met.", sub: `Linked to ${link} · ${d.counts.running} working.` };
   return { expr: "idle", big: "Well met.", sub: `Linked to ${link}.` };
 }
+// A face whose file is missing (asking-192.png ships with its own asset change) falls back to the idle
+// one, once: the welcome is re-rendered on every model push, so a failed file is remembered.
+const missingFaces = new Set<string>();
+const faceSrc = (expr: Expr) => (missingFaces.has(expr) ? "assets/idle-192.png" : `assets/${expr}-192.png`);
+els.content.addEventListener("error", (e) => {
+  const img = e.target;
+  if (!(img instanceof HTMLImageElement) || !img.classList.contains("portrait")) return;
+  const expr = img.dataset.expr;
+  if (!expr || expr === "idle" || missingFaces.has(expr)) return;
+  missingFaces.add(expr);
+  img.src = faceSrc(expr as Expr);
+}, true);
+
+// The welcome's rows should never wait below the fold half-cut: when they overflow the pane (a large Text
+// size in a default-sized window), first the face steps aside, then the greeting takes one line. Past that it scrolls.
+function fitWelcome() {
+  const w = els.content.querySelector<HTMLElement>(".welcome:has(> .offers)");
+  const s = els.detailScroll;
+  if (!w || !s.clientHeight) return;
+  w.classList.remove("faceless", "tight");
+  for (const step of ["faceless", "tight"]) {
+    if (s.scrollHeight <= s.clientHeight + 1) break;
+    w.classList.add(step);
+  }
+}
+
+// One offer row: the "!" (a glyph, never colour alone), the name over one dim line, then its actions.
+const offerRow = (cls: string, name: string, sub: string, actions = "", subCls = "") =>
+  `<div class="offer ${cls}"><span class="ob" aria-hidden="true">!</span><div class="ot"><div class="on">${name}</div><div class="os${subCls ? " " + subCls : ""}">${sub}</div></div>${actions ? `<div class="oa">${actions}</div>` : ""}</div>`;
 
 function staticDetail(d: DetailModel): string {
   if (d.kind === "models")
@@ -588,26 +621,24 @@ function staticDetail(d: DetailModel): string {
       ${d.effort ? `<div class="mgroup"><div class="mg-h">Effort</div>${d.effort.options.map((o) => `<span class="btn${o === d.effort!.current ? " cur" : ""}" data-act="${attr({ type: "pickEffort", effort: o })}">${esc(o)}</span>`).join(" ")}</div>` : ""}
       <div class="hint">${d.chat ? "Your pick is used for new chats too. Lower effort answers faster." : "Applies to this quest from its next message."} <span class="btn" data-act="${attr({ type: "closePicker" })}">Close</span></div></div>`;
   if (d.kind === "welcome") {
-    // Lane H adds `zones` to the welcome model; a hub without it draws nothing extra.
+    // Four quest rows (round 7 §2.1): name, one dim line, the actions on the right. Who is ready is the
+    // status bar's job; the counts ride on the greeting. A hub without `zones` draws nothing extra.
     const noProjects = (d as { zones?: number }).zones === 0;
-    const projectStarts = d.backends.filter((b) => b.ready).map((b) =>
-      b.id === "claude" || b.id === "codex" ? `<b>+ ${esc(b.label)}</b>` : `<b>/fam ${esc(b.id)}</b> (no message)`);
+    const ready = d.backends.filter((b) => b.ready);
+    // + Claude / + Codex open the same folder picker as the toolbar keys; another familiar starts with /fam <id>.
+    const starts = ready.map((b) => b.id === "claude" || b.id === "codex" ? `<span class="btn" data-act="${attr({ type: "start", agent: b.id })}">+ ${esc(b.label)}</span>` : `<span class="okey cmd">/fam ${esc(b.id)}</span>`).join("");
+    const projectSub = noProjects ? "No project folders yet. Add one in Familiar on your PC (tray → Open Familiar → Projects)."
+      : ready.length ? "Pick a folder. I work while you play and ask before I change anything." : "No familiar is ready yet. Sign in from the tray on your PC.";
     const { expr, big, sub } = welcomeHead(d);
     return `<div class="welcome ${expr}">
-      <div class="whead"><img class="portrait" src="assets/${expr}-192.png" alt="" decoding="sync"><div class="wtext"><div class="big">${big}</div><div class="sub">${sub}</div></div></div>
-      <div class="hint offer welcome-chat"><b>Ask a game question</b><br>
-        Quests, talents, zones, or a quick lookup. Chat uses web search, without project files or commands.<br>
-        ${esc(d.chat.label)}${d.chat.model ? ` · ${esc(d.chat.model)}` : ""} · ${esc(d.chat.status)}<br>
-        <span class="btn" data-act="${attr(d.chat.act)}">+ Chat</span> ${d.chat.ready ? "Opens a draft; nothing is sent yet. Model lists your chat choices." : "Chat uses Claude or Codex. Open a draft, then use Model to choose an enabled Chat provider or open Familiar from the tray icon on your PC to sign in."}</div>
-      <div class="hint offer welcome-project"><b>Work on a project</b><br>
-        ${projectStarts.length ? `Use ${projectStarts.join(" or ")} to choose a project folder. The project picker also lists other familiars.` : "No provider is ready yet. Open Familiar from the tray icon on your PC to sign in before starting a project."}
-        Use Model to see the available models. Check Your familiars below before sending.${noProjects ? `<br><span class="welcome-noprojects">No project folders yet — add one in Familiar on your PC (tray → Open Familiar → Projects).</span>` : ""}</div>
-      <div class="hint offer welcome-continue"><b>Continue a conversation</b><br>
-        Pick a quest or desktop conversation on the left. Familiar asks before sending your first message to a desktop conversation.</div>
-      <div class="hint welcome-tutorial"><span class="link" data-act="${attr({ type: "tutorial" })}"><span class="ag ag-familiar">◆</span> Replay A Familiar Face</span> · the practice quest: one request to approve, and nothing runs.</div>
-      <div class="hint"><b>Your familiars</b></div>
-      ${d.backends.map((b) => `<div class="kv"><span>${AGENT_ICON[b.id]} ${esc(b.label)}</span> ${esc(b.status)}</div>`).join("")}
-      <div class="kv"><span>Quests</span> ${d.counts.total} · ${d.counts.running} running · ${d.counts.approval} awaiting approval</div>
+      <div class="whead"><img class="portrait" src="${faceSrc(expr)}" data-expr="${expr}" alt="" decoding="sync"><div class="wtext"><div class="big">${big}</div><div class="sub">${sub}</div></div></div>
+      <div class="offers">
+        ${offerRow("welcome-chat", "Ask a game question", d.chat.ready ? "Web search only; no files, no commands." : "Chat uses Claude or Codex. Sign in from the tray on your PC.",
+          d.chat.ready ? `<span class="btn" data-act="${attr(d.chat.act)}">+ Chat</span>` : "")}
+        ${offerRow("welcome-project", "Work on a project", projectSub, starts, noProjects ? "welcome-noprojects" : "")}
+        ${offerRow("welcome-continue", "Continue a conversation", "Pick a quest on the left, desktop threads too.")}
+        <div class="welcome-tutorial"><span class="ob ag ag-familiar" aria-hidden="true">◆</span><div class="ot"><span class="link" data-act="${attr({ type: "tutorial" })}">Replay A Familiar Face</span><span class="tsub"> · the practice quest</span></div></div>
+      </div>
     </div>`;
   }
   if (d.kind === "pick")

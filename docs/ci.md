@@ -32,6 +32,32 @@ For documentation-only edits, check links and documented commands against their 
 definitions. The workflow does not run for ordinary docs changes; a filtered or absent check is
 not a passing check.
 
+## The live pipeline on Windows (FakeWoW)
+
+No hosted job runs this: it needs a desktop, WGC capture and a window in front. From `companion/`,
+after `npm run build` (and `node node_modules/electron/install.js` once, since `npm ci
+--ignore-scripts` leaves Electron's binary out):
+
+```sh
+scripts/dev-restart.sh --fake --profile <scratch>/fam-e2e   # FakeWoW + companion, dev hooks on
+node scripts/e2e.mjs [--agents]
+scripts/dev-restart.sh --stop --profile <scratch>/fam-e2e   # stops only what the script started
+```
+
+- `--profile` keeps the run off your own Familiar: `APPDATA`/`LOCALAPPDATA` and Chromium's user
+  data under the folder (Electron ignores `%APPDATA%` for its own folder and single-instance
+  lock), and a first-use `config.json` whose `wowRoot` is a fake `_forever_` there. Without it the
+  run uses your `%APPDATA%\Familiar` and links the addon into the real WoW folder. Dev runs
+  (`FAMILIAR_DEV=1`) never write the start-with-Windows entry either way.
+- FakeWoW must be the foreground window when the companion starts and during the run: the Glass
+  hides and ignores clicks otherwise, and `e2e.mjs` stops at its foreground check. Do not type
+  while it is in front: FakeWoW turns keys into composer text and Enter sends it.
+- `--agents` resumes a Claude quest from before a companion restart: start one in a zone outside
+  `%TEMP%` (excluded by default), rerun `dev-restart.sh` without `--fake`, then `e2e.mjs --agents`.
+- It proves capture → decoder → Hub → Glass on this PC's real pixels, and that synthetic clicks and
+  keys are refused. It does not prove the addon's Lua in the real client, the window rects WoW
+  reports, or a corroborated approve (the script's input is synthetic, so main refuses it).
+
 ## Diagnose before retrying
 
 Read the first failing step and its logs for the exact commit. Distinguish an application failure

@@ -44,7 +44,7 @@ function Tracker.Init()
   end)
   local title = header:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
   title:SetPoint("LEFT", 2, 0)
-  title:SetText("|TInterface\\Icons\\Spell_Shadow_SummonImp:12|t Familiars")
+  title:SetText("|TInterface\\Icons\\Ability_Hunter_Pet_Owl:12|t Familiars")
 
   frame.content = CreateFrame("Frame", nil, frame)
   frame.content:SetPoint("TOPLEFT", 6, -20)

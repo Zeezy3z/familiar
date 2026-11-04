@@ -365,12 +365,12 @@ function jpegSize(bytes) {
 
 // The painted art the Glass (and the control panel) load by relative path "assets/<name>": the
 // real build script into a temp folder. One file per expression, sized by CSS; the budget is round 5 §2.5
-// (round 6 §2.5 adds the control panel's workshop header, the first JPEG).
+// (round 6 §2.5 adds the control panel's workshop header, the first JPEG; round 7 §2.6 adds asking-192.png, the seventh painted PNG).
 describe("dist/assets", () => {
-  const PNGS = { "idle-192.png": 192, "working-192.png": 192, "asleep-192.png": 192, "puzzled-192.png": 192, "seal-128.png": 128, "seal-cracked-128.png": 128,
+  const PNGS = { "idle-192.png": 192, "working-192.png": 192, "asleep-192.png": 192, "puzzled-192.png": 192, "asking-192.png": 192, "seal-128.png": 128, "seal-cracked-128.png": 128,
     "tray.png": 16, "tray@2x.png": 32 };
   const JPEGS = { "workshop-1600.jpg": [1600, 400] };
-  it("the build ships the six painted PNGs and the workshop header JPEG beside the tray icon, each the size named, and no other image, under 1 MB", () => {
+  it("the build ships the seven painted PNGs and the workshop header JPEG beside the tray icon, each the size named, and no other image, under 1 MB", () => {
     const out = mkdtempSync(join(tmpdir(), "familiar-assets-"));
     fixtures.push(out);
     const companionDir = fileURLToPath(new URL("..", import.meta.url));
