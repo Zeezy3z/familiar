@@ -142,7 +142,7 @@ const SCENES = {
     scenario: "welcome", top: 50, disabledKeys: ["approve", "stop"],
     patch: {
       list: { title: "Quest Log", rows: listRows(undefined, { waterStatus: "running", datesStatus: "approval", unread: "garden-water" }) },
-      target: { text: "Nothing selected - choose Chat, a project quest, or a conversation on the left", warn: true },
+      target: { text: "Nothing selected — pick a quest on the left, or + Chat / + Claude / + Codex.", warn: true },
       status, toasts: [], keys: { approve: false, stop: false, mode: undefined },
       tracker: [
         { id: "garden-water", agent: "claude", title: "Watering schedule", project: "Garden planner", status: "running", activity: "Editing src/plants.json", progress: "2/3", cost: "$0.12" },

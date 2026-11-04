@@ -159,5 +159,77 @@ export async function glassRound3Journey(page, origin) {
   const replayCalls = await click(".welcome-tutorial [data-act*='\"type\":\"tutorial\"']");
   check('welcome: Replay A Familiar Face sends only the tutorial action', replayCalls.length === 1 && replayCalls[0].type === 'tutorial'
     && (await page.locator('.welcome-tutorial').textContent()).includes('Replay A Familiar Face'));
+
+  // ---- round 5: the welcome page is the quest giver (a face, a greeting, the offers as quest rows)
+  const head = async () => (await page.waitForFunction(() => { const i = document.querySelector('.welcome img.portrait'); return !i || i.complete; }), page.evaluate(() => { const w = document.querySelector('.welcome'), img = w?.querySelector('img.portrait');
+    return w && { cls: w.className, src: img?.getAttribute('src'), alt: img?.getAttribute('alt'), loaded: !!img && img.complete && img.naturalWidth === 192,
+      big: w.querySelector('.big')?.textContent, sub: w.querySelector('.sub')?.textContent, text: w.textContent }; }));
+  await open('welcome');
+  let w = await head();
+  check('welcome: the idle quest giver greets with "Well met." and says who it is linked to', !!w && w.cls === 'welcome idle' && w.src === 'assets/idle-192.png' && w.alt === '' && w.loaded
+    && w.big === 'Well met.' && w.sub === 'Linked to Preview Rogue.');
+  await open('welcome-empty');
+  w = await head();
+  check('welcome: no quests yet, the familiar sleeps and says how to wake it', !!w && w.cls === 'welcome asleep' && w.src === 'assets/asleep-192.png' && w.loaded
+    && w.big === 'No quests yet.' && w.sub === 'Wake me with + Claude or + Codex, or ask a question with + Chat.');
+  await open('welcome-working');
+  w = await head();
+  check('welcome: a running quest shows the working face and the count', !!w && w.cls === 'welcome working' && w.src === 'assets/working-192.png' && w.loaded
+    && w.big === 'Well met.' && w.sub === 'Linked to Preview Rogue · 1 working.');
+  await open('welcome-unlinked');
+  w = await head();
+  check('welcome: no game link, the familiar is puzzled and points at the PC', !!w && w.cls === 'welcome puzzled' && w.src === 'assets/puzzled-192.png' && w.loaded
+    && w.big === "I can't see the game yet." && w.sub === 'Waiting for the game link. Familiar on your PC says what it sees (tray → Open Familiar).');
+  await open('welcome-unready');
+  w = await head();
+  check('welcome: unlinked and unready is puzzled, and the Chat explanation is still there', !!w && w.cls === 'welcome puzzled' && w.text.includes('Chat uses Claude or Codex'));
+  await open('welcome');
+  await push(() => { const d = window.preview.model.detail; d.backends = d.backends.map(b => ({ ...b, ready: false })); d.chat = { ...d.chat, ready: false }; });
+  w = await head();
+  check('welcome: linked with no familiar ready is puzzled, with its own line', !!w && w.cls === 'welcome puzzled' && w.big === 'Well met.'
+    && w.sub === 'No familiar is ready yet. Open Familiar from the tray icon on your PC to sign in.' && w.text.includes('Chat uses Claude or Codex'));
+
+  // Offers read as quest rows: a gold "!" in the display face; the practice-quest line keeps its own ◆. The sentences are unchanged.
+  await open('welcome');
+  const offers = await page.evaluate(() => [...document.querySelectorAll('.welcome .hint')].map(h => { const b = getComputedStyle(h, '::before');
+    return { cls: h.className, bullet: b.content, color: b.color, font: b.fontFamily, bold: h.querySelector('b')?.textContent }; }));
+  const offered = offers.filter(o => o.cls.includes('offer'));
+  check('welcome: the three offers carry a gold "!" bullet in the display face',
+    offered.map(o => o.cls.split(' ').pop()).join() === 'welcome-chat,welcome-project,welcome-continue'
+    && offered.every(o => o.bullet === '"!"' && o.color === 'rgb(255, 209, 0)' && o.font.includes('Familiar Display'))
+    && offered.map(o => o.bold).join() === 'Ask a game question,Work on a project,Continue a conversation');
+  check('welcome: the practice-quest line and the familiars list get no "!"', offers.filter(o => !o.cls.includes('offer')).every(o => o.bullet === 'none' || o.bullet === 'normal')
+    && (await page.locator('.welcome-tutorial .ag').textContent()) === '◆');
+
+  // The portrait: a ring, sized from the row height, inert, inside the pane (so the opacity slider fades it), gone in a short pane.
+  const face = () => page.evaluate(() => { const img = document.querySelector('.welcome img.portrait'), r = img.getBoundingClientRect(), cs = getComputedStyle(img),
+    pane = getComputedStyle(document.getElementById('detail')), d = document.getElementById('detail').getBoundingClientRect();
+    return { w: r.width, h: r.height, display: cs.display, radius: cs.borderRadius, ring: cs.boxShadow, bg: cs.backgroundColor, act: !!img.closest('[data-act]'),
+      inside: r.left >= d.left && r.right <= d.right && r.top >= d.top && r.bottom <= d.bottom, paneBg: pane.backgroundColor, short: document.body.classList.contains('short-detail'),
+      offers: document.querySelectorAll('.welcome .hint.offer').length, cx: r.left + r.width / 2, cy: r.top + r.height / 2 }; });
+  const layout = (detail, over = {}) => ({ scr: [1280, 800], px: 1.25, panel: true, native: false, drag: false, combat: false, ui: true, rowH: 24,
+    list: [30, 100, 250, 620], detail, status: [30, 735, 940, 28], ...over });
+  const relayout = async l => { await page.evaluate(l => window.preview.emit('layout', l), l); await settle(); };
+  let f = await face();
+  check('welcome: the portrait is a round medallion with a hairline ring, sized from the row height (48-96 px)', f.w === f.h && f.w >= 48 && f.w <= 96 && f.radius === '50%'
+    && f.ring.includes('0px 0px 0px 1px') && f.display !== 'none' && !f.short && f.inside);
+  const before = await page.evaluate(() => window.preview.calls.length);
+  await page.evaluate(({ x, y }) => { const r = document.getElementById('detail').getBoundingClientRect();
+    window.preview.emit('input', { t: 'click', r: 'detail', x: (x - r.left) / r.width, y: (y - r.top) / r.height, b: 'L' }); }, { x: f.cx, y: f.cy });
+  check('welcome: the portrait is not a control: no hit rect, no action', !f.act && await page.evaluate(() => window.preview.calls.length) === before);
+  await relayout(layout([320, 100, 650, 100]));
+  f = await face();
+  check('welcome: in a detail pane under 200 px tall the portrait steps aside and the offers still render', f.short && f.display === 'none' && f.offers === 3
+    && (await page.locator('.welcome-tutorial').count()) === 1);
+  await relayout(layout([320, 100, 650, 500], { op: 40 }));
+  f = await face();
+  check('welcome: the portrait has no background of its own, so the opacity slider fades the pane with it', !f.short && f.bg === 'rgba(0, 0, 0, 0)' && f.inside
+    && f.paneBg === 'rgba(9, 8, 11, 0.4)');
+  await open('welcome-unlinked');
+  await push(() => { window.preview.model.fontScale = 1.45; });
+  await relayout(layout([300, 100, 380, 620]));
+  const narrow = await page.evaluate(() => { const s = document.getElementById('detail-scroll'), img = document.querySelector('.welcome img.portrait').getBoundingClientRect();
+    return { fits: s.scrollWidth <= s.clientWidth + 1, face: img.width, text: document.querySelector('.welcome .big').textContent }; });
+  check('welcome: in a narrow pane at large text the face shrinks to 48 px and nothing spills sideways', narrow.fits && narrow.face === 48 && narrow.text === "I can't see the game yet.");
   return results;
 }

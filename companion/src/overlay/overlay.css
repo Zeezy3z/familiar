@@ -9,6 +9,7 @@
   --row-font: 10px;
   --body-font: 13px;
   --small-font: 11px;
+  --portrait: clamp(48px, calc(var(--row-h) * 4), 96px); /* the welcome quest giver: 64px at the 16px row floor */
   --bg: rgb(9, 8, 11);
   --bg-light: rgba(6, 6, 8, 0.85);
   /* Shared token set: the Glass is the source; control.html carries the same block. */
@@ -213,6 +214,20 @@ body.hidden { opacity: 0; }
 .welcome { padding: calc(var(--u) * 2.25) calc(var(--u) * 1.5); }
 .welcome .big { font-family: var(--display); color: var(--gold); font-size: var(--fs-xl); text-shadow: 2px 2px 0 #000; }
 .welcome .sub { color: var(--text-dim); margin-bottom: calc(var(--u) * 2.25); }
+/* The quest giver: the familiar's face beside the greeting. No hit rect, no motion, no background of
+   its own (the pane's opacity fades it with the rest); it steps aside in a short pane (overlay.ts). */
+.welcome .whead { display: flex; align-items: center; gap: calc(var(--u) * 2.5); margin-bottom: calc(var(--u) * 2.25); }
+.welcome .wtext { flex: 1; min-width: 0; }
+.welcome .portrait { flex: none; width: var(--portrait); height: var(--portrait); border-radius: 50%; box-shadow: 0 0 0 1px var(--line); }
+.welcome .whead .sub { margin-bottom: 0; }
+body.short-detail .welcome .portrait { display: none; }
+/* A narrow pane (large text beside a small window) keeps the greeting from wrapping to a tall column:
+   a smaller face, level with the first line. */
+.welcome { container-type: inline-size; }
+@container (max-width: 400px) { .welcome .whead { align-items: flex-start; } .welcome .portrait { width: 48px; height: 48px; } }
+/* Offers read as quest rows: a gold "!" (a glyph, never colour alone) hanging at the left. */
+.welcome .hint.offer { position: relative; padding-left: 1.5em; }
+.welcome .hint.offer::before { content: "!"; position: absolute; left: 0.3em; font-family: var(--display); font-weight: 700; font-size: 1.25em; line-height: 1.36; color: var(--gold); text-shadow: var(--shadow); }
 .welcome .kv { font-size: var(--fs-sm); margin: calc(var(--u) * 0.75) 0; }
 .welcome .kv span { display: inline-block; min-width: 6em; color: var(--gold-dim); font-family: var(--display); }
 .welcome .hint { margin-top: calc(var(--u) * 3.25); color: var(--text-dim); font-size: var(--fs-sm); line-height: 1.7; }
