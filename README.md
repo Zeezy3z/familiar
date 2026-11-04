@@ -31,7 +31,7 @@ window (see [Signing in](#signing-in)).
 | OS | Windows 11 (Windows 10, macOS and Linux are not supported) |
 | Game | World of Warcraft: Forever installed through Battle.net (client folder `_forever_`), display mode **Windowed** or **Windowed (Fullscreen)** |
 | Runtime | Nothing extra for the release download (its first run needs internet to download Claude Code). [Node.js](https://nodejs.org) 24 or newer (LTS) only to run from a git clone |
-| Disk | ~360 MB unpacked, ~600 MB after the first run downloads Claude Code; a git clone installs ~800 MB of dependencies |
+| Disk | ~355 MB unpacked, ~600 MB after the first run downloads Claude Code; a git clone installs ~800 MB of dependencies |
 | Agents | At least one, already installed and signed in: **Claude Code** (signed in, or an `ANTHROPIC_API_KEY`) or **Codex** (desktop app). Optional extras: an ACP agent such as Hermes or Grok Build |
 
 ### Before you start
@@ -55,7 +55,7 @@ window (see [Signing in](#signing-in)).
    [Releases page](https://github.com/Zeezy3z/familiar/releases) and extract it so that
    `Run Familiar.cmd` ends up in `C:\Familiar`. That ZIP (about 150 MB) is ready to run:
    companion, addon and Electron. No Node.js needed. Its first run downloads Claude Code (about
-   110 MB) from npm, the exact version Familiar pins, checked against its published hash.
+   112 MB) from npm, the exact version Familiar pins, checked against its published hash.
    Or `git clone https://github.com/Zeezy3z/familiar.git C:\Familiar` (needs Node.js 24, see
    step 2). Not inside OneDrive, a synced folder or a network drive: WoW's AddOns folder is linked
    to this folder. If you downloaded a ZIP, right-click it → **Properties** → **Unblock** before
@@ -70,7 +70,8 @@ window (see [Signing in](#signing-in)).
    SmartScreen seeing a new file, not a malware verdict: **More info → Run anyway**. From the ZIP,
    Familiar starts in a few seconds (after the Claude Code download on the first run): it goes to
    the system tray and opens its control panel. If that download fails, Familiar starts anyway and
-   Claude won't work until it succeeds (Codex and the other agents do); run it again to retry. From
+   Claude won't work until it succeeds (Codex and the other agents do; the Familiars card says
+   "Not downloaded yet"); run it again to retry. From
    a git clone, leave the black window open until the control panel appears: it checks for
    Node.js 24+ (and offers to install it with winget), installs dependencies with `npm ci` (first
    run: a few minutes, about 800 MB) and builds the companion first.

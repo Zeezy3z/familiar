@@ -30,26 +30,31 @@ release in place. Open the release afterwards and check that all four files are 
 * `release.json`: packager metadata (file name, flavor `forever`, Interface numbers) that addon
   managers read.
 * `FamiliarApp-vX.Y.Z-windows.zip`: the app users download, prebuilt so it runs without Node or
-  npm (about 150 MB, 360 MB unpacked). Root folder `Familiar/` with the repository layout, as
+  npm (about 150 MB, 355 MB unpacked). Root folder `Familiar/` with the repository layout, as
   `git archive` exports the tag, plus `companion/dist/`, the production `companion/node_modules/`
   and the stock Electron binary in `companion/node_modules/electron/dist/`. Dev tooling, source
-  maps, type declarations, docs and Electron locales other than en-US are pruned. Claude Code
-  (`@anthropic-ai/claude-agent-sdk-win32-x64`, Anthropic's proprietary binary) is left out:
-  `Run Familiar.cmd` runs `companion/fetch-claude.cjs` with the bundled Electron as Node, which
-  downloads the version `package-lock.json` pins from `https://registry.npmjs.org` only (about
-  110 MB, 245 MB unpacked), checks the lockfile's sha512 `integrity`, and unpacks it to the usual
-  `node_modules` path. It returns at once when that version is in place, so an upgrade extracted
-  over an old folder gets the new one; it never runs at login (`--background`), and a failed
-  download only means Claude doesn't work until a later run succeeds. The marker
+  maps, type declarations, docs and Electron locales other than en-US are pruned. Anthropic's
+  proprietary packages are left out: the Claude Agent SDK (`@anthropic-ai/claude-agent-sdk`) and
+  its Claude Code binary (`@anthropic-ai/claude-agent-sdk-win32-x64`); the SDK's open-source
+  dependencies stay. `Run Familiar.cmd` runs `companion/fetch-claude.cjs` with the bundled
+  Electron as Node, which downloads the versions `package-lock.json` pins for this PC from
+  `https://registry.npmjs.org` only (about 112 MB, 250 MB unpacked), checks each against the
+  lockfile's sha512 `integrity`, and moves them to the usual `node_modules` paths only once both
+  are checked. It returns at once when those versions are in place, so an upgrade extracted over
+  an old folder gets the new ones; it never runs at login (`--background`), and a failed
+  download only means Claude doesn't work until a later run succeeds: until then the Familiars
+  card and any Claude quest say "Not downloaded yet — run Run Familiar.cmd again …"
+  (`companion/src/agents/claude-download.ts`). The marker
   `companion/.prebuilt` (version and `package-lock.json` hash) makes `Run Familiar.cmd` skip Node,
   npm and the build, and keeps `boot.cjs` from ever rebuilding. A Windows job runs
   [`companion/scripts/prebuilt.mjs`](../companion/scripts/prebuilt.mjs) `build`, then `check`:
   it extracts the zip to a temp folder, checks the required files and CRLF line endings in
-  `Run Familiar.cmd`, fails if Claude Code is in the zip, and with every `node.exe` removed from
+  `Run Familiar.cmd`, fails if either Claude package is in the zip, and with every `node.exe` removed from
   PATH runs `electron.exe companion --self-test` there (koffi loads and makes a native call,
   `dist/main.js` and `Familiar.toc` exist, Claude Code is `skip`: not downloaded yet), then
   `fetch-claude.cjs` as the first run does (a real npm download), then the self-test again
-  (`claude.exe --version` runs), then the fetch once more, which must find it in place. Only then
+  (`claude.exe --version` runs), imports the downloaded SDK, then runs the fetch once more,
+  which must find everything in place. Only then
   is it uploaded. Its name must not start with
   `Familiar-`: the addon zip check expects exactly one `Familiar-*.zip`. To build and check one
   locally on Windows (Node 24): `node companion/scripts/prebuilt.mjs build <out>.zip`, then
@@ -101,9 +106,9 @@ Signing uses Azure Artifact Signing through GitHub OIDC, so there is no Azure se
 `companion/build/sign.cjs` signs everything except the bundled `claude.exe`, which keeps
 Anthropic's signature. The job then checks both signatures.
 
-**Do not publish the installer yet.** Unlike the app zip, it still bundles `claude.exe`
-(`electron-builder.yml` unpacks `@anthropic-ai/claude-agent-sdk-win32-x64`, and `main.ts` runs it
-as `BUNDLED_CLAUDE` in packaged mode), which redistributes Anthropic's binary. Keep `SIGNING_READY`
+**Do not publish the installer yet.** Unlike the app zip, it still bundles the Claude Agent SDK and
+`claude.exe` (`electron-builder.yml` unpacks `@anthropic-ai/claude-agent-sdk-win32-x64`, and
+`main.ts` runs it as `BUNDLED_CLAUDE` in packaged mode), which redistributes Anthropic's code. Keep `SIGNING_READY`
 unset until the installer also downloads Claude Code on first run, or redistribution is confirmed
 as allowed.
 
