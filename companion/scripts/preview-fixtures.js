@@ -36,6 +36,8 @@
       : { explicit: ["C:\\preview\\sample-project"], roots: [], history: 3 },
     // first run: Claude Code is still being fetched (state: present | missing | downloading | failed).
     claude: claudeDownloading ? { state: "downloading", pct: 43, mb: 112 } : { state: "present" },
+    // update-available: the addon in game is newer than this app, so the header shows the mismatch line.
+    update: updateAvailable ? { app: "0.2.0", addon: "0.3.0", mismatch: true } : { app: "0.2.0", addon: "0.2.0", mismatch: false },
     ...(doctorStrip ? { doctor: { step: "strip", level: "warn", text: "Familiar sees the game but no coloured strip in its top-left corner. In game: is Familiar ticked in AddOns? Type /fam strip — it should say TOPLEFT. If something covers that corner, /fam strip tr." } }
       : linked ? { doctor: { step: "ok", level: "ok", text: "Game link working." } } : {}),
     ui: { fontScale: 1, sound: false, raidWarnings: false, quiet: scenario === "quiet", trayNotices: true }, chat: { agent: "claude", model: "haiku", effort: "medium" },
@@ -254,8 +256,8 @@
       if (cmd === "uiSettings") Object.assign(state.ui, args);
       // Round 4 commands, in memory only. Nothing here opens a dialog, a file, a browser or the network.
       if (cmd === "checkUpdate") return updateAvailable
-        ? { current: "0.2.0", latest: "0.3.0", url: "https://github.com/Zeezy3z/familiar/releases/tag/v0.3.0", prerelease: false }
-        : { current: "0.2.0", latest: "0.2.0", url: "https://github.com/Zeezy3z/familiar/releases/tag/v0.2.0", prerelease: false };
+        ? { current: "0.2.0", latest: "0.3.0", url: "https://github.com/Zeezy3z/familiar/releases/tag/v0.3.0", prerelease: false, newer: true }
+        : { current: "0.2.0", latest: "0.2.0", url: "https://github.com/Zeezy3z/familiar/releases/tag/v0.2.0", prerelease: false, newer: false };
       if (cmd === "openUrl") return;
       if (cmd === "captureSnapshot") return { ok: true, file: "C:\\preview\\Familiar\\strip-20260101-120000.png" };
       if (cmd === "claudeRetry") { state.claude = { state: "downloading", pct: 0, mb: 112 }; window.preview.emit("status", state); return state.claude; }
