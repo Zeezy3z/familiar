@@ -53,7 +53,7 @@ import { linkDoctor } from "./doctor";
 import { trayNoticeFor } from "./notices";
 import { checkUpdate, isReleasesUrl, type CheckUpdate } from "./update";
 
-const VERSION = "0.2.0";
+const VERSION = "0.3.0";
 
 // ---- installed build (electron-builder) --------------------------------------------------------
 // Packaged-only: a source run (electron.exe <companion dir>, via boot.cjs) skips all of this.

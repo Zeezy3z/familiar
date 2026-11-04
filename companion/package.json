@@ -1,6 +1,6 @@
 {
   "name": "familiar-companion",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "Familiar companion: bridges the Familiar WoW addon to Claude Code and Codex agents (zero input automation).",
   "main": "boot.cjs",

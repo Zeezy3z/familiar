@@ -18,7 +18,7 @@ A quest log for your coding agents, inside World of Warcraft: Forever.
 * **What it never does:** press keys or click in the game, read game memory, talk to Blizzard's
   servers, or send anything to the Familiar author.
 
-> **Beta.** This is version 0.2.0, a beta tested on a small number of PCs. Expect rough edges and
+> **Beta.** This is version 0.3.0, a beta tested on a small number of PCs. Expect rough edges and
 > please [report bugs](https://github.com/Zeezy3z/familiar/issues/new/choose).
 
 ## Install
@@ -105,7 +105,7 @@ the ZIP or a clone; `Familiar-Setup` does steps 1 and 2 itself. Nothing here is 
 install.
 
 1. Get the app: download **`FamiliarApp-v<version>-windows.zip`** (for example
-   `FamiliarApp-v0.2.0-windows.zip`) from the
+   `FamiliarApp-v0.3.0-windows.zip`) from the
    [Releases page](https://github.com/Zeezy3z/familiar/releases) and extract it so that
    `Run Familiar.cmd` ends up in `C:\Familiar`. That ZIP (about 150 MB) is ready to run:
    companion, addon and Electron. No Node.js needed. Its first run downloads Claude Code (about
@@ -118,7 +118,7 @@ install.
    `Familiar-v<version>-forever.zip` on the same page is the addon alone, for addon managers such
    as WowUp. It does nothing without the app, so most people want the `FamiliarApp` ZIP.
    To check a download, compare
-   `Get-FileHash .\FamiliarApp-v0.2.0-windows.zip -Algorithm SHA256` with the line for that file
+   `Get-FileHash .\FamiliarApp-v0.3.0-windows.zip -Algorithm SHA256` with the line for that file
    in `SHA256SUMS.txt` on the same release page.
 2. Double-click **`Run Familiar.cmd`**. Windows may show "Windows protected your PC". That is
    SmartScreen seeing a new file, not a malware verdict: **More info → Run anyway**. From the ZIP,
