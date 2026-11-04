@@ -24,6 +24,16 @@ function tooBroad(p: string): boolean {
   return /^[a-z]:$/.test(n) || n === "" || n === "/" || path.parse(p).root === p || n === normPath(os.homedir());
 }
 
+/** Why a folder can never be a zone, in words for the control panel (one rule for listing a
+ * folder and for adding one there), or undefined. */
+export function zoneRefusal(p: string, c: Config): string | undefined {
+  const root = projectRootOf(p);
+  if (tooBroad(root)) return "A drive or your home folder can't be a zone: an agent there could see everything.";
+  if (isExcluded(root, c) || isExcluded(p, c)) return "That folder is excluded by your config.";
+  if (optedOut(p)) return `That folder (or one above it) has a ${OPT_OUT_FILE} file, so Familiar never offers it.`;
+  return undefined;
+}
+
 export interface Project {
   key: string; // normalized path
   name: string;
@@ -100,7 +110,7 @@ export class ProjectRegistry {
       /* missing folders are rejected below */
     }
     const root = projectRootOf(p);
-    if (tooBroad(root) || isExcluded(root, this.cfg()) || isExcluded(p, this.cfg()) || optedOut(p)) return null;
+    if (zoneRefusal(p, this.cfg())) return null;
     const cx = root.match(CODEX_WT);
     if (cx) {
       const name = cx[2].toLowerCase();

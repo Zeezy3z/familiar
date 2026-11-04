@@ -16,8 +16,9 @@ import { providerSetup, startLogin } from "../agents/setup";
 import type { AgentBackend, Mode } from "../agents/types";
 import { MODES } from "../agents/types";
 import { resolveCommand } from "../agents/which";
+import { claudeDownloadError, claudeHome, claudeRoute, claudeStatus, companionDir, downloadClaude, type ClaudeFetch } from "../agents/claude-download";
 import { appDataDir, DEFAULT_CONFIG, loadConfig, saveConfig } from "../hub/config";
-import { FONT_MAX, FONT_MIN, Hub } from "../hub/hub";
+import { FONT_MAX, FONT_MIN, Hub, type Toast } from "../hub/hub";
 import { buildModel } from "../hub/viewmodel";
 import { activity } from "../hub/activity";
 import { isIssueUrl, suggestionUrl, type SuggestVersions } from "../hub/suggest";
@@ -48,17 +49,18 @@ import { findWowInstall, installAddon, interfaceCheck, SnapshotWriter, tocInterf
 import { RUNNING_BUILD } from "./build";
 import { devEnabled, serveDevHooks } from "./dev-hooks";
 import { changedConfigKeys, describeAddonMessage, describeOverlayAction, diagnosticsText, logLine, redact, rotateLog } from "./log-file";
+import { linkDoctor } from "./doctor";
+import { trayNoticeFor } from "./notices";
+import { checkUpdate, isReleasesUrl, type CheckUpdate } from "./update";
 
 const VERSION = "0.2.0";
 
 // ---- installed build (electron-builder) --------------------------------------------------------
 // Packaged-only: a source run (electron.exe <companion dir>, via boot.cjs) skips all of this.
 const PACKAGED = app.isPackaged;
+companionDir.packaged = PACKAGED; // where Claude lives (claude-download.ts claudeHome)
 /** The addon the companion installs: the repo's copy, or the installer's under resources\. */
 const REPO_ADDON = PACKAGED ? path.join(process.resourcesPath, "addon", "Familiar") : path.resolve(__dirname, "..", "..", "addon", "Familiar");
-/** The SDK resolves claude.exe inside app.asar, where spawn fails (ENOENT); asarUnpack puts the
- * real file in app.asar.unpacked. Source runs keep the SDK's own lookup. */
-const BUNDLED_CLAUDE = PACKAGED ? path.join(process.resourcesPath, "app.asar.unpacked", "node_modules", "@anthropic-ai", "claude-agent-sdk-win32-x64", "claude.exe") : undefined;
 if (PACKAGED) {
   delete process.env.FAMILIAR_DEV; // dev/test hooks never exist in an installed build
   // The source run's Chromium profile (%APPDATA%\<package.json name>), so both hold the same
@@ -77,7 +79,8 @@ function selfTestAndExit(): never {
   try {
     const appRoot = path.resolve(__dirname, "..");
     const { selfTest } = require(path.join(appRoot, "self-test.cjs"));
-    ({ ok, lines } = selfTest({ appRoot, addonDir: REPO_ADDON, claudeExe: BUNDLED_CLAUDE }));
+    // Claude Code is downloaded on first run (claudeHome()); the self-test skips it until then.
+    ({ ok, lines } = selfTest({ appRoot, addonDir: REPO_ADDON, claudeHome: claudeHome() }));
   } catch (e: any) {
     lines = ["FAIL self-test: " + (e?.stack ?? e)];
   }
@@ -166,6 +169,12 @@ let lastGeomChange = 0;
 let captureMode: "window" | "screen" = process.env.FAMILIAR_CAPTURE === "screen" ? "screen" : "window";
 let captureStartedAt = 0;
 let nextScreenTryAt = 0;
+/** When frame statistics last arrived (the capture page sends them about once a second while
+ * frames flow), and since when the game has been on screen for this link attempt (Link Doctor). */
+let statsAt = 0;
+let searchSince = 0;
+/** Screen capture: the last window seen covering the strip (Link Doctor). */
+let lastCover: { exe: string; at: number } | undefined;
 
 const linked = () => Date.now() - (captureStats.lastOk ?? 0) < 3000;
 
@@ -310,12 +319,15 @@ function tick() {
       return;
     }
     wrongClient = null;
+    searchSince = now;
     log(`[wow] found ${game.exe} "${game.title}" class=${game.cls}`);
     hub.wake().catch((e) => log("[hub] wake: " + e));
     // No install known yet: the running game's own folder is the install (doInstall probes with its exe path).
     if (!install) doInstall(false);
   }
+  const wasMinimized = minimized;
   minimized = isMinimized(game.hwnd);
+  if (wasMinimized && !minimized) searchSince = now;
   fg = foregroundKey();
   const c = clientRectOnScreen(game.hwnd);
   const f = extendedFrameBounds(game.hwnd);
@@ -401,6 +413,7 @@ function screenGate(): Verdict {
   const inFront = !!game && (foreground === game.key || foreground === overlayKey);
   const ours = overlay && !overlay.isDestroyed() ? [hwndFromBuffer(overlay.getNativeWindowHandle())] : [];
   const covering = game && strip && inFront ? windowsAbove(game.hwnd, strip, ours) : null;
+  if (covering?.length) lastCover = { exe: covering[0].exe, at: Date.now() };
   return screenCaptureTrusted({ captureMode, foreground, game: game?.key ?? null, overlay: overlayKey, strip, covering });
 }
 
@@ -707,20 +720,47 @@ function schedulePush() {
   }, 40);
 }
 
+/** Requests that already had a Windows notice (thread + request id): one balloon per request. */
+const noticed = new Set<string>();
+const noticeKey = (thread: string | undefined, requestId: string) => `${thread ?? ""}\0${requestId}`;
+function markNoticed(key: string) {
+  noticed.add(key);
+  if (noticed.size > 500) noticed.delete(noticed.values().next().value!);
+}
+const gameInFront = () => !!game && !minimized && (fg === game.key || fg === overlayKey);
+
+/** An approval toast while WoW isn't in front (or is minimized): a Windows notice, so a request
+ * doesn't sit unseen while you're at the desk. Its click opens the control panel (balloon-click),
+ * which lists every pending request. Never moves focus; generic under Hide names. */
+function noticeFor(x: Toast) {
+  if (x.kind !== "approval" || !x.requestId || noticed.has(noticeKey(x.threadId, x.requestId))) return;
+  const t = x.threadId ? hub.threads.get(x.threadId) : undefined;
+  const n = trayNoticeFor({ kind: x.kind, project: t ? hub.projectName(t) : undefined, questTitle: t?.title },
+    { gameInFront: gameInFront(), privateMode: !!cfg.privateMode, trayNotices: cfg.trayNotices !== false });
+  if (!n || !tray) return;
+  markNoticed(noticeKey(x.threadId, x.requestId));
+  tray.displayBalloon({ title: n.title, content: n.content, noSound: true, respectQuietTime: true });
+  log("[notice] request waiting while WoW isn't in front: Windows notice shown");
+}
+
 /** A request too long for the in-game card waits on the PC: make the control panel easy to reach
  * without moving focus (never from the game, never a forced foreground): its taskbar button
- * flashes, or, while it is closed to the tray, a quiet tray notice opens it when clicked. */
+ * flashes, or, while it is closed to the tray, a quiet tray notice opens it when clicked (unless
+ * that request already had one). */
 let requestsWaiting = false;
 function surfaceRequests() {
   requestsWaiting = true;
   tray?.setToolTip("Familiar: a request is waiting on your PC");
-  if (control && !control.isDestroyed()) control.flashFrame(true);
-  else tray?.displayBalloon({ title: "A request is waiting on your PC", content: "Too long for the in-game card. Open Familiar to read it in full and approve it, or Deny it in game.", noSound: true, respectQuietTime: true });
+  if (control && !control.isDestroyed()) return void control.flashFrame(true);
+  const fresh = hub.pendingRequests().filter((r) => r.cut && !noticed.has(noticeKey(r.thread, r.requestId)));
+  if (!fresh.length) return;
+  for (const r of fresh) markNoticed(noticeKey(r.thread, r.requestId));
+  tray?.displayBalloon({ title: "A request is waiting on your PC", content: "Too long for the in-game card. Open Familiar to read it in full and approve it, or Deny it in game.", noSound: true, respectQuietTime: true });
 }
 
 /** Nothing waits any more (decided, expired): stop asking for attention. */
 function settleRequests() {
-  if (!requestsWaiting || hub.cutRequests().length) return;
+  if (!requestsWaiting || hub.pendingRequests().some((r) => r.cut)) return;
   requestsWaiting = false;
   tray?.setToolTip("Familiar");
   if (control && !control.isDestroyed()) control.flashFrame(false);
@@ -738,7 +778,7 @@ function pushAll() {
 
 function uiSettings() {
   return { fontScale: cfg.fontScale, sound: cfg.sound, raidWarnings: cfg.raidWarnings !== false, quiet: !!cfg.quiet, privateMode: !!cfg.privateMode,
-    streamSafe: !!cfg.privateMode && !!cfg.blurTranscript, defaultMode: cfg.defaultMode, approveKey: cfg.approveKey ?? "" };
+    streamSafe: !!cfg.privateMode && !!cfg.blurTranscript, defaultMode: cfg.defaultMode, approveKey: cfg.approveKey ?? "", trayNotices: cfg.trayNotices !== false };
 }
 
 function statusSnapshot() {
@@ -762,18 +802,80 @@ function statusSnapshot() {
     wrongClient: wrongClient ? { exe: wrongClient.exe, dir: wrongClient.dir } : null,
     installNotes,
     threads: hub ? hub.threads.size : 0,
-    projects: hub ? hub.projects.list().length : 0,
+    projects: projectsStatus(),
     configPath: path.join(appDataDir(), "config.json"),
     launchAtLogin: cfg.launchAtLogin,
     ui: uiSettings(),
-    // "Requests waiting on your PC": cut requests in full (approved only here, via "decide").
-    requests: hub ? hub.cutRequests() : [],
+    // "Requests waiting": pending approvals in full (decided here via "decide"; cut ones only here).
+    requests: hub ? hub.pendingRequests() : [],
+    claude: claudeStatus(),
+    doctor: doctorNow(),
+    // Versions: the addon's (hello) against this app's, and the last "Check for updates" answer.
+    update: { app: VERSION, addon: hub?.addon.addon, mismatch: !!hub?.versionMismatch(), last: lastUpdateCheck },
     providers: providersNow(),
     providersChosen: cfg.providersChosen,
     chat: { agent: cfg.chatAgent, model: cfg.chatModel, effort: cfg.chatEffort },
     logPath: logFile,
   };
 }
+
+/** The Link Doctor's line for the status and Copy diagnostics (doctor.ts). Frame statistics older
+ * than 2.5 s mean no frames arrive (the capture page only reports while they do). */
+function doctorNow() {
+  const c = captureStats ?? {};
+  const now = Date.now();
+  return linkDoctor({ game: !!game, minimized, foreground: !!game && (fg === game.key || fg === overlayKey), captureMode,
+    stats: { fps: now - statsAt < 2500 ? c.fps ?? 0 : 0, crc: c.crc ?? 0, lock: c.lock, lastOk: c.lastOk ?? 0 },
+    startedAt: searchSince, now, refusedExe: lastCover && now - lastCover.at < 5000 ? lastCover.exe : undefined });
+}
+
+// ---- "Save what Familiar sees" ----------------------------------------------------------------
+// The capture page crops the top-left 320x32 px of the game frame (around the strip when it is
+// locked) from the next frame; main checks the size and writes a PNG into %APPDATA%\Familiar.
+// Never the whole frame: the player looks at it before attaching it to a bug report.
+const SNAPSHOT_W = 320;
+const SNAPSHOT_H = 32;
+let snapSeq = 0;
+const snapWaits = new Map<number, (r: any) => void>();
+let lastSnapshot: string | undefined;
+const stamp = (d = new Date()) => {
+  const two = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}${two(d.getMonth() + 1)}${two(d.getDate())}-${two(d.getHours())}${two(d.getMinutes())}${two(d.getSeconds())}`;
+};
+
+async function captureSnapshot(): Promise<{ ok: boolean; file?: string; why?: string }> {
+  if (!capture || capture.isDestroyed() || !game || !captureStarted || minimized)
+    return { ok: false, why: "Familiar isn't reading the WoW window right now. Open WoW in Windowed or Windowed (Fullscreen) and keep it on screen." };
+  const id = ++snapSeq;
+  const r = await new Promise<any>((resolve) => {
+    snapWaits.set(id, resolve);
+    setTimeout(() => snapWaits.delete(id) && resolve({ error: "no picture of the game arrived within 3 s" }), 3000);
+    capture!.webContents.send("snapshot", { id, width: SNAPSHOT_W, height: SNAPSHOT_H });
+  });
+  if (r?.error) return { ok: false, why: `Nothing saved: ${String(r.error).slice(0, 200)}.` };
+  const w = r?.width, h = r?.height;
+  const data = r?.data instanceof Uint8Array ? Buffer.from(r.data) : null;
+  if (!Number.isInteger(w) || !Number.isInteger(h) || w < 1 || h < 1 || w > SNAPSHOT_W || h > SNAPSHOT_H || !data || data.length !== w * h * 4)
+    return { ok: false, why: "Nothing saved: the picture had an unexpected size." };
+  for (let o = 0; o < data.length; o += 4) [data[o], data[o + 2]] = [data[o + 2], data[o]]; // RGBA -> BGRA (createFromBitmap)
+  const file = path.join(appDataDir(), `strip-${stamp()}.png`);
+  try {
+    fs.writeFileSync(file, nativeImage.createFromBitmap(data, { width: w, height: h }).toPNG());
+  } catch (e: any) {
+    return { ok: false, why: `Nothing saved: ${e?.message ?? e}` };
+  }
+  lastSnapshot = file;
+  log(`[capture] saved what Familiar sees (${w}x${h} px) as ${path.basename(file)}`);
+  return { ok: true, file };
+}
+
+/** Zones for the control panel's Projects card: the folders you added, and how many came from history. */
+function projectsStatus() {
+  return hub ? hub.projectsSummary() : { explicit: [...cfg.projects], roots: [...cfg.projectRoots], history: 0 };
+}
+
+/** The last "Check for updates" answer (only ever from the player's click). */
+let lastUpdateCheck: CheckUpdate | undefined;
 
 /** Versions for "Suggest a change": no paths, names or logs. */
 function suggestVersions(): SuggestVersions {
@@ -794,6 +896,7 @@ function diagnosticsReport(): string {
     wow: install
       ? `${install.flavor} product ${install.product ?? "?"} version ${install.version ?? "?"} iface ${install.iface ?? "?"} (${install.source}); ${check?.text ?? ""}`
       : `no install (${installError ?? "unknown"})${wrongClient ? `; another client running: ${wrongClient.exe}` : ""}`,
+    link: (({ step, text }) => `${step}: ${text}`)(doctorNow()),
     capture: `mode ${captureMode}${captureMode === "screen" ? " (messages accepted only while WoW is in front and uncovered)" : ""}, fps ${c.fps ?? 0}, lock ${c.lock ? "yes" : "no"}, linked ${linked() ? "yes" : "no"}, game ${game ? (minimized ? "minimized" : fg === game.key ? "foreground" : "background") : "not found"}, overlay ${paused ? "paused" : overlayShown ? "shown" : "hidden"}${c.error ? `, error: ${c.error}` : ""}`,
     providers: providersNow().map((p) => `${p.id} ${p.installed ? "installed" : "not installed"}${p.signedIn === undefined ? "" : p.signedIn ? ", signed in" : ", not signed in"}${p.enabled ? ", on" : ", off"}`),
     configKeys: changedConfigKeys(cfg as unknown as Record<string, unknown>, DEFAULT_CONFIG as unknown as Record<string, unknown>),
@@ -905,10 +1008,57 @@ async function uninstall() {
   app.quit();
 }
 
+// ---- Claude Code download (agents/claude-download.ts, fetch-claude.cjs) -------------------------
+// The installed app and the release zip carry no Anthropic code: at every start (the --background
+// login start too) the pinned packages are checked, and downloaded when missing or re-pinned, in
+// this process, without blocking anything else (Codex and the other agents start as usual). The
+// check alone makes no network request. A clone has them from npm ci and never downloads.
+type FetchClaudeModule = {
+  fetchClaude(o: { root: string; pins?: string; log?: (s: string) => void; onProgress?: (got: number, total: number, label?: string) => void }): Promise<"present" | "installed">;
+};
+/** dist/claude-pins.json (scripts/build.mjs): the pinned versions, URLs and sha512s. Without it
+ * fetchClaude reads package-lock.json (a clone, older zips). */
+const CLAUDE_PINS = path.join(DIST, "claude-pins.json");
+const fetchClaudeNow: ClaudeFetch = (onProgress) => {
+  const { fetchClaude } = require("../../fetch-claude.cjs") as FetchClaudeModule; // bundled into main.js
+  return fetchClaude({
+    root: claudeHome(),
+    pins: fs.existsSync(CLAUDE_PINS) ? CLAUDE_PINS : undefined,
+    log: (s) => {
+      for (const line of String(s).split(/[\r\n]+/)) if (line.trim()) log("[claude] " + line.trim());
+    },
+    onProgress,
+  });
+};
+
+/** Start (or join) the download; returns the state at once. `why`: "start" or "retry". */
+function startClaudeDownload(why: "start" | "retry") {
+  if (claudeRoute() === "clone") return claudeStatus();
+  const missing = claudeStatus().state !== "present";
+  if (missing) log(`[claude] Claude Code is not downloaded yet: downloading it (${why})`);
+  downloadClaude(fetchClaudeNow, () => {
+    providersCache = undefined; // the Familiars card's Claude row follows the download
+    sendStatus();
+  }).then((s) => {
+    const failed = claudeDownloadError();
+    if (failed) log(`[claude] download failed: ${failed}`);
+    if (s.state !== "present" || !missing) return;
+    log("[claude] Claude Code is downloaded");
+    hub.backends.claude
+      ?.init()
+      .then(() => {
+        hub.changed("providers");
+        if (game) return hub.refreshExternal(); // agents are awake: list Claude's desktop threads now
+      })
+      .catch((e) => log("[claude] init: " + e));
+  });
+  return claudeStatus();
+}
+
 // ---- boot ---------------------------------------------------------------------------------------
 app.whenReady().then(async () => {
   log(`[boot] Familiar companion ${VERSION} (Electron ${process.versions.electron})`);
-  const claude = new ClaudeBackend({ log, version: VERSION, executable: cfg.claudeExecutable || BUNDLED_CLAUDE, defaultModel: cfg.claudeModel });
+  const claude = new ClaudeBackend({ log, version: VERSION, executable: cfg.claudeExecutable || undefined, defaultModel: cfg.claudeModel });
   const codex = new CodexBackend({ log, version: VERSION, exe: cfg.codexExe });
   const backends: Record<string, AgentBackend> = { claude, codex };
   // Agent Client Protocol agents (Hermes, Grok Build, anything added under "providers" in
@@ -918,6 +1068,7 @@ app.whenReady().then(async () => {
     if (b) backends[id] = b;
   }
   hub = new Hub(() => cfg, backends, log);
+  hub.version = VERSION;
   // "Continue in <app>": only the agents' own app links, never an arbitrary URL.
   hub.openExternal = (url) => {
     if (/^(claude|codex):\/\//i.test(url)) shell.openExternal(url).catch((e) => log(`[open] ${e}`));
@@ -930,6 +1081,7 @@ app.whenReady().then(async () => {
   hub.onSound = (k) => cfg.sound && overlay?.webContents.send("sound", k);
   hub.onSpeak = (t) => overlay?.webContents.send("speak", t);
   hub.onCutRequest = surfaceRequests;
+  hub.onToast = noticeFor;
   hub.onConfigChanged = (c) => {
     saveConfig(c);
     applyLoginItem();
@@ -964,11 +1116,17 @@ app.whenReady().then(async () => {
     if (!from(e, capture)) return;
     const wasLinked = linked();
     captureStats = s;
+    statsAt = Date.now();
     if (linked() !== wasLinked) {
       log(`[link] ${linked() ? "linked" : "lost"} (fps ${s.fps}, decoded ${s.decoded}, crc ${s.crc}, missed ${s.missed})`);
       pushAll();
     }
     sendStatus();
+  });
+  ipcMain.on("snapshot", (e, r) => {
+    if (!from(e, capture) || !r || typeof r.id !== "number") return;
+    const done = snapWaits.get(r.id);
+    if (done && snapWaits.delete(r.id)) done(r);
   });
   ipcMain.on("log", (e, s) => {
     if (from(e, capture) || from(e, overlay) || from(e, control)) log(String(s));
@@ -1004,7 +1162,7 @@ app.whenReady().then(async () => {
         return shell.openPath(logFile);
       case "reloadConfig":
         cfg = loadConfig(log);
-        hub.projects.scanRoots();
+        hub.reloadProjects(); // folders removed from config.json go too
         hub.changed("config");
         return true;
       case "providerEnable": {
@@ -1045,10 +1203,11 @@ app.whenReady().then(async () => {
         sendStatus();
         return true;
       case "uiSettings": {
-        const a = (args ?? {}) as { fontScale?: number; sound?: boolean; raidWarnings?: boolean; quiet?: boolean; privateMode?: boolean; streamSafe?: boolean; defaultMode?: string; approveKey?: string };
+        const a = (args ?? {}) as { fontScale?: number; sound?: boolean; raidWarnings?: boolean; quiet?: boolean; privateMode?: boolean; streamSafe?: boolean; defaultMode?: string; approveKey?: string; trayNotices?: boolean };
         if (typeof a.fontScale === "number" && isFinite(a.fontScale)) cfg.fontScale = Math.min(FONT_MAX, Math.max(FONT_MIN, a.fontScale));
         if (typeof a.sound === "boolean") cfg.sound = a.sound;
         if (typeof a.raidWarnings === "boolean") cfg.raidWarnings = a.raidWarnings;
+        if (typeof a.trayNotices === "boolean") cfg.trayNotices = a.trayNotices;
         if (typeof a.quiet === "boolean") hub.setQuiet(a.quiet);
         if (typeof a.privateMode === "boolean") hub.setPrivate(a.privateMode);
         if (typeof a.streamSafe === "boolean") hub.setStream(a.streamSafe);
@@ -1090,6 +1249,44 @@ app.whenReady().then(async () => {
         hub.openIssue(url);
         return true;
       }
+      // Claude download, Link Doctor snapshot, project folders, versions (round 4).
+      case "claudeRetry":
+        return startClaudeDownload("retry");
+      case "captureSnapshot":
+        return captureSnapshot();
+      case "openSnapshot":
+        // Shows the last saved picture in Explorer (or the Familiar folder); no path from the page.
+        if (lastSnapshot && fs.existsSync(lastSnapshot)) shell.showItemInFolder(lastSnapshot);
+        else await shell.openPath(appDataDir());
+        return true;
+      case "projectAdd": {
+        // The folder dialog belongs to the panel window; nothing is added unless a folder is picked.
+        const kind = (args as { kind?: unknown } | undefined)?.kind === "root" ? "root" : "project";
+        const pick = await dialog.showOpenDialog(control!, { title: kind === "root" ? "Add a folder of projects" : "Add a project folder", properties: ["openDirectory"] });
+        if (pick.canceled || !pick.filePaths[0]) return { ok: false };
+        const r = hub.addProjectFolder(pick.filePaths[0], kind);
+        log(`[projects] add ${kind === "root" ? "a folder of projects" : "a project folder"}: ${r.ok ? "added" : r.why}`);
+        sendStatus();
+        return r;
+      }
+      case "projectRemove": {
+        const r = hub.removeProjectFolder(String((args as { path?: unknown } | undefined)?.path ?? ""));
+        sendStatus();
+        return r;
+      }
+      case "checkUpdate":
+        // The player's click only: one GET to GitHub's latest release (update.ts). Never scheduled.
+        log("[update] Check for updates: asking GitHub for the latest release");
+        lastUpdateCheck = await checkUpdate(VERSION);
+        log(`[update] ${lastUpdateCheck.error ?? `latest ${lastUpdateCheck.latest}${lastUpdateCheck.newer ? " (newer than this app)" : ""}`}`);
+        sendStatus();
+        return lastUpdateCheck;
+      case "openUrl": {
+        // "Open the download page": only the release page Check for updates returned.
+        const url = String((args as { url?: unknown } | undefined)?.url ?? "");
+        if (url && url === lastUpdateCheck?.url && isReleasesUrl(url)) await shell.openExternal(url).catch((e) => log(`[open] ${e}`));
+        return undefined;
+      }
       case "testToast":
         hub.toast("Familiar overlay test — if you can read this over WoW, the Glass works.", "info");
         return true;
@@ -1104,6 +1301,7 @@ app.whenReady().then(async () => {
 
   if (devEnabled()) startDevServer();
   await hub.start();
+  startClaudeDownload("start");
   setInterval(tick, 100);
   // Tells the addon (at login / reload) that the companion is alive, even when nothing changed.
   setInterval(() => snapshot.writeNow({ force: true }), 5 * 60_000);
@@ -1157,6 +1355,7 @@ function startDevServer() {
       if (url === "/simulate") return onAddonMessages([JSON.parse(body)]) ?? true;
       if (url === "/action") return hub.action(JSON.parse(body), TRUSTED) ?? true; // token-gated dev hook stands in for a real click
       if (url === "/snap") return await snap(body || path.join(appDataDir(), "snap.png"));
+      if (url === "/capture-snapshot") return await captureSnapshot(); // e2e: the panel's "Save what Familiar sees"
       if (url === "/inject") {
         const ev = JSON.parse(body);
         return hub.injectAgentEvent(ev.agent ?? "claude", ev) ?? true;

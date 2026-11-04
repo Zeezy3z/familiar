@@ -27,7 +27,7 @@ import { ClaudeBackend } from "../agents/claude";
 import { CodexBackend } from "../agents/codex";
 import { providerAvailable } from "../agents/setup";
 import { CHAT_INSTRUCTIONS, withGameContext } from "./chat";
-import { CHATS_KEY, Project, ProjectRegistry, projectRootOf } from "./projects";
+import { CHATS_KEY, isChatPath, Project, ProjectRegistry, projectRootOf, zoneRefusal } from "./projects";
 import { SUGGEST_TOAST, suggestionUrl, type SuggestVersions } from "./suggest";
 import { TUTORIAL_AGENT, TUTORIAL_NO_MODE, tutorialDecide, tutorialReply, tutorialSetOut, tutorialThread } from "./tutorial";
 
@@ -113,6 +113,10 @@ export interface Toast {
   /** Text shown instead in private mode (no project, title, command or reply). Without it,
    * private mode shows a generic line per kind (see privateToast in viewmodel.ts). */
   generic?: string;
+  /** approval: the request it is about (main raises one Windows notice per request). */
+  requestId?: string;
+  /** How long it stays up (default: 60 s for approvals, 9 s for the rest). */
+  ms?: number;
 }
 
 export interface View {
@@ -136,6 +140,25 @@ export interface View {
   zoneAll: Set<string>;
   /** The model list (Model button) is open in the details pane. */
   picker?: boolean;
+}
+
+/** A pending approval as the control panel lists it ("Requests waiting"). */
+export interface PendingRequest {
+  thread: string;
+  questTitle: string;
+  project: string;
+  /** The agent's label ("Claude"). */
+  agent: string;
+  requestId: string;
+  title: string;
+  /** What the in-game card shows (a preview when `cut`). */
+  detail: string;
+  /** The whole request, when the in-game card shows only part of it. */
+  full?: string;
+  /** Too long for the in-game card: approved only here, never from the game. */
+  cut: boolean;
+  canAlways: boolean;
+  at: number;
 }
 
 export interface AddonInfo {
@@ -249,6 +272,31 @@ export class Hub {
   onSpeak: (text: string) => void = () => {};
   /** A request too long for the in-game card is waiting (main: flash the panel / a tray notice). */
   onCutRequest: () => void = () => {};
+  /** A toast was raised (after a fight, for held ones): main's Windows notice (notices.ts). */
+  onToast: (x: Toast) => void = () => {};
+  /** This companion's version (main's VERSION), compared with the addon's on hello. */
+  version = "";
+  private versionToasted = false;
+
+  /** The addon and this companion are different versions (WowUp updated one, not the other).
+   * Only a plain version counts: a clone's addon says "dev". Undefined when they match. */
+  versionMismatch(): { addon: string; app: string } | undefined {
+    const addon = this.addon.addon;
+    const plain = (v: unknown): v is string => typeof v === "string" && /^v?\d+\.\d+(\.\d+)?([-+][0-9A-Za-z.-]{1,24})?$/.test(v);
+    if (!plain(addon) || !plain(this.version) || addon.replace(/^v/, "") === this.version.replace(/^v/, "")) return undefined;
+    return { addon, app: this.version };
+  }
+
+  /** Once per companion run (hello comes every 20 s and after each /reload): one toast saying which
+   * to update; the status bar keeps "addon x / app y" while they differ. No names in it. */
+  private versionNotice() {
+    const m = this.versionMismatch();
+    if (!m || this.versionToasted) return;
+    this.versionToasted = true;
+    this.log(`[hub] addon ${m.addon} and companion ${m.app} differ`);
+    const text = `Your addon is ${m.addon} and Familiar on your PC is ${m.app}. Update the one that's behind: addon via WowUp or the release zip, app from the Releases page.`;
+    this.show({ id: this.toastSeq++, text, kind: "info", at: Date.now(), generic: text, ms: 20_000 });
+  }
 
   constructor(
     public cfg: () => Config,
@@ -403,6 +451,70 @@ export class Hub {
     if (selected && found.has(selected) && !this.extHistory.has(selected) && !this.extHistoryState.has(selected))
       this.loadExtHistory(selected, this.view.window[selected] ?? 150);
     this.changed("external");
+  }
+
+  // ---- project folders (the control panel's Projects card) --------------------------------------
+  /** Rebuild the zones from the config (roots, explicit folders) and history (quests, desktop
+   * threads), so an added or removed folder shows in the next pick without a restart. */
+  reloadProjects() {
+    const fresh = new ProjectRegistry(this.cfg);
+    fresh.scanRoots();
+    for (const t of this.threads.values()) if (t.kind !== "tutorial") fresh.add(t.cwd, t.updatedAt);
+    for (const x of this.external.values()) {
+      if (x.projectCwd || x.cwd) fresh.add(x.projectCwd ?? x.cwd, x.updatedAt);
+      else fresh.chats(x.updatedAt);
+    }
+    this.projects = fresh;
+    this.changed("projects");
+    // The agents' own project lists (Codex desktop) come back with the next listing.
+    if (this.waking) this.refreshExternal().catch((e) => this.log("[hub] external: " + e));
+  }
+
+  /** Add a folder chosen in the control panel: a project ("project") or a folder whose subfolders
+   * are projects ("root"). Refused, with the reason, where it could never be a zone. */
+  addProjectFolder(folder: string, kind: "project" | "root"): { ok: boolean; path?: string; why?: string } {
+    let real: string;
+    try {
+      real = fs.realpathSync.native(folder);
+      if (!fs.statSync(real).isDirectory()) return { ok: false, why: "That isn't a folder." };
+    } catch {
+      return { ok: false, why: "That folder doesn't exist." };
+    }
+    const c = this.cfg();
+    if (isChatPath(real)) return { ok: false, why: "That is Familiar's own Chats folder." };
+    const why = zoneRefusal(real, c);
+    if (why) return { ok: false, why };
+    const key = kind === "root" ? "projectRoots" : "projects";
+    if (!c[key].some((x) => normPath(x) === normPath(real))) {
+      c[key] = [...c[key], real];
+      this.onConfigChanged(c);
+    }
+    this.reloadProjects();
+    return { ok: true, path: real };
+  }
+
+  /** Remove a folder added as a project or a folder of projects (its zones stay while agent
+   * history still lists them). */
+  removeProjectFolder(folder: string): { ok: boolean } {
+    const c = this.cfg();
+    const n = normPath(folder);
+    const projects = c.projects.filter((x) => normPath(x) !== n);
+    const projectRoots = c.projectRoots.filter((x) => normPath(x) !== n);
+    if (projects.length === c.projects.length && projectRoots.length === c.projectRoots.length) return { ok: false };
+    c.projects = projects;
+    c.projectRoots = projectRoots;
+    this.onConfigChanged(c);
+    this.reloadProjects();
+    return { ok: true };
+  }
+
+  /** The Projects card: the folders you added, and how many zones came from agent history. */
+  projectsSummary(): { explicit: string[]; roots: string[]; history: number } {
+    const c = this.cfg();
+    const explicit = new Set(c.projects.map(normPath));
+    const roots = new Set(c.projectRoots.map(normPath));
+    const history = this.projects.list().filter((p) => !explicit.has(p.key) && !roots.has(normPath(path.dirname(p.path)))).length;
+    return { explicit: [...c.projects], roots: [...c.projectRoots], history };
   }
 
   /** Folder a new quest "in the same zone as <cwd>" starts in (worktrees map to their project). */
@@ -598,6 +710,7 @@ export class Hub {
       case "hello":
         if (msg.viewKeys === 1) this.viewKeys = true;
         this.addon = { ...this.addon, addon: msg.addon, build: msg.build, iface: msg.iface, char: msg.char, realm: msg.realm, syncAt: msg.syncAt };
+        this.versionNotice();
         this.changed("hello");
         break;
       case "prompt":
@@ -1264,14 +1377,15 @@ export class Hub {
     return { ok: true };
   }
 
-  /** Pending requests too long for the in-game card, whole, for the control panel's "Requests
-   * waiting on your PC". Real names: the panel is on the PC, not on stream. */
-  cutRequests() {
+  /** Every pending approval for the control panel's "Requests waiting", whole, decided there with
+   * decide(..., "panel") (a cut one only there). Real names: the panel is on the PC, not on stream.
+   * Multiple-choice questions are not listed: they want an answer, not Approve / Deny (in game). */
+  pendingRequests(): PendingRequest[] {
     return [...this.threads.values()].flatMap((t) =>
       t.entries
-        .filter((e) => e.kind === "approval" && e.approval === "pending" && e.cut && e.requestId)
+        .filter((e) => e.kind === "approval" && e.approval === "pending" && e.requestId && !e.options?.length)
         .map((e) => ({ thread: t.id, questTitle: t.title, project: this.projectName(t), agent: agentName(t.agent), requestId: e.requestId!,
-          title: e.title ?? "", full: e.full ?? e.text, canAlways: !!e.canAlways, at: e.at })),
+          title: e.title ?? "", detail: e.text, ...(e.cut ? { full: e.full ?? e.text } : {}), cut: !!e.cut, canAlways: !!e.canAlways, at: e.at })),
     );
   }
 
@@ -1663,7 +1777,7 @@ export class Hub {
         {
           // A cut request is approved only on the PC: the toast says where, and main makes the panel easy to reach.
           const onPc = e.cut ? ` · ${CUT_TOAST}` : "";
-          this.toast(`Needs approval · ${agentName(t.agent)} · ${this.projectName(t)} · ${e.title}${onPc}`, "approval", t.id, `Needs approval · ${agentName(t.agent)}${onPc}`);
+          this.toast(`Needs approval · ${agentName(t.agent)} · ${this.projectName(t)} · ${e.title}${onPc}`, "approval", t.id, `Needs approval · ${agentName(t.agent)}${onPc}`, e.requestId);
         }
         this.sound("approval");
         if (e.cut) this.alertPc();
@@ -1741,9 +1855,9 @@ export class Hub {
     this.changed("note");
   }
 
-  toast(text: string, kind: Toast["kind"], threadId?: string, generic?: string) {
+  toast(text: string, kind: Toast["kind"], threadId?: string, generic?: string, requestId?: string) {
     if (kind === "done" && this.cfg().quiet) return;
-    const x: Toast = { id: this.toastSeq++, text, kind, at: Date.now(), threadId, ...(generic ? { generic } : {}) };
+    const x: Toast = { id: this.toastSeq++, text, kind, at: Date.now(), threadId, ...(generic ? { generic } : {}), ...(requestId ? { requestId } : {}) };
     // In a fight, a quest's own notices wait (see setCombat); info toasts answer the player and show.
     if (this.combat && kind !== "info" && threadId) return void this.held.push(x);
     this.show(x);
@@ -1753,6 +1867,7 @@ export class Hub {
   private show(x: Toast) {
     this.toasts.push(x);
     if (this.toasts.length > 4) this.toasts.shift();
+    this.onToast(x);
   }
 
   /** Drop toasts, shown or held for after a fight (the player opened the quest, decided it...). */
@@ -1790,7 +1905,7 @@ export class Hub {
     this.held = [];
     this.heldSpeech = undefined;
     this.heldPcAlert = false;
-    if (pc && this.cutRequests().length) this.onCutRequest();
+    if (pc && this.pendingRequests().some((r) => r.cut)) this.onCutRequest();
     if (!held.length) return;
     const count = (k: Toast["kind"]) => held.filter((x) => x.kind === k).length;
     const kind = count("approval") ? "approval" : count("error") ? "error" : "done";
@@ -1848,7 +1963,7 @@ export class Hub {
 
   private pruneToasts() {
     const now = Date.now();
-    const keep = this.toasts.filter((x) => now - x.at < (x.kind === "approval" ? 60_000 : 9_000));
+    const keep = this.toasts.filter((x) => now - x.at < (x.ms ?? (x.kind === "approval" ? 60_000 : 9_000)));
     if (keep.length !== this.toasts.length) {
       this.toasts = keep;
       this.changed("toast");
