@@ -1,0 +1,171 @@
+name: Windows installer
+# Packages the companion with electron-builder (companion/electron-builder.yml).
+# * package: always. Builds release/win-unpacked and runs its --self-test. Publishes nothing.
+# * signed: only when the repository variable SIGNING_READY is 'true'. Builds the NSIS installer,
+#   signs it with Azure Artifact Signing, verifies the signatures and, for a v* tag, adds the
+#   installer to that tag's GitHub release (created by release.yml).
+# An unsigned installer is never published: a new unsigned exe that captures the screen, polls mouse
+# buttons and registers a Run key is what antivirus and SmartScreen flag. Setup: docs/releasing.md,
+# "Signed installer".
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+permissions:
+  contents: read
+concurrency:
+  group: installer-${{ github.ref }}
+  cancel-in-progress: false # never cancel a half-uploaded release
+
+jobs:
+  package:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: companion
+        shell: bash # bash waits for Familiar.exe (a GUI-subsystem exe) and passes its exit code on
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: companion/package-lock.json
+      - name: Install locked dependencies without install hooks
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Build
+        run: npm run build
+      # electron-builder downloads Electron itself (@electron/get, checksum-verified).
+      - name: Package (dir)
+        run: npx electron-builder --win --dir --publish never
+      - name: Self-test the packaged app
+        run: release/win-unpacked/Familiar.exe --self-test
+
+  signed:
+    needs: package
+    if: vars.SIGNING_READY == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 60 # includes waiting for release.yml to create the release
+    # The Azure federated credential trusts this environment (subject
+    # repo:<owner>/<repo>:environment:signing); restrict it to v* tags in the repository settings.
+    environment: signing
+    permissions:
+      contents: write # gh release upload
+      id-token: write # GitHub OIDC token for azure/login; no long-lived Azure secret
+    defaults:
+      run:
+        working-directory: companion
+        shell: bash
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+      FAMILIAR_SIGN_ENDPOINT: ${{ vars.AZURE_SIGNING_ENDPOINT }} # e.g. https://eus.codesigning.azure.net/ (the account's region)
+      FAMILIAR_SIGN_ACCOUNT: ${{ vars.AZURE_SIGNING_ACCOUNT }} # Artifact Signing account name
+      FAMILIAR_SIGN_PROFILE: ${{ vars.AZURE_SIGNING_PROFILE }} # certificate profile name
+      FAMILIAR_SIGN_PUBLISHER: ${{ vars.SIGNING_PUBLISHER }} # the certificate's CN, exactly
+    steps:
+      - name: Signing settings are present
+        run: |
+          for k in FAMILIAR_SIGN_ENDPOINT FAMILIAR_SIGN_ACCOUNT FAMILIAR_SIGN_PROFILE FAMILIAR_SIGN_PUBLISHER; do
+            [ -n "${!k}" ] || { echo "::error::$k is empty: set the repository variables listed in docs/releasing.md"; exit 1; }
+          done
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: companion/package-lock.json
+      - name: Install locked dependencies without install hooks
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Build
+        run: npm run build
+      - name: Tag matches package.json
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          v=$(node -p "require('./package.json').version")
+          [ "v$v" = "$GITHUB_REF_NAME" ] || { echo "::error::tag $GITHUB_REF_NAME, package.json $v"; exit 1; }
+
+      # ---- signing: Azure Artifact Signing --------------------------------------------------------
+      # SignPath Foundation instead of Azure (free certificates for open-source projects): drop the
+      # two steps below and the -c.win.signtoolOptions.sign flag, build unsigned, then
+      #   1. upload release/win-unpacked as an artifact (actions/upload-artifact) and submit it with
+      #      signpath/github-action-submit-signing-request (secret SIGNPATH_API_TOKEN, plus the
+      #      organization id, project slug and signing policy as variables). The SignPath artifact
+      #      configuration must sign Familiar.exe and must NOT include
+      #      claude-agent-sdk-win32-x64\claude.exe (already signed by Anthropic);
+      #   2. build the installer from the signed folder (electron-builder --win nsis --prepackaged
+      #      <signed win-unpacked> --publish never) and submit Familiar-Setup-*.exe the same way.
+      #      The uninstaller NSIS generates in step 2 is not signed on that route.
+      # Keep the self-test, verification and upload steps; SIGNING_PUBLISHER becomes the CN of
+      # SignPath's certificate.
+      - name: Azure sign-in (OIDC)
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          allow-no-subscriptions: true
+      - name: Install the TrustedSigning PowerShell module
+        shell: pwsh
+        run: Install-Module -Name TrustedSigning -RequiredVersion 0.5.8 -Repository PSGallery -Scope CurrentUser -Force
+      # build/sign.cjs signs each file through Invoke-TrustedSigning and skips claude.exe.
+      - name: Package and sign (NSIS)
+        run: |
+          npx electron-builder --win --publish never \
+            -c.win.signtoolOptions.sign=./build/sign.cjs \
+            "-c.win.signtoolOptions.publisherName=$FAMILIAR_SIGN_PUBLISHER"
+      # ---- end of signing -------------------------------------------------------------------------
+
+      - name: Self-test the signed app
+        run: release/win-unpacked/Familiar.exe --self-test
+      - name: Verify signatures
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function Signer([string]$f) {
+            $s = Get-AuthenticodeSignature -LiteralPath $f
+            if ($s.Status -ne 'Valid') { throw "${f}: signature $($s.Status): $($s.StatusMessage)" }
+            if (-not $s.TimeStamperCertificate) { throw "${f}: no RFC 3161 timestamp" }
+            $s.SignerCertificate.GetNameInfo('SimpleName', $false)
+          }
+          $v = node -p "require('./package.json').version"
+          foreach ($f in @('release\win-unpacked\Familiar.exe', "release\Familiar-Setup-$v.exe")) {
+            $n = Signer $f
+            if ($n -cne $env:FAMILIAR_SIGN_PUBLISHER) { throw "$f is signed by '$n', expected SIGNING_PUBLISHER" }
+            "${f}: $n"
+          }
+          # Must still carry Anthropic's own signature, not ours.
+          $claude = 'release\win-unpacked\resources\app.asar.unpacked\node_modules\@anthropic-ai\claude-agent-sdk-win32-x64\claude.exe'
+          $n = Signer $claude
+          if ($n -cne 'Anthropic, PBC') { throw "claude.exe is signed by '$n', expected 'Anthropic, PBC'" }
+          "${claude}: $n"
+
+      - name: Add the installer to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="$GITHUB_REF_NAME"
+          V="${TAG#v}"
+          EXE="Familiar-Setup-$V.exe"
+          # release.yml creates the release and writes SHA256SUMS.txt last; wait for it (up to 40 min).
+          for i in $(seq 1 120); do
+            assets=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' 2>/dev/null || true)
+            grep -qx SHA256SUMS.txt <<< "$assets" && break
+            [ "$i" -lt 120 ] || { echo "::error::release $TAG has no SHA256SUMS.txt; did release.yml succeed?"; exit 1; }
+            sleep 20
+          done
+          cd release
+          rm -f SHA256SUMS.txt
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern SHA256SUMS.txt
+          grep -v '[ *]Familiar-Setup-' SHA256SUMS.txt > sums.new || true # a rerun replaces our line
+          # Same "hash  name" format as release.yml (Git Bash's sha256sum would write "hash *name").
+          echo "$(sha256sum < "$EXE" | cut -d' ' -f1)  $EXE" >> sums.new
+          mv sums.new SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber "$EXE" "$EXE.blockmap" latest.yml SHA256SUMS.txt
