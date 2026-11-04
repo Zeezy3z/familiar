@@ -796,7 +796,9 @@ function settleRequests() {
 let trayShown = { badge: "none" as TrayBadge, tooltip: "" };
 function refreshTray() {
   if (!tray) return;
-  const next = trayBadgeFor(hub ? activity(hub) : null, requestsWaiting);
+  // activity().working also counts quests waiting on you; the tray counts those once, under "waiting on you".
+  const work = hub ? { working: [...hub.threads.values()].filter((t) => t.status === "running").length, approvals: activity(hub).approvals } : null;
+  const next = trayBadgeFor(work, requestsWaiting);
   if (next.badge !== trayShown.badge) tray.setImage(trayIcon(next.badge));
   if (next.tooltip !== trayShown.tooltip) tray.setToolTip(next.tooltip);
   trayShown = next;
