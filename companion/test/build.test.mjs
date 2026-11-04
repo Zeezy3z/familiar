@@ -1,8 +1,8 @@
 // Build the real identity entry, then run only that entry under Node. No Electron or agents.
 import { afterEach, describe, expect, it } from "vitest";
 import { build } from "esbuild";
-import { execFileSync } from "node:child_process";
-import { copyFileSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, statSync, utimesSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, statSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -62,10 +62,14 @@ describe("identity embedded in the running build", () => {
 // record what ran, and a stand-in electron module says whether Familiar is already running.
 describe("boot.cjs, the start-with-Windows entry", () => {
   function app() {
-    const dir = mkdtempSync(join(tmpdir(), "familiar-boot-"));
-    fixtures.push(dir);
-    for (const d of ["src", "scripts", "dist", "node_modules/electron"]) mkdirSync(join(dir, d), { recursive: true });
-    copyFileSync(fileURLToPath(new URL("../boot.cjs", import.meta.url)), join(dir, "boot.cjs"));
+    const base = mkdtempSync(join(tmpdir(), "familiar-boot-"));
+    fixtures.push(base);
+    const dir = join(base, "companion"); // beside addon/Familiar, as in a clone or the download
+    for (const d of ["src", "scripts", "dist", "node_modules/electron", "node_modules/koffi", "../addon/Familiar"]) mkdirSync(join(dir, d), { recursive: true });
+    for (const f of ["boot.cjs", "self-test.cjs"]) copyFileSync(fileURLToPath(new URL(`../${f}`, import.meta.url)), join(dir, f));
+    writeFileSync(join(base, "addon/Familiar/Familiar.toc"), "## Interface: 16001\n");
+    writeFileSync(join(dir, "node_modules/koffi/index.js"),
+      'exports.version = "stand-in"; exports.load = () => ({ func: () => () => process.pid });');
     writeFileSync(join(dir, "node_modules/electron/index.js"),
       'exports.app = { requestSingleInstanceLock: () => process.env.FAMILIAR_TEST_RUNNING !== "1", quit() {} };');
     writeFileSync(join(dir, "scripts/build.mjs"),
@@ -86,7 +90,14 @@ describe("boot.cjs, the start-with-Windows entry", () => {
         env: { ...process.env, APPDATA: dir, FAMILIAR_TEST_RUNNING: running ? "1" : "0" } });
       return readFileSync(join(dir, "ran.txt"), "utf8").trim().split(" ");
     };
-    return { boot, touch };
+    // Exit status, output and what ran, for runs that may fail or must not start anything.
+    const spawn = (...args) => {
+      rmSync(join(dir, "ran.txt"), { force: true });
+      const r = spawnSync(process.execPath, [join(dir, "boot.cjs"), ...args], { cwd: dir, encoding: "utf8",
+        env: { ...process.env, APPDATA: dir, FAMILIAR_TEST_RUNNING: "0" } });
+      return { status: r.status, out: r.stdout, ran: existsSync(join(dir, "ran.txt")) ? readFileSync(join(dir, "ran.txt"), "utf8").trim() : "" };
+    };
+    return { dir, boot, touch, spawn };
   }
 
   it("rebuilds after a pull that changed the build scripts or the dependency lock", () => {
@@ -104,6 +115,33 @@ describe("boot.cjs, the start-with-Windows entry", () => {
     touch("src/main.ts");
     expect(boot(true)).toEqual(["start"]); // main.js then hands over to the running instance and quits
     expect(boot()).toEqual(["build", "start"]);
+  });
+
+  // The release download has no Node or dev dependencies, and unzipping can leave src/ newer than dist/.
+  it("never rebuilds the prebuilt download, and stops if its bundle is missing", () => {
+    const { dir, boot, touch, spawn } = app();
+    writeFileSync(join(dir, ".prebuilt"), "version=0.0.0\n");
+    touch("src/main.ts");
+    touch("package-lock.json");
+    expect(boot()).toEqual(["start"]);
+    rmSync(join(dir, "dist/main.js"));
+    expect(spawn()).toMatchObject({ status: 1, ran: "" });
+  });
+
+  it("--self-test reports each check and exits without building or starting the companion", () => {
+    const { dir, touch, spawn } = app();
+    touch("src/main.ts"); // stale: a normal start would rebuild first
+    const r = spawn("--self-test");
+    expect(r.ran).toBe(""); // never main.js, so never the login entry or the AddOns link
+    expect(r.out.trim().split("\n").map((l) => l.replace(/:.*/, ""))).toEqual([
+      "ok   companion bundle (dist/main.js)",
+      "ok   addon (Familiar.toc)",
+      "ok   koffi",
+      "FAIL Claude Code (claude --version)", // no bundled binary in the fixture
+    ]);
+    expect(r.status).toBe(1);
+    rmSync(join(dir, "../addon/Familiar/Familiar.toc"));
+    expect(spawn("--self-test").out).toMatch(/^FAIL addon \(Familiar\.toc\)/m);
   });
 });
 

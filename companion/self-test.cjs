@@ -1,10 +1,12 @@
-// Packaged-app self-test (`Familiar.exe --self-test`, run by CI against win-unpacked).
-// Minimal version for the installer branch; the full one is owned elsewhere and keeps this contract:
-//   selfTest({ appRoot, addonDir, claudeExe }) -> { ok: boolean, lines: string[] }
+// Checks that this install can run, without starting it: no windows, no login entry, no AddOns
+// link. `electron.exe <companion folder> --self-test` runs it from boot.cjs before the companion
+// loads (release.yml runs it on the extracted download). One line per check; ok is false if any
+// check failed.
 const fs = require("node:fs");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 
+/** @param {{ appRoot: string, addonDir: string, claudeExe?: string }} where */
 function selfTest({ appRoot, addonDir, claudeExe }) {
   const lines = [];
   let ok = true;
@@ -16,26 +18,26 @@ function selfTest({ appRoot, addonDir, claudeExe }) {
       lines.push(`FAIL ${name}: ${(e && e.message) || e}`);
     }
   };
+  const file = (p) => {
+    if (!fs.statSync(p).isFile()) throw new Error(`${p} is not a file`);
+    return "found";
+  };
+  check("companion bundle (dist/main.js)", () => file(path.join(appRoot, "dist", "main.js")));
+  check("addon (Familiar.toc)", () => file(path.join(addonDir, "Familiar.toc")));
+  // The Win32 calls in main go through koffi's native module; one harmless read-only call proves it loads.
   check("koffi", () => {
     const koffi = require("koffi");
-    if (typeof koffi.load !== "function") throw new Error("koffi.load missing");
-    return "loaded";
+    const pid = koffi.load("kernel32.dll").func("uint32_t GetCurrentProcessId()")();
+    if (pid !== process.pid) throw new Error(`GetCurrentProcessId returned ${pid}, expected ${process.pid}`);
+    return `${koffi.version}, native call ok`;
   });
-  check("claude.exe", () => {
-    if (!claudeExe) throw new Error("no path");
-    const r = spawnSync(claudeExe, ["--version"], { encoding: "utf8", timeout: 30_000, windowsHide: true });
+  check("Claude Code (claude --version)", () => {
+    if (!claudeExe) throw new Error("bundled Claude Code binary not found");
+    // A cold first start of a ~250 MB binary can be slow while antivirus scans it.
+    const r = spawnSync(claudeExe, ["--version"], { encoding: "utf8", timeout: 120_000, windowsHide: true });
     if (r.error) throw r.error;
-    if (r.status !== 0) throw new Error(`exit ${r.status}: ${String(r.stderr).trim().slice(0, 200)}`);
-    return String(r.stdout).trim();
-  });
-  check("dist/main.js", () => {
-    if (!fs.existsSync(path.join(appRoot, "dist", "main.js"))) throw new Error(`missing under ${appRoot}`);
-    return "present";
-  });
-  check("addon", () => {
-    const toc = path.join(addonDir, "Familiar.toc");
-    if (!fs.existsSync(toc)) throw new Error(`missing ${toc}`);
-    return /^## Version:\s*(\S+)/m.exec(fs.readFileSync(toc, "utf8"))?.[1] ?? "no ## Version";
+    if (r.status !== 0) throw new Error(`exit ${r.status}: ${String(r.stderr || r.stdout).trim().slice(0, 300)}`);
+    return String(r.stdout).trim().split(/\r?\n/)[0];
   });
   return { ok, lines };
 }

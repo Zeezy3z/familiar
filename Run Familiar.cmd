@@ -1,5 +1,6 @@
 @echo off
-rem Builds and starts the Familiar companion (runs in the system tray).
+rem Starts the Familiar companion (runs in the system tray). The release download is prebuilt and
+rem starts straight away; a git clone first installs dependencies and builds.
 setlocal
 set "HERE=%~dp0"
 if "%HERE:~0,2%"=="\\" (
@@ -11,11 +12,15 @@ echo %HERE% | find /i "\OneDrive\" >nul && (
   echo.
 )
 cd /d "%HERE%companion" || goto :fail
-echo This window installs and starts Familiar. Leave it open; the first run can take several minutes.
-where node >nul 2>nul || (
-  echo Familiar needs Node.js 24 or newer. Install the LTS from https://nodejs.org and run this again.
-  goto :fail
+rem The release download (FamiliarApp-*-windows.zip) ships dist\ and node_modules\ ready to run,
+rem marked by companion\.prebuilt (scripts\prebuilt.mjs): no Node, npm or build step.
+if exist .prebuilt (
+  if not exist node_modules\electron\dist\electron.exe goto :incomplete
+  if not exist dist\main.js goto :incomplete
+  goto :start
 )
+echo This window installs and starts Familiar. Leave it open; the first run can take several minutes.
+where node >nul 2>nul || goto :nonode
 set NODE_MAJOR=
 for /f "tokens=1 delims=." %%v in ('node -p "process.versions.node"') do set NODE_MAJOR=%%v
 if not defined NODE_MAJOR (
@@ -54,6 +59,24 @@ call node scripts\build.mjs || goto :fail
 echo Familiar is starting. Look for its window and the tray icon at the bottom right.
 start "" /b "%HERE%companion\node_modules\electron\dist\electron.exe" "%HERE%companion" %*
 exit /b 0
+:incomplete
+echo This Familiar download is incomplete: companion\node_modules\electron\dist\electron.exe or companion\dist\main.js is missing.
+echo Extract the whole FamiliarApp ZIP again. If antivirus removed a file, restore it first.
+goto :fail
+:nonode
+rem Only a git clone gets here: the release download needs no Node.
+echo Running Familiar from a git clone needs Node.js 24 or newer. The FamiliarApp ZIP from the Releases page needs no Node.
+if /i "%~1"=="--background" goto :nodehint
+where winget >nul 2>nul || goto :nodehint
+choice /c YN /m "Install Node.js LTS now with winget"
+if errorlevel 2 goto :nodehint
+winget install -e --id OpenJS.NodeJS.LTS --accept-package-agreements || goto :fail
+echo Node.js is installed. Close this window, then double-click Run Familiar.cmd again.
+pause
+exit /b 1
+:nodehint
+echo Install the LTS from https://nodejs.org and run this again.
+goto :fail
 :fail
 echo Familiar failed to start. See the messages above.
 if /i not "%~1"=="--background" pause
