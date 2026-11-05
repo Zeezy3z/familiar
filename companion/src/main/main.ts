@@ -244,6 +244,7 @@ function createCapture() {
 
 function createControl() {
   if (control && !control.isDestroyed()) {
+    if (control.isMinimized()) control.restore(); // show() alone leaves a minimized panel on the taskbar
     control.show();
     control.focus();
     return;
@@ -259,6 +260,8 @@ function createControl() {
   harden(control);
   control.loadFile(path.join(DIST, "control.html"));
   control.on("closed", () => (control = null));
+  // Minimizing the panel tucks it into the tray like closing it does; the tray reopens it.
+  control.on("minimize", () => control?.hide());
 }
 
 /** The familiar's face with the state badge (tray-badge.ts) painted onto each representation: 16 px
@@ -781,7 +784,7 @@ let requestsWaiting = false;
 function surfaceRequests() {
   requestsWaiting = true;
   refreshTray();
-  if (control && !control.isDestroyed()) return void control.flashFrame(true);
+  if (control && !control.isDestroyed() && control.isVisible()) return void control.flashFrame(true);
   const fresh = hub.pendingRequests().filter((r) => r.cut && !noticed.has(noticeKey(r.thread, r.requestId)));
   if (!fresh.length) return;
   for (const r of fresh) markNoticed(noticeKey(r.thread, r.requestId));
