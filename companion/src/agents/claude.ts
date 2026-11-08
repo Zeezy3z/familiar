@@ -23,6 +23,7 @@ import {
   ThreadInfo,
   TodoItem,
 } from "./types";
+import { WOWHEAD_MAP_TOOL, wowheadMcpServer } from "./wowhead";
 
 type Sdk = typeof import("@anthropic-ai/claude-agent-sdk");
 let sdkPromise: Promise<Sdk> | null = null;
@@ -267,8 +268,10 @@ export class ClaudeBackend implements AgentBackend {
     if (model && model !== "default") options.model = model;
     if (l.chat) {
       // Chat: web lookups only (auto-approved), no project/user settings, our own system prompt.
+      // `tools` lists built-ins only; the Wowhead lookup arrives through mcpServers.
       options.tools = ["WebSearch", "WebFetch"];
-      options.allowedTools = ["WebSearch", "WebFetch"];
+      options.mcpServers = { familiar: wowheadMcpServer(sdk) };
+      options.allowedTools = ["WebSearch", "WebFetch", WOWHEAD_MAP_TOOL];
       options.settingSources = [];
       options.systemPrompt = l.chat.instructions;
       options.permissionMode = "default";
