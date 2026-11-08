@@ -200,8 +200,8 @@ out.
 ## Chats
 
 Chats live in the **Chats** zone at the top of the Quest Log. They have no project folder: no
-files, no commands. Claude chats run Claude Haiku at medium effort with web search only. Codex
-chats get web search in a read-only sandbox with Codex's shell, plugins, apps and browser/computer
+files, no commands. Claude chats run Claude Haiku at medium effort with web search and a read-only Wowhead Classic map
+lookup only. Codex chats get web search in a read-only sandbox with Codex's shell, plugins, apps and browser/computer
 control switched off; MCP servers from your own Codex `config.toml` still load, and anything Codex
 asks permission for comes to you as an approval card. **Model** in a chat picks another model and
 effort; the control panel (**Advanced** → **Chat defaults**) sets the default.
