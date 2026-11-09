@@ -29,7 +29,7 @@ jobs:
           fi
       # GitHub only. CurseForge/Wago uploads are skipped while CF_API_TOKEN/WAGO_API_TOKEN and the
       # TOC project IDs are absent (docs/releasing.md). WoWInterface does not support WoW: Forever.
-      - uses: BigWigsMods/packager@e50a250f8705041e40f2fa1ddcb280a686d65aa0 # v2.6.1
+      - uses: BigWigsMods/packager@01e8631a69c69d7654c788d152630d5fed9e3812 # v2.7.0
         env:
           GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }} # read by v2.6.1 and by master (GITHUB_OAUTH is deprecated there)
       - name: Verify the released addon zip
