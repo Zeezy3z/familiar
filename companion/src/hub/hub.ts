@@ -1,9 +1,9 @@
 // The Hub: single source of truth for quests (threads), zones (projects), selection, approvals and
 // toasts. Addon events come in (from the Runestrip), agent events come in (from backends), and a
 // render model goes out to the Glass overlay and the native snapshot writer.
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { createHash } from "node:crypto";
 import { attentionEntry, attentionRevision } from "./attention";
 import { INTERRUPTED_NOTE, STOPPED_NOTE, STOPPING_NOTE } from "../shared/notes";
 import {
@@ -12,15 +12,15 @@ import {
   AgentKind,
   Decision,
   HistoryEntry,
-  GAME_MODES,
   Mode,
+  MODES,
   MODE_LABEL,
   ThreadInfo,
   TodoItem,
 } from "../agents/types";
 import { appDataDir, clampVolume, Config, DEFAULT_CONFIG, isExcluded, normPath } from "./config";
 import { redact } from "../main/log-file";
-import { NO_PROOF, Proof } from "../main/physical";
+import { actKey, bindingToVk, NO_PROOF, Proof, proofCovers, TOO_SOON, TRUSTED } from "../main/physical";
 import { storageCode, ThreadStore } from "./storage";
 import { providerLabel } from "../agents/providers";
 import { ClaudeBackend } from "../agents/claude";
@@ -28,8 +28,9 @@ import { CodexBackend } from "../agents/codex";
 import { providerAvailable } from "../agents/setup";
 import { CHAT_INSTRUCTIONS, withGameContext } from "./chat";
 import { CHATS_KEY, isChatPath, Project, ProjectRegistry, projectRootOf, zoneRefusal } from "./projects";
-import { SUGGEST_TOAST, suggestionUrl, type SuggestVersions } from "./suggest";
 import { rewards } from "./rewards";
+import { NEEDS_YOU, needYou } from "../shared/words";
+import { visibleText } from "./visible-text";
 import { TUTORIAL_AGENT, TUTORIAL_NO_MODE, tutorialDecide, tutorialReply, tutorialSetOut, tutorialThread } from "./tutorial";
 
 export type EntryKind = "user" | "assistant" | "reasoning" | "tool" | "approval" | "notice";
@@ -130,7 +131,6 @@ export interface View {
   draft?: { agent: AgentKind; cwd: string; projectKey: string; mode: Mode; model?: string; chat?: boolean };
   collapsed: Set<string>;
   expanded: Set<string>; // tool and approval-preview entry ids
-  native: boolean;
   /** A message waiting for the user to confirm continuing a desktop-app conversation. */
   confirm?: { extId: string; text: string };
   /** A message held back because the agent's own app has the quest's conversation open: the player
@@ -151,8 +151,10 @@ export interface PendingRequest {
   thread: string;
   questTitle: string;
   project: string;
-  /** The agent's label ("Claude"). */
+  /** The agent's label ("Claude"), for display only. */
   agent: string;
+  /** The agent's id ("claude", "codex", an ACP id): what wording keyed by agent (alwaysLabel) should read. */
+  agentId: string;
   requestId: string;
   title: string;
   /** What the in-game card shows (a preview when `cut`). */
@@ -180,19 +182,6 @@ const MAX_ENTRIES = 400;
 /** Game-side budgets (any addon can draw strip frames): quests started, and prompts sent, per 5 minutes. */
 const START_BUDGET = { max: 6, perMs: 300_000 };
 const PROMPT_BUDGET = { max: 20, perMs: 300_000 };
-// Temporary local diagnosis of repeated catch-up cards. Content digests stay in memory only;
-// log records contain opaque identities and equality flags, never transcript text.
-const CATCH_UP_TRACE_LIMIT = 32;
-const CATCH_UP_TRACE_FIELDS = ["kind", "text", "title", "approval", "level"] as const;
-const CATCH_UP_TRACE_SOURCES = new Set(["message", "done", "approval", "approvalResolved", "error", "notice", "note", "send", "caughtUp", "decide", "key", "action", "archive"]);
-type CatchUpTraceState = {
-  entry?: string; revision?: string; marker: string | null;
-  text?: string; normalized?: string; excerpt?: string; fields?: string[];
-};
-const traceDigest = (text: string) => createHash("sha256").update(text).digest("hex");
-const traceToken = (value: unknown) => typeof value === "string" ? traceDigest(value).slice(0, 16) : null;
-const traceIdentity = (s: CatchUpTraceState) => ({ entry: traceToken(s.entry), revision: traceToken(s.revision), marker: traceToken(s.marker) });
-const traceErrorCode = storageCode;
 /** Familiar's own copy of a quest idle this long is dropped at the next start (the conversation
  * itself stays in the agent's own store). */
 const PRUNE_AFTER_MS = 90 * 86_400_000;
@@ -205,23 +194,61 @@ export function mustFork(x: { running?: boolean; open?: boolean; updatedAt: numb
   return !!x.running || (x.open ?? now - x.updatedAt < 10 * 60_000);
 }
 
+/** What a refused approval asks the player to do again in game: press the Approve key (or click,
+ * with click approval on). Undefined: no way in game, only Requests waiting on the PC (NO_KEY). One
+ * wording for the toasts and the card's refusal line (viewmodel refusedLine). */
+export function approveAgain(c: Pick<Config, "approveKey" | "approveByClick">): string | undefined {
+  const key = !!c.approveKey && !!bindingToVk(c.approveKey);
+  return key ? (c.approveByClick ? "press your Approve key, or click Approve again" : "press your Approve key again") : c.approveByClick ? "click Approve again" : undefined;
+}
+export const NO_KEY = "No Approve key is set. Approve it in Requests waiting in Familiar on your PC.";
+/** Pressed (or clicked) before the card had settled on the Glass. */
+export const oneMoment = (c: Pick<Config, "approveKey" | "approveByClick">) => {
+  const again = approveAgain(c);
+  return again ? `One moment - ${again}.` : NO_KEY;
+};
+
+/** A card that carries a typed message (continue a desktop conversation, a held message) has no
+ * request id: its actions name the conversation and a hash of the text the card shows, so a proof
+ * for that card never sends a message that replaced it. */
+const TEXT_CARD_ACTS = new Set(["adoptConfirm", "adoptNew", "adoptRetry", "heldRetry", "heldCopy"]);
+export const textHash = (text: string) => createHash("sha256").update(text).digest("hex").slice(0, 32);
+
 export const FONT_MIN = 0.8,
   FONT_MAX = 1.6;
 
-/** The font scale after "/fam font <arg>": bigger/smaller (10% steps), reset, or a percent
- * (80-160; a factor like 1.2 works too). Undefined: not understood. */
-export function setFontScale(cur: number, arg = ""): number | undefined {
-  const a = arg.trim().toLowerCase();
-  let s: number;
-  if (a === "bigger" || a === "+" || a === "up" || a === "larger") s = cur + 0.1;
-  else if (a === "smaller" || a === "-" || a === "down") s = cur - 0.1;
-  else if (a === "reset" || a === "default") s = 1;
-  else if (/^\d+(\.\d+)?%?$/.test(a)) {
-    const n = parseFloat(a);
-    s = n > 4 ? n / 100 : n;
-  } else return undefined;
-  return Math.round(Math.min(FONT_MAX, Math.max(FONT_MIN, s)) * 10) / 10;
+/** The user settings (the control panel's, a few also from /fam), as settings() takes them. */
+export interface SettingsPatch {
+  fontScale?: number;
+  sound?: boolean;
+  soundVolume?: number;
+  raidWarnings?: boolean;
+  trayNotices?: boolean;
+  quiet?: boolean;
+  /** The panel's one privacy control; privateMode and streamSafe are its two switches. */
+  privacy?: Privacy;
+  privateMode?: boolean;
+  streamSafe?: boolean;
+  launchAtLogin?: boolean;
+  approveByClick?: boolean;
+  inheritAgentConfig?: boolean;
+  defaultMode?: string;
+  approveKey?: string;
 }
+/** What the game may change at all; privacy only towards on (anything in the game can send a key).
+ * Everything else, approveByClick, inheritAgentConfig and Start with Windows above all, is the PC's. */
+const FROM_GAME = new Set<keyof SettingsPatch>(["sound", "soundVolume", "privateMode", "streamSafe"]);
+const ONLY_ON_FROM_GAME: Partial<Record<keyof SettingsPatch, string>> = { privateMode: "Hide names", streamSafe: "Stream-safe" };
+
+/** Privacy on the Glass: names shown, names hidden, or names hidden and replies blurred. */
+export type Privacy = "off" | "names" | "blur";
+export const privacyOf = (c: Pick<Config, "privateMode" | "blurTranscript">): Privacy => (!c.privateMode ? "off" : c.blurTranscript ? "blur" : "names");
+/** What the Glass says when privacy moves to a level, from `was`. */
+const PRIVACY_TOAST: Record<Privacy, (was: Privacy) => string> = {
+  off: (was) => (was === "blur" ? "Stream-safe off." : "Hide names off."),
+  names: (was) => (was === "blur" ? "Replies no longer blurred. Names stay hidden." : "Hide names on: project and quest names are hidden. Replies, approval cards and what you type stay visible."),
+  blur: () => "Stream-safe on: names hidden, replies blurred. Click a blurred reply to read it for 8 seconds.",
+};
 
 /** The six sound cues (round 6); `src/shared/cues.ts` owns the union and the scores. */
 import type { Cue } from "../shared/cues";
@@ -247,8 +274,8 @@ export class Hub {
   /** The one history read per desktop thread; a newer request waits for it, then reads afresh. */
   private historyReads = new Map<string, Promise<void>>();
   private historyGeneration = 0;
-  view: View = { list: "quests", pickAgent: "claude", collapsed: new Set(), expanded: new Set(), native: false, window: {}, show: [], zoneAll: new Set() };
-  /** Desktop/CLI threads the user pinned or hid from the game ("<agent>:<nativeId>"). */
+  view: View = { list: "quests", pickAgent: "claude", collapsed: new Set(), expanded: new Set(), window: {}, show: [], zoneAll: new Set() };
+  /** Desktop/CLI threads pinned (saved from earlier versions) or archived ("<agent>:<nativeId>"). */
   pinned = new Set<string>();
   hidden = new Set<string>();
   /** Of the archived ("hidden") threads, those the agent's own app archived too (so restoring
@@ -258,27 +285,19 @@ export class Hub {
    * drop them from its outbox; also makes a resend of something that did arrive a no-op. */
   acked: string[] = [];
   toasts: Toast[] = [];
-  /** In combat (setCombat): quests' notices and the last speech, released when the fight ends. */
+  /** In combat (setCombat): quests' notices, released when the fight ends. */
   private combat = false;
   private held: Toast[] = [];
-  private heldSpeech?: string;
   private heldPcAlert = false;
   addon: AddonInfo = {};
-  private viewKeys = false; // monotonic for this Hub lifetime; old hellos cannot downgrade safety
   projects: ProjectRegistry;
   private listeners = new Set<(why: string) => void>();
   private toastSeq = 1;
   private saveTimer?: NodeJS.Timeout;
-  private catchUpTrace = new Map<string, CatchUpTraceState>();
-  private catchUpWrites = new Map<string, { attempt: number; marker: string }>();
-  private catchUpTraceLimits = new Set<"monitor" | "write">();
-  private catchUpAttempt = 0;
   /** Opens an agent app's link ("Continue in <app>"); main sets it to the shell. */
   openExternal: (url: string) => void = () => {};
   /** "Suggest a change": opens our pre-filled new-issue form (main gates the URL prefix). */
   openIssue: (url: string) => void = () => {};
-  /** Versions for a suggestion (main: install probe + os.release); never paths or names. */
-  suggestVersions: () => SuggestVersions = () => ({});
   private threadStore: ThreadStore;
   get storage() { return this.threadStore.warning; }
   notice?: { text: string; at: number };
@@ -286,7 +305,6 @@ export class Hub {
    * (accepted, approved) play at once or not at all (see sound()). */
   onSound: (kind: Cue) => void = () => {};
   onConfigChanged: (c: Config) => void = () => {};
-  onSpeak: (text: string) => void = () => {};
   /** A request too long for the in-game card is waiting (main: flash the panel / a tray notice). */
   onCutRequest: () => void = () => {};
   /** A toast was raised (after a fight, for held ones): main's Windows notice (notices.ts). */
@@ -545,7 +563,6 @@ export class Hub {
   }
 
   changed(why: string) {
-    this.traceCatchUpChanges(why);
     for (const h of this.listeners) h(why);
     // Streaming text isn't saved token by token: the finished message, approvals and the turn's
     // end are (each schedules a save), and the user's own words are saved at once.
@@ -553,70 +570,9 @@ export class Hub {
   }
 
   // ---- persistence ----------------------------------------------------------------------------
-  private logCatchUp(record: Record<string, unknown>) {
-    try { this.log("[catch-up] " + JSON.stringify(record)); } catch { /* Diagnosis must not change behavior. */ }
-  }
-
-  private catchUpLimit(scope: "monitor" | "write") {
-    if (this.catchUpTraceLimits.has(scope)) return;
-    this.catchUpTraceLimits.add(scope);
-    this.logCatchUp({ event: "coverage-limit", scope, limit: CATCH_UP_TRACE_LIMIT });
-  }
-
-  private catchUpState(t: Thread | undefined, before?: CatchUpTraceState): CatchUpTraceState {
-    const e = t && attentionEntry(t);
-    const entry = e?.id, revision = e && attentionRevision(e), marker = t?.attentionSeen ?? null;
-    // Identity/marker-only ticks reuse cached content digests, including long completed replies.
-    if (before && before.entry === entry && before.revision === revision) return { ...before, marker };
-    const excerpt = e && (e.kind === "approval" ? e.title ?? e.text : e.text);
-    return { entry, revision, marker, ...(e ? {
-      text: traceDigest(e.text), normalized: traceDigest(e.text.replace(/\s+/g, " ").trim()),
-      excerpt: traceDigest(excerpt!.slice(0, 160) + (excerpt!.length > 160 ? "…" : "")),
-      fields: CATCH_UP_TRACE_FIELDS.map(key => traceDigest(JSON.stringify(e[key]) ?? "undefined")),
-    } : {}) };
-  }
-
-  private monitorCatchUp(t: Thread, source: "load" | "attempt") {
-    if (this.catchUpTrace.has(t.id)) return;
-    if (this.catchUpTrace.size >= CATCH_UP_TRACE_LIMIT) return this.catchUpLimit("monitor");
-    const current = this.catchUpState(t);
-    this.catchUpTrace.set(t.id, current);
-    this.logCatchUp({ event: "baseline", source, thread: traceToken(t.id), ...traceIdentity(current) });
-  }
-
-  private traceCatchUpChanges(source: string) {
-    if (!CATCH_UP_TRACE_SOURCES.has(source)) return; // No delta, render, status or periodic hello noise.
-    for (const [id, before] of this.catchUpTrace) {
-      const t = this.threads.get(id), after = this.catchUpState(t, before);
-      const candidate = before.entry !== after.entry || before.revision !== after.revision;
-      const marker = before.marker !== after.marker;
-      if (candidate || marker) {
-        const comparable = before.entry !== undefined && after.entry !== undefined;
-        this.logCatchUp({ event: "transition", source, thread: traceToken(id),
-          change: candidate ? marker ? "candidate-and-marker" : "candidate" : "marker",
-          before: traceIdentity(before), after: traceIdentity(after),
-          sameText: comparable ? before.text === after.text : null,
-          sameNormalizedText: comparable ? before.normalized === after.normalized : null,
-          sameExcerpt: comparable ? before.excerpt === after.excerpt : null,
-          changedFields: comparable ? CATCH_UP_TRACE_FIELDS.filter((_, i) => before.fields?.[i] !== after.fields?.[i]) : null,
-        });
-        this.catchUpTrace.set(id, after);
-      }
-      if (!t) this.catchUpTrace.delete(id);
-    }
-  }
-
-  private queueCatchUpWrite(thread: string, attempt: number, marker: string) {
-    const previous = this.catchUpWrites.get(thread);
-    if (previous) this.logCatchUp({ event: "superseded", thread: traceToken(thread), attempt: previous.attempt, by: attempt });
-    else if (this.catchUpWrites.size >= CATCH_UP_TRACE_LIMIT) return this.catchUpLimit("write");
-    this.catchUpWrites.set(thread, { attempt, marker });
-  }
-
   private load() {
     try {
       const data = this.threadStore.read();
-      if (this.storage?.level === "error") this.logCatchUp({ event: "load-unavailable", code: this.threadStore.code });
       for (const t of data.threads ?? []) {
         if (isExcluded(t.cwd, this.cfg())) continue;
         if (Date.now() - (t.updatedAt ?? 0) > PRUNE_AFTER_MS) continue;
@@ -647,12 +603,9 @@ export class Hub {
       this.hidden = new Set(data.hidden ?? []);
       this.archivedInSource = new Set(data.archivedInSource ?? []);
       this.acked = Array.isArray(data.acked) ? data.acked.slice(-100) : [];
-      // Baseline is after the existing startup recovery above, not the pre-normalization disk state.
-      for (const t of this.threads.values()) this.monitorCatchUp(t, "load");
     } catch (e) {
       this.threadStore.blockUnexpectedLoad(); // Never replace partial state after an unexpected load failure.
-      this.logCatchUp({ event: "load-unavailable", code: traceErrorCode(e) });
-      /* first run */
+      this.log("[hub] saved quests unavailable: " + storageCode(e));
     }
   }
 
@@ -675,31 +628,18 @@ export class Hub {
         return e;
       }),
     }));
-    const data = {
-      version: 1,
+    const beforeWarning = JSON.stringify(this.storage);
+    const ok = this.threadStore.write({
       threads,
       view: { selected: this.view.selected, collapsed: [...this.view.collapsed], pickAgent: this.view.pickAgent, show: this.view.show },
       pinned: [...this.pinned],
       hidden: [...this.hidden],
       archivedInSource: [...this.archivedInSource],
       acked: this.acked,
-    };
-    const receipts = [...this.catchUpWrites].map(([id, receipt]) => ({ id, ...receipt,
-      written: threads.find(t => t.id === id)?.attentionSeen ?? null, included: threads.some(t => t.id === id),
-    }));
-    const beforeWarning = JSON.stringify(this.storage);
-    const write = this.threadStore.write(data) ? "ok" : "failed";
-    const code = write === "failed" ? this.threadStore.code : undefined;
-    if (write === "failed") this.log("[hub] save failed: " + code);
+    });
+    if (!ok) this.log("[hub] save failed: " + this.threadStore.code);
     if (beforeWarning !== JSON.stringify(this.storage)) for (const h of this.listeners) h("storage");
-    // "ok" means the existing atomic write returned, not fsync or read-back verification.
-    if (receipts.length) this.logCatchUp({ event: "write", write, ...(code ? { code } : {}), receipts: receipts.map(r => ({
-      attempt: r.attempt, thread: traceToken(r.id), acknowledged: traceToken(r.marker),
-      written: traceToken(r.written), snapshot: !r.included ? "omitted" : r.marker === r.written ? "acknowledged" : "changed",
-    })) });
-    if (write === "ok") for (const r of receipts)
-      if (this.catchUpWrites.get(r.id)?.attempt === r.attempt) this.catchUpWrites.delete(r.id);
-    return write === "ok";
+    return ok;
   }
 
   // ---- addon events ---------------------------------------------------------------------------
@@ -725,7 +665,6 @@ export class Hub {
         this.addon.quests = typeof msg.text === "string" ? msg.text.slice(0, 12000) : undefined;
         break;
       case "hello":
-        if (msg.viewKeys === 1) this.viewKeys = true;
         this.addon = { ...this.addon, addon: msg.addon, build: msg.build, iface: msg.iface, char: msg.char, realm: msg.realm, syncAt: msg.syncAt };
         this.versionNotice();
         this.changed("hello");
@@ -739,13 +678,10 @@ export class Hub {
       case "quick":
         this.quick(this.backends[msg.agent] ? String(msg.agent) : this.agentOr(this.cfg().defaultAgent), String(msg.text ?? "")).catch((e) => this.fail(e));
         break;
-      case "key": {
-        const supplied = Object.hasOwn(msg, "view");
-        if (supplied) this.viewKeys = true;
-        const view = supplied ? (msg.view === "full" || msg.view === "focus" ? msg.view : null) : this.viewKeys ? null : "legacy";
-        this.key(String(msg.k), msg.a === undefined ? undefined : String(msg.a), view, proof).catch((e) => this.fail(e));
+      case "key":
+        // The view the key was pressed in travels with it; anything else is no view (decisions refused).
+        this.key(String(msg.k), msg.a === undefined ? undefined : String(msg.a), msg.view === "full" || msg.view === "focus" ? msg.view : null, proof).catch((e) => this.fail(e));
         break;
-      }
     }
   }
 
@@ -756,94 +692,29 @@ export class Hub {
     this.toast(text, "error");
   }
 
-  async key(k: string, arg?: string, view: unknown = "legacy", proof: Proof = NO_PROOF) {
+  /** Keys from the game (buttons, keybinds, /fam). `view` is the view the key was pressed in
+   * ("full" or "focus"); anything else refuses Approve and Deny. */
+  async key(k: string, arg?: string, view: unknown = "full", proof: Proof = NO_PROOF) {
     const t = this.selectedThread();
+    const a = (arg ?? "").trim().toLowerCase();
     switch (k) {
       case "open":
         return this.action({ type: "openInApp" });
-      case "pin":
-        return this.action({ type: "pin", id: this.view.selected });
-      case "hide":
       case "archive":
         return this.action({ type: "archive", id: this.view.selected });
-      case "autostart": {
-        const c = this.cfg();
-        const a = (arg ?? "").toLowerCase();
-        c.launchAtLogin = a === "on" ? true : a === "off" ? false : !c.launchAtLogin;
-        this.onConfigChanged(c);
-        this.toast(c.launchAtLogin ? "Familiar will start with Windows (in the tray)." : "Familiar will no longer start with Windows.", "info");
-        break;
-      }
-      case "font": {
-        const c = this.cfg();
-        const s = setFontScale(c.fontScale, arg);
-        if (s === undefined) return this.toast(`Font size ${Math.round(c.fontScale * 100)}% - /fam font bigger | smaller | reset | 80-160`, "info");
-        c.fontScale = s;
-        this.onConfigChanged(c);
-        this.toast(`Font size: ${Math.round(s * 100)}%`, "info");
-        break;
-      }
-      case "sound":
-      case "warnings": {
-        const c = this.cfg();
-        const field = k === "sound" ? "sound" : "raidWarnings";
-        const a = (arg ?? "").trim().toLowerCase();
-        // "/fam sound 0-100" sets the volume (clamped), not the switch.
-        const volume = k === "sound" && /^\d+%?$/.test(a) ? clampVolume(parseInt(a, 10)) : undefined;
-        if (volume !== undefined) {
-          c.soundVolume = volume;
-          this.onConfigChanged(c);
-          this.toast(`Sound volume ${volume}%`, "info");
-          break;
-        }
-        c[field] = a === "on" ? true : a === "off" ? false : !c[field];
-        this.onConfigChanged(c);
-        if (k === "sound") this.toast(c.sound ? "Sounds on." : "Sounds off.", "info");
-        else this.toast(c.raidWarnings ? "Notices show as raid warnings (middle of the screen)." : "Notices show at the top of the Familiar window.", "info");
-        break;
-      }
-      case "quiet": {
-        const a = (arg ?? "").toLowerCase();
-        this.setQuiet(a === "on" ? true : a === "off" ? false : !this.cfg().quiet);
-        break;
-      }
-      case "private": {
-        const a = (arg ?? "").toLowerCase();
-        this.setPrivate(a === "on" ? true : a === "off" ? false : !this.cfg().privateMode);
-        break;
-      }
-      case "stream": {
-        const a = (arg ?? "").toLowerCase();
-        this.setStream(a === "on" ? true : a === "off" ? false : !this.cfg().blurTranscript);
-        break;
-      }
-      case "tutorial":
-        this.openTutorial();
-        break;
-      case "caughtup": {
-        const t = this.selectedThread();
-        const e = t && attentionEntry(t);
-        if (t && e) this.action({ type: "caughtUp", thread: t.id, entry: e.id, revision: attentionRevision(e) });
-        break;
-      }
-      case "unhide":
       case "unarchive":
         await this.unarchiveAll();
         break;
-      case "hidden":
-      case "archived":
-        this.toast(this.hidden.size ? `${this.hidden.size} archived thread${this.hidden.size > 1 ? "s" : ""} - /fam unarchive restores them.` : "Nothing is archived.", "info");
+      // "/fam sound 0-100" sets the volume, not the switch; a bare word toggles.
+      case "sound":
+        return void this.settings(/^\d+%?$/.test(a) ? { soundVolume: parseInt(a, 10) } : { sound: a === "on" || (a !== "off" && !this.cfg().sound) }, "game");
+      case "stream":
+        return void this.settings({ streamSafe: a === "on" || (a !== "off" && !this.cfg().blurTranscript) }, "game");
+      case "tutorial":
+        this.openTutorial();
         break;
-      case "suggest": {
-        // Only opens a browser page the user must submit there, so no physical corroboration.
-        const url = suggestionUrl(arg ?? "", this.suggestVersions());
-        if (!url) return this.toast("Usage: /fam suggest <your idea> (up to 500 characters)", "info");
-        this.openIssue(url);
-        this.toast(SUGGEST_TOAST, "info");
-        break;
-      }
       case "show": {
-        const want = (arg ?? "").toLowerCase().split(/[\s,]+/).filter(Boolean);
+        const want = a.split(/[\s,]+/).filter(Boolean);
         const kinds = Object.keys(this.backends) as AgentKind[];
         const pick = kinds.filter((x) => want.includes(x));
         if (want.length && !want.includes("all") && !pick.length) return this.toast(`Show what? ${["all", ...kinds].join(", ")}`, "info");
@@ -854,13 +725,11 @@ export class Hub {
       case "newChat":
         this.beginChatDraft();
         break;
+      // "+ Quest": the addon sends newClaude / newCodex; "new" with a familiar's id as its argument works too.
+      case "new":
       case "newClaude":
       case "newCodex":
-        if (!this.enabled(k === "newClaude" ? "claude" : "codex"))
-          return this.toast(`${agentName(k === "newClaude" ? "claude" : "codex")} is switched off in Familiar's control panel.`, "info");
-        this.view.list = "pick";
-        this.view.pickAgent = k === "newClaude" ? "claude" : "codex";
-        this.view.draft = undefined;
+        this.newQuest(k === "new" ? arg ?? "" : k === "newClaude" ? "claude" : "codex");
         break;
       case "back":
         if (this.view.picker) {
@@ -871,39 +740,40 @@ export class Hub {
         this.view.draft = undefined;
         break;
       case "approve":
-      case "deny":
-      case "always": {
-        if (view !== "legacy" && view !== "full" && view !== "focus") {
-          const shown = this.pendingApproval(true);
+      case "deny": {
+        if (view !== "full" && view !== "focus") {
+          const shown = this.pendingApproval();
           if (typeof shown === "object") refuse(shown.entry, "view");
           return this.toast("Unknown view context. Use Full view and review the request before deciding.", "info");
         }
-        // Approving needs a real click on the button or the registered Approve key; denying never does.
-        if (k !== "deny" && !proof.ok) {
-          this.log(`[hub] ${k} refused: ${proof.why ?? "no proof"}`);
-          // The card the key would have acted on (not a desktop-thread or held-message prompt).
-          const prompting = (this.view.confirm && this.view.selected === this.view.confirm.extId) || (this.view.held && this.view.selected === this.view.held.threadId);
-          const target = prompting ? undefined : this.pendingApproval(view === "focus");
-          if (typeof target === "object") refuse(target.entry, "proof");
-          return this.toast("Not approved. Click the request on the Glass, or press the Approve key set in Familiar's control panel.", "info");
+        // What the key acts on: a desktop-thread or held-message prompt, else a pending request.
+        const confirming = !!this.view.confirm && this.view.selected === this.view.confirm.extId;
+        const holding = !confirming && !!this.view.held && this.view.selected === this.view.held.threadId;
+        const target = confirming || holding ? undefined : this.pendingApproval();
+        // Approving needs main's proof for exactly this card (the Approve key, pressed while the
+        // Glass showed it); denying never needs any.
+        if (k === "approve" && (confirming || holding || typeof target === "object")) {
+          const card = typeof target === "object" ? target : undefined;
+          const want = confirming ? this.textCardAct("adoptConfirm") : holding ? this.textCardAct("heldRetry") : { type: "decide", thread: card!.thread.id, requestId: card!.entry.requestId, decision: "allow" };
+          if (!proofCovers(proof, actKey(want))) {
+            this.log(`[hub] approve refused: ${proof.why ?? "no proof for this request"}`);
+            const soon = proof.why === TOO_SOON;
+            if (card) refuse(card.entry, soon ? "fresh" : "proof");
+            if (soon) return this.toast(oneMoment(this.cfg()), "info");
+            return this.toast(approveAgain(this.cfg()) ? "Not approved. Open the request on the Glass, read it, then press your Approve key (set in Familiar on your PC)." : NO_KEY, "info");
+          }
         }
         // Debounce: a double-press must not approve the next queued request unseen.
         if (Date.now() - this.lastDecisionAt < 900) return;
-        if (this.view.confirm && this.view.selected === this.view.confirm.extId) {
+        if (confirming || holding) {
           this.lastDecisionAt = Date.now();
-          this.action({ type: k === "deny" ? "adoptCancel" : "adoptConfirm" }, proof);
+          // Verified above for exactly this prompt (Cancel needs nothing).
+          this.action({ type: confirming ? (k === "deny" ? "adoptCancel" : "adoptConfirm") : k === "deny" ? "heldCancel" : "heldRetry" }, TRUSTED);
           return;
         }
-        if (this.view.held && this.view.selected === this.view.held.threadId) {
-          this.lastDecisionAt = Date.now();
-          this.action({ type: k === "deny" ? "heldCancel" : "heldRetry" }, proof);
-          return;
-        }
-        const target = this.pendingApproval(view === "focus");
-        if (target === "elsewhere") return this.toast("Another conversation needs review. Use Full view to open its request before deciding.", "info");
-        if (target === "ambiguous") return this.toast("Several quests are waiting for approval - open one to choose.", "info");
+        if (target === "elsewhere") return this.toast("Another quest needs review. Open its request on the Glass before deciding.", "info");
         if (!target) return this.toast("Nothing is waiting for approval.", "info");
-        this.decide(target.thread.id, target.entry.requestId!, k === "approve" ? "allow" : k === "deny" ? "deny" : "allowAlways");
+        this.decide(target.thread.id, target.entry.requestId!, k === "approve" ? "allow" : "deny");
         return;
       }
       case "stop":
@@ -914,32 +784,17 @@ export class Hub {
           this.note(t, STOPPING_NOTE);
         }
         break;
-      case "mode": {
+      case "mode":
         if (this.view.draft?.chat || (!this.view.draft && t?.kind === "chat"))
           return this.toast("Chats have no permission modes: they can only search the web.", "info");
         if (!this.view.draft && t?.kind === "tutorial") return this.toast(TUTORIAL_NO_MODE, "info");
-        // The game only cycles Ask first <-> Plan only; from Accept edits or Auto the key goes to Ask.
-        const target = this.view.draft ?? t;
-        if (!target) return this.toast("Select a quest first.", "info");
-        if (!proof.ok) {
-          this.log(`[hub] mode refused: ${proof.why ?? "no proof"}`);
-          return this.toast("Mode changes need a click on the Mode button.", "info");
-        }
-        const fromPanelOnly = !GAME_MODES.includes(target.mode);
-        const mode: Mode = fromPanelOnly ? "ask" : nextOf(GAME_MODES, target.mode);
-        target.mode = mode;
-        if (t && !this.view.draft) await this.backends[t.agent].setMode(t.id, mode);
-        this.toast(fromPanelOnly ? "Switched to Ask first. Accept edits and Auto are set in the control panel." : `Mode: ${MODE_LABEL[mode]}`, "info");
-        break;
-      }
+        // Never from the game: the control panel sets the open quest's mode (setSelectedMode).
+        return this.toast("Modes are changed in Familiar on your PC, not from the game.", "info");
       case "model":
         // Opens (or closes) the model list in the details pane; a click there picks one.
         if (!this.view.draft && !t) return this.toast("Select a quest or chat first.", "info");
         if (!this.view.draft && t?.kind === "tutorial") return this.toast(TUTORIAL_NO_MODE, "info");
         this.view.picker = !this.view.picker;
-        break;
-      case "native":
-        this.view.native = !this.view.native;
         break;
       case "tools": {
         const order = ["compact", "full", "hidden"] as const;
@@ -957,17 +812,47 @@ export class Hub {
     this.changed("key");
   }
 
+  /** A message card's action as the Glass paints it: the conversation and a hash of the text it shows. */
+  textCardAct(type: string): { type: string; thread?: string; hash?: string } {
+    const c = this.view.confirm, h = this.view.held;
+    const p = type.startsWith("held") ? h && { thread: h.threadId, text: h.text } : c && { thread: c.extId, text: c.text };
+    return p ? { type, thread: p.thread, hash: textHash(p.text) } : { type };
+  }
+
+  /** The new-quest folder picker for a familiar that is set up and switched on. */
+  private newQuest(agent: string) {
+    if (!Object.hasOwn(this.backends, agent)) return this.toast("That familiar isn't set up in Familiar on your PC.", "info");
+    if (!this.enabled(agent)) return this.toast(`${agentName(agent)} is switched off in Familiar's control panel.`, "info");
+    this.view.list = "pick";
+    this.view.pickAgent = agent;
+    this.view.draft = undefined;
+  }
+
   // ---- overlay actions (hit-tested by the renderer) -------------------------------------------
-  /** Overlay actions that grant an agent something: only with proof of a real click on the Glass.
-   * Denying a card ("decide" with deny / denyAndStop) is the fail-safe direction and never needs it. */
+  /** Overlay actions that grant an agent something: only with main's proof for exactly this action
+   * (a real release inside the button the Glass painted for it; physical.ts). Denying a card
+   * ("decide" with deny / denyAndStop) is the fail-safe direction and never needs it. */
   private static CORROBORATED_ACTIONS = new Set(["decide", "answer", "adoptConfirm", "adoptNew", "adoptRetry", "heldRetry", "heldCopy"]);
 
   action(a: { type: string; [k: string]: any }, proof: Proof = NO_PROOF) {
     const denying = a.type === "decide" && (a.decision === "deny" || a.decision === "denyAndStop");
-    if (Hub.CORROBORATED_ACTIONS.has(a.type) && !denying && !proof.ok) {
-      this.log(`[hub] action ${a.type} refused: ${proof.why ?? "no proof"}`);
-      if (typeof a.requestId === "string") refuse(this.threads.get(String(a.thread))?.entries.find((x) => x.requestId === a.requestId && x.approval === "pending"), "proof");
-      return this.toast("That click could not be matched to your mouse. Click it again.", "info");
+    if (Hub.CORROBORATED_ACTIONS.has(a.type) && !denying) {
+      const card = typeof a.requestId === "string" ? this.threads.get(String(a.thread))?.entries.find((x) => x.requestId === a.requestId && x.approval === "pending") : undefined;
+      if (a.type === "decide" && a.decision !== "allow") return this.toast(ALWAYS_ON_PC, "info");
+      // Approving by click is opt-in (approveByClick); the Approve key reaches decide() through key().
+      if (a.type === "decide" && proof !== TRUSTED && !this.cfg().approveByClick) {
+        refuse(card, "proof");
+        return this.toast(approveAgain(this.cfg())
+          ? "Press your Approve key to approve. Approving by click can be switched on in Familiar on your PC."
+          : `${NO_KEY} Approving by click can be switched on there.`, "info");
+      }
+      // A message card is keyed by what it shows now: a proof for text it no longer shows covers nothing.
+      if (!proofCovers(proof, actKey(TEXT_CARD_ACTS.has(a.type) ? this.textCardAct(a.type) : a))) {
+        this.log(`[hub] action ${a.type} refused: ${proof.why ?? "no proof for this action"}`);
+        const soon = proof.why === TOO_SOON;
+        refuse(card, soon ? "fresh" : "proof");
+        return this.toast(soon ? oneMoment(this.cfg()) : "That click could not be matched to your mouse on that button. Move onto it and click again.", "info");
+      }
     }
     switch (a.type) {
       case "select": {
@@ -1012,29 +897,13 @@ export class Hub {
         else this.view.expanded.add(a.id);
         break; // Read-only, including after a request expires or is resolved.
       }
-      case "quiet":
-        if (typeof a.on === "boolean") this.setQuiet(a.on);
-        return;
       case "caughtUp": {
+        // Only for the note as it is now: a newer reply or an edit since keeps it up.
         const t = this.threads.get(String(a.thread));
         const e = t && attentionEntry(t);
-        if (t) this.monitorCatchUp(t, "attempt");
-        const attempt = ++this.catchUpAttempt, before = t?.attentionSeen;
-        const revision = e && attentionRevision(e);
-        const result = !t ? "missing-thread" : !e ? "no-candidate" : e.approval === "pending" ? "pending" :
-          e.id !== a.entry ? "stale-entry" : a.revision !== revision ? "stale-revision" : before === a.revision ? "already-seen" : "accepted";
-        if (t && e && e.id === a.entry && a.revision === attentionRevision(e) && e.approval !== "pending") {
-          t.attentionSeen = a.revision;
-          this.queueCatchUpWrite(t.id, attempt, a.revision);
-          this.logCatchUp({ event: "attempt", attempt, result, thread: traceToken(a.thread),
-            requestedEntry: traceToken(a.entry), currentEntry: traceToken(e.id), requestedRevision: traceToken(a.revision), currentRevision: traceToken(revision),
-            before: traceToken(before), after: traceToken(t.attentionSeen) });
-          this.changed("caughtUp");
-        } else {
-          this.logCatchUp({ event: "attempt", attempt, result, thread: traceToken(a.thread),
-            requestedEntry: traceToken(a.entry), currentEntry: traceToken(e?.id), requestedRevision: traceToken(a.revision), currentRevision: traceToken(revision),
-            before: traceToken(before), after: traceToken(t?.attentionSeen) });
-        }
+        if (!t || !e || e.id !== a.entry || a.revision !== attentionRevision(e) || e.approval === "pending") return;
+        t.attentionSeen = a.revision;
+        this.changed("caughtUp");
         return;
       }
       case "stop": {
@@ -1058,15 +927,13 @@ export class Hub {
       case "tutorial": // the welcome page's "Replay A Familiar Face"
         this.openTutorial();
         break;
-      case "start": // the welcome page's + Claude / + Codex: the same folder picker as the toolbar keys
-        if (a.agent !== "claude" && a.agent !== "codex") return;
-        this.key(a.agent === "claude" ? "newClaude" : "newCodex").catch((e) => this.fail(e));
-        return;
+      case "start": // the welcome page's + Claude / + Codex: the same folder picker as "+ Quest"
+        this.newQuest(String(a.agent));
+        break;
       case "agent":
         this.view.pickAgent = a.agent;
         if (this.view.draft) this.view.draft.agent = a.agent;
         break;
-      case "abandon":
       case "archive":
         this.archive(String(a.id ?? "")).catch((e) => this.fail(e));
         return;
@@ -1108,7 +975,7 @@ export class Hub {
         if (this.backends[x.agent].heldElsewhere?.(x.nativeId) !== false) return this.toast(stillHeld(x.agent), "info");
         x.open = false;
         x.running = false;
-        this.action({ type: "adoptConfirm" }, proof);
+        this.action({ type: "adoptConfirm" }, TRUSTED); // this Retry was verified above
         return;
       }
       case "heldRetry":
@@ -1165,26 +1032,6 @@ export class Hub {
         this.loadExtHistory(id, history?.entries ?? this.view.window[id] ?? 150);
         break;
       }
-      case "pin": {
-        const id = String(a.id ?? "");
-        const x = this.external.get(id);
-        const own = this.threads.get(id);
-        const ref = x ? `${x.agent}:${x.nativeId}` : own?.nativeId ? `${own.agent}:${own.nativeId}` : undefined;
-        if (!ref) {
-          this.toast("Select a desktop thread to pin.", "info");
-          break;
-        }
-        if (a.type === "pin") {
-          if (x?.starred) this.toast("Starred in the desktop app - it stays listed.", "info");
-          else if (this.pinned.delete(ref)) this.toast(`Unpinned: ${x?.title ?? own?.title}`, "info", undefined, "Unpinned.");
-          else {
-            this.pinned.add(ref);
-            this.toast(`Pinned: ${x?.title ?? own?.title} - listed even when old`, "info", undefined, "Pinned - listed even when old.");
-          }
-        }
-        if (x) this.refreshExternal().catch(() => {});
-        break;
-      }
       case "pickModel":
         this.pickModel(String(a.agent), String(a.model));
         break;
@@ -1200,9 +1047,6 @@ export class Hub {
         break;
       case "zoneMore":
         this.view.zoneAll.add(String(a.key));
-        break;
-      case "dismissToast":
-        this.toasts = this.toasts.filter((x) => x.id !== a.id);
         break;
     }
     this.changed("action");
@@ -1362,17 +1206,15 @@ export class Hub {
     return this.view.selected ? this.threads.get(this.view.selected) : undefined;
   }
 
-  /** The request Approve/Deny/Always keys act on: the selected quest's oldest pending request, or
-   * the only pending request anywhere (what the toast showed). Several elsewhere = ambiguous. */
-  private pendingApproval(selectedOnly = false): { thread: Thread; entry: Entry } | "ambiguous" | "elsewhere" | undefined {
-    const firstPending = (t: Thread) => t.entries.find((x) => x.kind === "approval" && x.approval === "pending");
+  /** The request the Approve and Deny keys act on: the selected quest's oldest pending request, the
+   * one pinned on the Glass. Never one elsewhere: approving needs its card painted, and that is only
+   * the selected quest's. */
+  private pendingApproval(): { thread: Thread; entry: Entry } | "elsewhere" | undefined {
+    const pending = (t: Thread) => t.entries.find((x) => x.kind === "approval" && x.approval === "pending");
     const sel = this.selectedThread();
-    const own = sel && firstPending(sel);
+    const own = sel && pending(sel);
     if (sel && own) return { thread: sel, entry: own };
-    const all = [...this.threads.values()].flatMap((t) => t.entries.filter((x) => x.kind === "approval" && x.approval === "pending").map((entry) => ({ thread: t, entry })));
-    if (selectedOnly && all.length) return "elsewhere";
-    if (all.length === 1) return all[0];
-    return all.length ? "ambiguous" : undefined;
+    return [...this.threads.values()].some((t) => pending(t)) ? "elsewhere" : undefined;
   }
 
   private lastDecisionAt = 0;
@@ -1385,6 +1227,13 @@ export class Hub {
     const e = t?.entries.find((x) => x.requestId === requestId && x.approval === "pending");
     if (!t || !e) return { ok: false, why: "no longer pending" };
     const grants = d !== "deny" && d !== "denyAndStop";
+    // "Always" is a standing grant: only from the control panel, and only where the card offers it
+    // (never on a plan card, where it would move the quest to Accept edits).
+    if (d === "allowAlways" && origin !== "panel") {
+      this.toast(ALWAYS_ON_PC, "info");
+      return { ok: false, why: "panel" };
+    }
+    if (d === "allowAlways" && !e.canAlways) d = "allow";
     if (grants && e.cut && origin !== "panel") {
       this.log("[hub] approve refused: cut request");
       refuse(e, "cut");
@@ -1393,7 +1242,7 @@ export class Hub {
     }
     if (grants && Date.now() - e.at < this.minCardAgeMs) {
       refuse(e, "fresh");
-      this.toast("That request just appeared. Read it, then decide.", "info");
+      this.toast(origin === "game" ? oneMoment(this.cfg()) : "That request just appeared. Read it, then decide.", "info");
       return { ok: false, why: "fresh" };
     }
     settle(e, d === "allow" ? "approved" : d === "allowAlways" ? "always" : "denied");
@@ -1414,9 +1263,16 @@ export class Hub {
     return [...this.threads.values()].flatMap((t) =>
       t.entries
         .filter((e) => e.kind === "approval" && e.approval === "pending" && e.requestId && !e.options?.length)
-        .map((e) => ({ thread: t.id, questTitle: t.title, project: this.projectName(t), agent: agentName(t.agent), requestId: e.requestId!,
+        .map((e) => ({ thread: t.id, questTitle: t.title, project: this.projectName(t), agent: agentName(t.agent), agentId: t.agent, requestId: e.requestId!,
           title: e.title ?? "", detail: e.text, ...(e.cut ? { full: e.full ?? e.text } : {}), cut: !!e.cut, canAlways: !!e.canAlways, at: e.at })),
     );
+  }
+
+  /** "Copy reply": one reply of a Familiar quest as the Glass let the player read it (visibleText),
+   * and whether it is still being written. undefined: no such quest or entry, or not a reply. */
+  replyText(threadId: string, entryId: string): { text: string; streaming: boolean } | undefined {
+    const e = this.threads.get(threadId)?.entries.find((x) => x.id === entryId && x.kind === "assistant");
+    return e && { text: visibleText(e.text), streaming: !!e.streaming };
   }
 
   // ---- sending --------------------------------------------------------------------------------
@@ -1430,12 +1286,16 @@ export class Hub {
       if (/^[a-z]:[\\/]/i.test(p) || p.startsWith("~")) {
         let abs = path.resolve(p.replace(/^~/, process.env.USERPROFILE ?? "~"));
         if (isExcluded(abs, this.cfg())) return this.toast("That folder is on the exclusion list.", "error");
+        // From the game, only inside folders you added on your PC or zones Familiar already knows.
+        // (A zone organises work; it does not confine the agent.)
+        if (!this.inKnownFolder(abs)) return this.toast(NOT_A_PROJECT_FOLDER, "info");
         if (!fs.existsSync(abs)) {
           if (!mk) return this.toast(`No such folder. Type "mkdir ${abs}" to create it.`, "info");
           fs.mkdirSync(abs, { recursive: true });
         }
         abs = realPath(abs); // junctions / 8.3 names must not slip past the boundary list
         if (isExcluded(abs, this.cfg())) return this.toast("That folder is on the exclusion list.", "error");
+        if (!this.inKnownFolder(abs)) return this.toast(NOT_A_PROJECT_FOLDER, "info");
         const proj = this.projects.add(abs, Date.now());
         if (proj) this.beginDraft(this.agentOr(this.view.pickAgent), proj);
         this.changed("draft");
@@ -1467,7 +1327,7 @@ export class Hub {
       return;
     }
     const t = this.selectedThread();
-    if (!t) return this.toast("Select a quest, or start one with + Claude / + Codex (or + Chat).", "info");
+    if (!t) return this.toast("Select a quest, or start one with + Quest (or + Chat).", "info");
     await this.sendTo(t, text, ctx);
   }
 
@@ -1502,6 +1362,40 @@ export class Hub {
     t.kind = "chat";
     t.projectKey = CHATS_KEY;
     return t;
+  }
+
+  /** Is `abs` a folder you added in the control panel (or below one), or a known zone (or below
+   * one)? Links are resolved through the deepest part that exists, so a junction cannot lead out. */
+  private inKnownFolder(abs: string): boolean {
+    let real = path.resolve(abs), rest = "";
+    while (!fs.existsSync(real) && path.dirname(real) !== real) {
+      rest = path.join(path.basename(real), rest);
+      real = path.dirname(real);
+    }
+    const n = normPath(path.join(realPath(real), rest));
+    const c = this.cfg();
+    return [...c.projectRoots, ...c.projects, ...this.projects.list().map((p) => p.path)]
+      .map((b) => normPath(realPath(b)))
+      .some((b) => n === b || n.startsWith(b + "\\"));
+  }
+
+  /** The control panel sets the open quest's mode; the game never does. A quest still being
+   * started has no mode of its own (it takes the default): the panel names the open quest, so
+   * never change a different one behind it. `thread`: the quest the panel showed; another one open
+   * now is refused. */
+  setSelectedMode(mode: Mode, thread: string): { ok: boolean; why?: string } {
+    const t = this.selectedThread();
+    if (!MODES.includes(mode)) return { ok: false, why: "Unknown mode." };
+    if (this.view.draft) return { ok: false, why: "Send the new quest's first message, then set its mode here." };
+    if (!t) return { ok: false, why: "Open a quest in the game first." };
+    if (t.id !== thread) return { ok: false, why: "Another quest is open in the game now. Check the quest named here, then choose again." };
+    if (t.kind === "chat") return { ok: false, why: "Chats have no permission modes: they can only search the web." };
+    if (t.kind === "tutorial") return { ok: false, why: TUTORIAL_NO_MODE };
+    t.mode = mode;
+    this.backends[t.agent].setMode(t.id, mode).catch((e) => this.fail(e));
+    this.toast(`Mode: ${MODE_LABEL[mode]}`, "info");
+    this.changed("mode");
+    return { ok: true };
   }
 
   /** Fuzzy zone match: exact name, then prefix, then substring (case-insensitive). */
@@ -1701,6 +1595,7 @@ export class Hub {
               model: t.model,
               resumeNativeId: t.nativeId,
               fork: !!t.fork,
+              inheritConfig: this.cfg().inheritAgentConfig === true,
               chat: t.kind === "chat" ? { instructions: CHAT_INSTRUCTIONS, effort: this.cfg().chatEffort || undefined } : undefined,
             })
             .finally(() => this.opening.delete(t.id));
@@ -1808,7 +1703,7 @@ export class Hub {
         {
           // A cut request is approved only on the PC: the toast says where, and main makes the panel easy to reach.
           const onPc = e.cut ? ` · ${CUT_TOAST}` : "";
-          this.toast(`Needs approval · ${agentName(t.agent)} · ${this.projectName(t)} · ${e.title}${onPc}`, "approval", t.id, `Needs approval · ${agentName(t.agent)}${onPc}`, e.requestId);
+          this.toast(`${NEEDS_YOU} · ${agentName(t.agent)} · ${this.projectName(t)} · ${e.title}${onPc}`, "approval", t.id, `${NEEDS_YOU} · ${agentName(t.agent)}${onPc}`, e.requestId);
         }
         this.sound("approval");
         if (e.cut) this.alertPc();
@@ -1853,14 +1748,12 @@ export class Hub {
             this.note(t, STOPPED_NOTE);
             this.markCaughtUp(t); // the player stopped it; nothing to catch up on
           } else {
-            const last = [...t.entries].reverse().find((x) => x.kind === "assistant");
             if (this.view.selected !== t.id) t.unread = true;
             // The moment, not a receipt: no agent or zone ("Answer ready" for a chat); a quest's counts
             // and cost go in the rewards line under it (rewards.ts).
             const moment = t.kind === "chat" ? "Answer ready" : "Quest Complete";
             this.toast(`${moment} · ${t.title}`, "done", t.id, moment, undefined, rewards(t));
             if (!this.cfg().quiet) this.sound(t.kind === "chat" ? "reply" : "done");
-            if (!this.cfg().quiet && !this.cfg().privateMode && this.cfg().speak && last) this.speak(`${agentName(t.agent)} finished in ${this.projectName(t)}. ${firstSentence(last.text, 200)}`);
           }
         }
         break;
@@ -1915,11 +1808,6 @@ export class Hub {
     if (!this.combat) this.onSound(kind);
   }
 
-  private speak(text: string) {
-    if (this.combat) this.heldSpeech = text;
-    else this.onSpeak(text);
-  }
-
   /** A cut request arrived: main surfaces the control panel on the PC (after a fight, like the rest). */
   private alertPc() {
     if (this.combat) this.heldPcAlert = true;
@@ -1927,7 +1815,7 @@ export class Hub {
   }
 
   /** The player's character is in combat (the addon's layout.combat): quests' finish, approval and
-   * failure notices, chimes and speech wait until it ends, then come back once (several as one
+   * failure notices and chimes wait until it ends, then come back once (several as one
    * summary line plus each approval). Cards, the tracker, markers and the Approve glow keep
    * updating; nothing but a layout saying combat ended releases them. */
   setCombat(on: boolean) {
@@ -1935,10 +1823,8 @@ export class Hub {
     this.combat = on;
     if (on) return;
     const held = this.held.map((x) => ({ ...x, at: Date.now() }));
-    const speech = this.heldSpeech;
     const pc = this.heldPcAlert;
     this.held = [];
-    this.heldSpeech = undefined;
     this.heldPcAlert = false;
     if (pc && this.pendingRequests().some((r) => r.cut)) this.onCutRequest();
     if (!held.length) return;
@@ -1947,57 +1833,73 @@ export class Hub {
     // The cue: approval > error > done, and a chat's answer keeps its own (reply) when only answers were held.
     const answers = held.every((x) => x.kind !== "done" || this.threads.get(x.threadId ?? "")?.kind === "chat");
     const cue: Cue = kind === "done" && answers ? "reply" : kind;
-    if (held.length === 1) {
-      this.show(held[0]);
-      if (speech) this.onSpeak(speech);
-    } else {
+    if (held.length === 1) this.show(held[0]);
+    else {
       const [done, asks, failed] = [count("done"), count("approval"), count("error")];
       const text = "While you fought: " + [
         done && `${done} quest${done > 1 ? "s" : ""} finished`,
-        asks && `${asks} need${asks > 1 ? "" : "s"} approval`,
+        asks && needYou(asks),
         failed && `${failed} failed`,
       ].filter(Boolean).join(" · ");
       for (const x of held) if (x.kind === "approval") this.show(x); // each keeps its 60 s
       this.show({ id: this.toastSeq++, text, kind, at: Date.now(), generic: text }); // names nothing
-      if (speech) this.onSpeak(text.replace(/ · /g, ", "));
     }
     this.onSound(cue);
     this.changed("toast");
   }
 
-  setQuiet(on: boolean) {
-    const cfg = this.cfg();
-    if (cfg.quiet === on) return;
-    cfg.quiet = on;
-    if (on) this.dropToasts((t) => t.kind === "done");
-    this.onConfigChanged(cfg);
-    this.changed("quiet");
+  /** The one write path for user settings, from the control panel ("panel") or the game ("game":
+   * /fam sound and stream). Each value is checked and clamped, then the config is saved and
+   * announced once. The game changes only what FROM_GAME lists, privacy only towards
+   * on. Returns the names refused (each also told in a toast). */
+  settings(patch: SettingsPatch, from: DecisionOrigin = "panel"): (keyof SettingsPatch)[] {
+    const c = this.cfg();
+    const p = { ...patch };
+    const refused = (Object.keys(p) as (keyof SettingsPatch)[]).filter(
+      (k) => p[k] !== undefined && from === "game" && (!FROM_GAME.has(k) || (!!ONLY_ON_FROM_GAME[k] && p[k] !== true)),
+    );
+    for (const k of refused) delete p[k];
+    const before = JSON.stringify(c);
+    const said: string[] = []; // told in game only: the panel shows its own confirmation
+    const bool = (v: unknown): v is boolean => typeof v === "boolean";
+    if (typeof p.fontScale === "number" && Number.isFinite(p.fontScale)) c.fontScale = Math.min(FONT_MAX, Math.max(FONT_MIN, p.fontScale));
+    if (bool(p.sound)) said.push((c.sound = p.sound) ? "Sounds on." : "Sounds off.");
+    const volume = clampVolume(p.soundVolume);
+    if (volume !== undefined) said.push(`Sound volume ${(c.soundVolume = volume)}%`);
+    if (bool(p.raidWarnings)) c.raidWarnings = p.raidWarnings;
+    if (bool(p.trayNotices)) c.trayNotices = p.trayNotices;
+    if (bool(p.launchAtLogin)) said.push((c.launchAtLogin = p.launchAtLogin) ? "Familiar will start with Windows (in the tray)." : "Familiar will no longer start with Windows.");
+    // Both off by default; config.ts says what each risks. inheritAgentConfig applies to quests opened from now on.
+    if (bool(p.approveByClick)) c.approveByClick = p.approveByClick;
+    if (bool(p.inheritAgentConfig)) c.inheritAgentConfig = p.inheritAgentConfig;
+    if (bool(p.quiet) && (c.quiet = p.quiet)) this.dropToasts((t) => t.kind === "done");
+    // Privacy, one level of three: the render model uses generic names (privateModel in
+    // viewmodel.ts), "blur" also blurs replies; the hub and threads.json keep the real data. Hide
+    // names off ends Stream-safe too; Stream-safe is both switches together.
+    const was = privacyOf(c);
+    let to = typeof p.privacy === "string" && Object.hasOwn(PRIVACY_TOAST, p.privacy) ? p.privacy : was;
+    if (bool(p.privateMode)) to = !p.privateMode ? "off" : to === "off" ? "names" : to;
+    if (bool(p.streamSafe)) to = p.streamSafe ? "blur" : "off";
+    if (to !== was) {
+      c.privateMode = to !== "off";
+      c.blurTranscript = to === "blur";
+      this.toast(PRIVACY_TOAST[to](was), "info");
+    }
+    if (MODES.includes(p.defaultMode as Mode)) c.defaultMode = p.defaultMode as Mode; // never a bypass mode: MODES has none
+    // Only keys Familiar can check on the keyboard; anything else clears it (keybind approvals refused).
+    if (typeof p.approveKey === "string") c.approveKey = bindingToVk(p.approveKey) ? p.approveKey.trim().toUpperCase() : "";
+    for (const k of refused) this.toast(ONLY_ON_FROM_GAME[k] ? OFF_ON_PC(ONLY_ON_FROM_GAME[k]!) : "That setting is changed in Familiar on your PC.", "info");
+    if (JSON.stringify(c) !== before) {
+      this.onConfigChanged(c);
+      this.changed("config");
+    }
+    if (from === "game") for (const s of said) this.toast(s, "info");
+    return refused;
   }
-
-  /** Private (streamer) mode: the render model and FamiliarSync snapshot use generic names (see
-   * privateModel in viewmodel.ts); the hub and threads.json keep the real data. */
-  setPrivate(on: boolean) {
-    const cfg = this.cfg();
-    if (!!cfg.privateMode === on) return;
-    cfg.privateMode = on;
-    if (!on) cfg.blurTranscript = false; // names shown again: no longer Stream-safe
-    this.onConfigChanged(cfg);
-    this.toast(on ? "Hide names on: project and quest names are hidden. Replies, approval cards and what you type stay visible." : "Hide names off.", "info");
-    this.changed("config");
-  }
-
-  /** Stream-safe: Hide names, plus replies blurred on the Glass until clicked, plus no speech. Off
-   * shows names and text again; speech stays off (turning it on is the player's own choice). */
-  setStream(on: boolean) {
-    const cfg = this.cfg();
-    if (!!cfg.privateMode === on && !!cfg.blurTranscript === on && !(on && cfg.speak)) return;
-    cfg.privateMode = on;
-    cfg.blurTranscript = on;
-    if (on) cfg.speak = false;
-    this.onConfigChanged(cfg);
-    this.toast(on ? "Stream-safe on: names hidden, replies blurred. Click a blurred reply to read it for 8 seconds." : "Stream-safe off.", "info");
-    this.changed("config");
-  }
+  /** Control panel shorthands for settings(); main may call settings() directly instead. */
+  setQuiet(on: boolean) { this.settings({ quiet: on }); }
+  setPrivate(on: boolean) { this.settings({ privateMode: on }); }
+  setStream(on: boolean) { this.settings({ streamSafe: on }); }
 
   private pruneToasts() {
     const now = Date.now();
@@ -2034,21 +1936,13 @@ function realPath(p: string): string {
   }
 }
 
-function nextOf<T>(list: T[], cur: T): T {
-  const i = list.indexOf(cur);
-  return list[(i + 1) % list.length];
-}
+const OFF_ON_PC = (name: string) => `${name} is turned off in Familiar on your PC, not from the game.`;
+const ALWAYS_ON_PC = "Always can't be given from the game. Use Requests waiting in Familiar on your PC.";
+const NOT_A_PROJECT_FOLDER = "That folder isn't one of your project folders. Add it in Familiar on your PC (Projects) first.";
 
 function titleFrom(text: string) {
   const line = text.split(/\r?\n/).find((l) => l.trim()) ?? text;
   return line.trim().length > 60 ? line.trim().slice(0, 57) + "…" : line.trim();
-}
-
-export function firstSentence(text: string, max = 90) {
-  const clean = text.replace(/[#*_`>]/g, "").replace(/\s+/g, " ").trim();
-  const m = clean.match(/^(.{10,}?[.!?])(\s|$)/);
-  const s = m ? m[1] : clean;
-  return s.length > max ? s.slice(0, max - 1) + "…" : s;
 }
 
 /** A request leaves "pending" (decided, answered or expired); a refusal written on it goes too. */

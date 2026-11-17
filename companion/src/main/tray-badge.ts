@@ -1,3 +1,4 @@
+import { needYou } from "../shared/words";
 // The tray says what is happening without opening anything: a badge on the familiar's face and a
 // tooltip with counts. Pure (no Electron): main.ts hands in activity() and the bitmaps.
 
@@ -11,7 +12,7 @@ export function trayBadgeFor(work: { working: number; approvals: number } | null
   const working = work?.working ?? 0, approvals = work?.approvals ?? 0;
   const badge: TrayBadge = approvals > 0 || cutWaiting ? "waiting" : working > 0 ? "working" : "none";
   if (cutWaiting) return { badge, tooltip: CUT_WAITING_TOOLTIP };
-  const parts = ["Familiar", working > 0 && `${working} working`, approvals > 0 && `${approvals} waiting on you`].filter(Boolean);
+  const parts = ["Familiar", working > 0 && `${working} working`, approvals > 0 && needYou(approvals)].filter(Boolean);
   return { badge, tooltip: parts.join(" · ") };
 }
 

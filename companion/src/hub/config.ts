@@ -20,9 +20,16 @@ export interface Config {
   claudeExecutable?: string;
   claudeModel?: string;
   codexExe?: string;
-  /** WoW binding text of "Approve pending request" (e.g. "F9" or "CTRL-F9"), so an approval from that
+  /** WoW binding text of "Approve the pending request" (e.g. "F9" or "CTRL-F9"), so an approval from that
    * keybind can be checked against the real keyboard. Unset: keybind approvals are refused. */
   approveKey?: string;
+  /** Also approve by clicking Approve on the Glass. Off: only the Approve key approves in game.
+   * A click is easier to bait than a key (something in the game can draw where you are about to
+   * click), so this is opt-in. */
+  approveByClick: boolean;
+  /** Quests started from Familiar load your own agent configuration (allow rules, hooks, MCP
+   * servers). Off: they start without it. */
+  inheritAgentConfig: boolean;
   /** Show desktop-app threads touched within this many days (pinned/starred/running: always). */
   externalDays: number;
   /** Hide threads archived in the Claude/Codex desktop apps. */
@@ -34,12 +41,11 @@ export interface Config {
   sound: boolean;
   /** Master volume of the cues, 0-100 (/fam sound 0-100, the panel's slider); see clampVolume. */
   soundVolume: number;
-  speak: boolean;
   /** Defer ordinary completion notifications until the player returns. Approvals/errors remain. */
   quiet: boolean;
   /** Streamer mode: the Glass, notices and the FamiliarSync snapshot show "Project n" / "Quest #n"
-   * instead of real names, hide desktop threads and transcripts in the snapshot, and never speak.
-   * Pending approval cards still show the full request. */
+   * instead of real names and hide desktop threads. Pending approval cards still show the full
+   * request. */
   privateMode: boolean;
   /** Stream-safe (with privateMode): replies, tool lines and objectives are blurred on the Glass
    * until clicked. Approval cards never are: you must see what you approve. */
@@ -56,13 +62,9 @@ export interface Config {
   trayNotices: boolean;
   /** Start the companion (in the tray) when you sign in to Windows. */
   launchAtLogin: boolean;
-  /** Launch-at-login has been switched on once by default (afterwards it's the user's choice). */
-  autostartOffered: boolean;
   /** Agent Client Protocol agents by id (defaults: hermes, grok). Add any ACP agent here:
    * { "gemini": { "command": "gemini", "args": ["--experimental-acp"] } }; "enabled": false hides one. */
   providers?: Record<string, Partial<AcpProviderConfig>>;
-  /** The user has reviewed which agents Familiar uses (control panel onboarding). */
-  providersChosen: boolean;
   /** Chats (no repo, web search only): which agent, model and reasoning effort. */
   chatAgent: AgentKind;
   chatModel: string;
@@ -87,6 +89,8 @@ export const DEFAULT_CONFIG: Config = {
   exclude: ["\\node_modules", "\\.git\\", "\\appdata\\local\\temp", "\\$recycle.bin"],
   defaultMode: "ask",
   defaultAgent: "claude",
+  approveByClick: false,
+  inheritAgentConfig: false,
   wowRoot: "C:\\Program Files (x86)\\World of Warcraft",
   wowFlavor: "",
   externalDays: 21,
@@ -94,7 +98,6 @@ export const DEFAULT_CONFIG: Config = {
   externalPerZone: 6,
   sound: true,
   soundVolume: 70,
-  speak: false,
   quiet: false,
   privateMode: false,
   blurTranscript: false,
@@ -103,9 +106,7 @@ export const DEFAULT_CONFIG: Config = {
   raidWarnings: true,
   trayNotices: true,
   launchAtLogin: false,
-  autostartOffered: false,
   toolDetail: "compact",
-  providersChosen: false,
   // Haiku 5.5 at medium: answers general questions in seconds without searching, searches once
   // for game facts. Codex gpt-6-luna (low) is the faster alternative for search-heavy questions.
   chatAgent: "claude",
@@ -140,11 +141,34 @@ export function writeFileAtomic(file: string, text: string, expected?: Buffer) {
 export function peekConfig(): Config {
   try {
     const user = JSON.parse(fs.readFileSync(path.join(appDataPath(), "config.json"), "utf8"));
-    if (user && typeof user === "object" && !Array.isArray(user)) return { ...DEFAULT_CONFIG, ...user };
+    if (user && typeof user === "object" && !Array.isArray(user)) return withDefaults(user);
   } catch {
     /* missing or unreadable: defaults */
   }
   return { ...DEFAULT_CONFIG };
+}
+
+/** Settings earlier versions saved that nothing reads any more: dropped at the next save. */
+const RETIRED = new Set(["speak", "autostartOffered"]);
+/** Optional settings with no default, and the type each must have. */
+const OPTIONAL: Record<string, string> = { claudeExecutable: "string", claudeModel: "string", codexExe: "string", approveKey: "string", providers: "object" };
+
+/** The saved values over the defaults. A value of the wrong type (a hand edit, another version) is
+ * left out, so the default holds: a "false" written as text can never switch on approveByClick.
+ * Unknown keys are kept (a newer version may have written them). */
+function withDefaults(user: Record<string, unknown>, log: (line: string) => void = () => {}): Config {
+  const out: Record<string, unknown> = { ...DEFAULT_CONFIG };
+  for (const [k, v] of Object.entries(user)) {
+    if (k === "__proto__" || RETIRED.has(k)) continue;
+    const d = (DEFAULT_CONFIG as unknown as Record<string, unknown>)[k];
+    const want = Array.isArray(d) ? "list" : d !== undefined ? typeof d : OPTIONAL[k];
+    const is = Array.isArray(v) ? (v.every((x) => typeof x === "string") ? "list" : "mixed list") : v === null ? "null" : typeof v;
+    if (want && is !== want) log(`[config] ignored ${k} (${is}, expected ${want}); using the default`);
+    else out[k] = v;
+  }
+  out.exclude = [...new Set([...DEFAULT_CONFIG.exclude, ...(out.exclude as string[])])];
+  out.soundVolume = clampVolume(out.soundVolume) ?? DEFAULT_CONFIG.soundVolume;
+  return out as unknown as Config;
 }
 
 /** The one rule for soundVolume: a finite number, rounded and kept in 0-100; anything else is
@@ -155,7 +179,7 @@ export function clampVolume(v: unknown): number | undefined {
 
 export function loadConfig(log: (line: string) => void = () => {}): Config {
   const p = path.join(appDataDir(), "config.json");
-  let user: Partial<Config> = {};
+  let user: Record<string, unknown> = {};
   if (!fs.existsSync(p)) writeFileAtomic(p, JSON.stringify(DEFAULT_CONFIG, null, 2));
   else {
     try {
@@ -170,8 +194,7 @@ export function loadConfig(log: (line: string) => void = () => {}): Config {
       writeFileAtomic(p, JSON.stringify(DEFAULT_CONFIG, null, 2));
     }
   }
-  return { ...DEFAULT_CONFIG, ...user, exclude: [...new Set([...(DEFAULT_CONFIG.exclude), ...(user.exclude ?? [])])],
-    soundVolume: clampVolume(user.soundVolume) ?? DEFAULT_CONFIG.soundVolume };
+  return withDefaults(user, log);
 }
 
 export function saveConfig(c: Config) {

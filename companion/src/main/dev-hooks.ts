@@ -10,8 +10,25 @@ import * as path from "node:path";
 
 export const DEV_TOKEN_HEADER = "x-familiar-dev-token";
 
-export function devEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env.FAMILIAR_DEV === "1";
+/** Environment switches for development and tests. None of them works in a distributed build. */
+export const DEV_ENV = ["FAMILIAR_DEV", "FAMILIAR_TARGET_TITLE", "FAMILIAR_CAPTURE"] as const;
+
+/** A distributed build: the installed app (main passes app.isPackaged) or the release download,
+ * which scripts/prebuilt.mjs marks with `.prebuilt` beside dist/. A source checkout is neither.
+ * `dist`: the folder the running bundle is in. */
+export function distributed(packaged: boolean, dist: string = __dirname): boolean {
+  return packaged || fs.existsSync(path.join(dist, "..", ".prebuilt"));
+}
+
+/** Remove the development switches from this process, so nothing later can read them. */
+export function stripDevEnv(env: NodeJS.ProcessEnv = process.env) {
+  for (const k of DEV_ENV) delete env[k];
+}
+
+/** Off in the release download whatever the environment says (FakeWoW's hooks ask here too); the
+ * installed app strips the switches at start (main.ts). */
+export function devEnabled(env: NodeJS.ProcessEnv = process.env, dist: string = __dirname): boolean {
+  return env.FAMILIAR_DEV === "1" && !distributed(false, dist);
 }
 
 /** Where a running hook server leaves its token for scripts/e2e.mjs and demo-events.mjs. */

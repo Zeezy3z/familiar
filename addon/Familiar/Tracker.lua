@@ -39,8 +39,11 @@ function Tracker.Init()
     db.point, db.x, db.y = p, math.floor(x + 0.5), math.floor(y + 0.5)
     ns.Layout.StopDrag()
   end)
+  -- Right-click hides the tracker and says how to bring it back.
   header:SetScript("OnMouseUp", function(_, button)
-    if button == "RightButton" then Tracker.Toggle() end
+    if button ~= "RightButton" then return end
+    Tracker.Toggle()
+    ns.Print("quest tracker hidden - right-click the minimap button or type /fam tracker to show it again.")
   end)
   local title = header:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
   title:SetPoint("LEFT", 2, 0)

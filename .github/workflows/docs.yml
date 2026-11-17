@@ -1,0 +1,39 @@
+name: README media
+# A docs-only change skips windows.yml, so the README's image check (test/readme-media.test.mjs,
+# also part of npm test there) runs here on its own: every docs/media file the README points at
+# exists, and every image has alt text and its caption.
+on:
+  pull_request:
+    paths: ['README.md', 'docs/media/**', '.github/workflows/docs.yml']
+  push:
+    branches: [main]
+    paths: ['README.md', 'docs/media/**', '.github/workflows/docs.yml']
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  readme-media:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: companion
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: companion/package-lock.json
+      - name: Install locked dependencies without install hooks
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: README media check
+        run: npx vitest run test/readme-media.test.mjs

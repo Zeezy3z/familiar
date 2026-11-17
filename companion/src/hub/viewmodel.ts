@@ -3,9 +3,11 @@ import * as path from "node:path";
 import { attentionItems, type AttentionItem } from "./attention";
 import { providerInfo } from "../agents/providers";
 import { AgentKind, MODE_LABEL, TodoItem } from "../agents/types";
-import { agentName, Entry, Hub, mustFork, Refusal, Thread, ThreadStatus, Toast } from "./hub";
+import { agentName, approveAgain, Entry, ExternalThread, Hub, mustFork, NO_KEY, oneMoment, Refusal, textHash, Thread, ThreadStatus, Toast } from "./hub";
+import type { Config } from "./config";
 import { CHATS_KEY } from "./projects";
 import { costLabel, dollars, fmtK } from "./rewards";
+import { NEEDS_YOU, needYou } from "../shared/words";
 
 export type Act = Record<string, unknown> & { type: string };
 
@@ -94,9 +96,10 @@ export type DetailModel =
       more?: boolean;
       /** Waiting for the user to confirm continuing this desktop conversation. `retry`: the app
        * holding it can be quit and the same conversation continued (the agent can tell). */
-      confirm?: { text: string; fork: boolean; retry: boolean };
-      /** A message held back because the agent's own app has this conversation open. */
-      held?: { text: string };
+      confirm?: { text: string; fork: boolean; retry: boolean; hash: string };
+      /** A message held back because the agent's own app has this conversation open. `hash`: of the
+       * text, put in the card's actions so a proof covers exactly the text painted (hub textCardAct). */
+      held?: { text: string; hash: string };
       /** "Continue in <app>" is offered: the agent has an app and nothing is running here. */
       handOff?: { app: string };
       /** Desktop/CLI thread: where it came from and why it is listed ("desktop app · pinned"). */
@@ -127,14 +130,13 @@ export interface RenderModel {
   list: { title: string; rows: Row[] };
   detail: DetailModel;
   status: { text: string; level: "ok" | "warn" | "off" };
-  /** `mode`: what the Mode button acts on now (the selected quest's or draft's mode label, "Chat"
-   * for chats; absent when nothing it acts on is selected); `modeHot`: Accept edits or Auto. */
-  keys: { approve: boolean; stop: boolean; mode?: string; modeHot?: boolean };
+  /** `approve`: a request is waiting somewhere; `stop`: the selected quest has a turn to stop (the
+   * Glass glows the native Stop button). */
+  keys: { approve: boolean; stop: boolean };
   /** Stream-safe: the Glass blurs replies (never approval cards) until clicked. */
   blur?: boolean;
   tracker: TrackerLine[];
   toasts: Toast[];
-  native: boolean;
   fontScale: number;
   /** Notices big mid-screen (raid warnings) or small inside the Familiar window. */
   raidWarnings: boolean;
@@ -156,13 +158,13 @@ export function buildModel(hub: Hub, link: { linked: boolean; fps: number }): Re
     attention,
     seq: ++seq,
     target: targetLine(hub),
-    list: v.list === "pick" ? pickList(hub) : questList(hub),
+    // Private mode leaves desktop threads out of the list (their titles are not ours to alias).
+    list: v.list === "pick" ? pickList(hub) : questList(hub, !!hub.cfg().privateMode),
     detail: detail(hub, link.linked),
     status: statusLine(hub, link),
-    keys: { approve: anyPending, stop: !!sel && (sel.status === "running" || sel.status === "approval"), ...modeKey(hub) },
+    keys: { approve: anyPending, stop: !!sel && (sel.status === "running" || sel.status === "approval") },
     tracker: trackerLines(hub),
     toasts: hub.toasts,
-    native: v.native,
     fontScale: hub.cfg().fontScale,
     raidWarnings: hub.cfg().raidWarnings !== false,
     // The tutorial's "familiar" is not a backend but has quest rows of its own.
@@ -173,15 +175,6 @@ export function buildModel(hub: Hub, link: { linked: boolean; fps: number }): Re
     title: `${m.attention.length} waiting for you`, project: "Quiet play", status: "idle", activity: "/fam opens your saved catch-up notes" });
   m.tracker = m.tracker.slice(0, 8);
   return m;
-}
-
-/** What the Glass paints over the native Mode button: the mode of what the Mode key acts on (the
- * draft, else the selected quest; see Hub.key "mode"). Nothing it acts on: the native "Mode" shows. */
-function modeKey(hub: Hub): Pick<RenderModel["keys"], "mode" | "modeHot"> {
-  const target = hub.view.draft ?? hub.selectedThread();
-  if (!target) return {};
-  if (hub.view.draft ? hub.view.draft.chat : hub.selectedThread()?.kind === "chat") return { mode: "Chat", modeHot: false };
-  return { mode: MODE_LABEL[target.mode], modeHot: target.mode === "edits" || target.mode === "auto" };
 }
 
 // ---- private (streamer) mode --------------------------------------------------------------------
@@ -216,21 +209,9 @@ function privateModel(hub: Hub, m: RenderModel, linked: boolean) {
   const v = hub.view;
   m.private = true;
   if (hub.cfg().blurTranscript) m.blur = true; // Stream-safe
-  // Quest Log first, so numbering follows the order the player sees.
-  const shown = (agent: AgentKind) => !v.show.length || v.show.includes(agent);
-  const quests = (key: string) => [...hub.threads.values()].filter((t) => t.projectKey === key && shown(t.agent)).length;
-  const rows: Row[] = [];
-  for (const r of m.list.rows) {
-    if (r.kind === "ext" || r.key.startsWith("more:")) continue;
-    if (r.kind === "zone") {
-      const n = quests(r.key);
-      if (!n && r.key !== CHATS_KEY) continue; // only desktop threads in it
-      rows.push({ ...r, text: zone(r.key), count: n || undefined });
-    } else if (r.kind === "project") rows.push({ ...r, text: zone(r.key) });
-    else if (r.kind === "thread") rows.push({ ...r, text: thread(r.key) });
-    else rows.push(r);
-  }
-  if (!rows.length) rows.push({ kind: "hint", key: "hint", text: "Choose Chat for a question, or start a project quest." });
+  // Quest Log first, so numbering follows the order the player sees. Desktop threads are already left
+  // out (questList), so every zone here has quests of its own, or is Chats.
+  const rows = m.list.rows.map((r): Row => (r.kind === "zone" || r.kind === "project" ? { ...r, text: zone(r.key) } : r.kind === "thread" ? { ...r, text: thread(r.key) } : r));
   m.list = { ...m.list, rows };
 
   const d = m.detail;
@@ -247,7 +228,7 @@ function privateModel(hub: Hub, m: RenderModel, linked: boolean) {
 
   m.tracker = m.tracker.map((l) => {
     const t = hub.threads.get(l.id);
-    const activity = l.status === "approval" ? "Needs your approval" : l.status === "error" ? "Failed" : l.status === "running" ? "Working" : "Finished";
+    const activity = l.status === "approval" ? NEEDS_YOU : l.status === "error" ? "Failed" : l.status === "running" ? "Working" : "Finished";
     return { ...l, title: thread(l.id), project: t ? zone(t.projectKey) : "", activity };
   });
   m.attention = m.attention?.map((i) => {
@@ -258,85 +239,80 @@ function privateModel(hub: Hub, m: RenderModel, linked: boolean) {
   m.toasts = m.toasts.map(privateToast);
 }
 
-function questList(hub: Hub): { title: string; rows: Row[] } {
+/** Rows a zone lists before "+N more". Rows that need you, are working, or are open always show. */
+export const ROWS_PER_ZONE = 5;
+
+// Zones keep one order: Chats, then by name. Live activity never moves a zone, because clicks are
+// hit-tested by position and a right-click archives; what needs you is a glyph on the zone and the row.
+// Inside a zone the newest is on top: your quests by when they started (a reply never moves a row), then
+// desktop threads by their last activity. Each row says how long ago it last moved.
+function questList(hub: Hub, noDesktop = false): { title: string; rows: Row[] } {
   const v = hub.view;
-  type Item = { kind: "thread"; t: Thread } | { kind: "ext"; id: string; x: any };
-  const zones = new Map<string, { name: string; items: Item[]; activity: number }>();
+  type Item = { kind: "thread"; t: Thread; at: number; since: number } | { kind: "ext"; id: string; x: ExternalThread; at: number; since: number };
+  const zones = new Map<string, { name: string; items: Item[] }>();
   const zoneOf = (key: string, cwd: string) => {
     let z = zones.get(key);
     if (!z) {
-      z = { name: hub.projects.get(key)?.name ?? path.basename(cwd), items: [], activity: 0 };
+      z = { name: hub.projects.get(key)?.name ?? path.basename(cwd), items: [] };
       zones.set(key, z);
     }
     return z;
   };
   const shown = (agent: AgentKind) => !v.show.length || v.show.includes(agent);
-  for (const t of hub.threads.values()) {
-    if (!shown(t.agent)) continue;
-    const z = zoneOf(t.projectKey, t.cwd);
-    z.items.push({ kind: "thread", t });
-    z.activity = Math.max(z.activity, t.updatedAt + (t.status === "running" || t.status === "approval" ? 1e13 : 0));
-  }
-  for (const [id, x] of hub.external) {
-    if (!shown(x.agent)) continue;
-    const z = zoneOf(x.projectKey, x.cwd);
-    z.items.push({ kind: "ext", id, x });
-    z.activity = Math.max(z.activity, x.updatedAt + (x.running ? 1e13 : 0));
-  }
+  for (const t of hub.threads.values()) if (shown(t.agent)) zoneOf(t.projectKey, t.cwd).items.push({ kind: "thread", t, at: t.updatedAt, since: t.createdAt });
+  if (!noDesktop)
+    for (const [id, x] of hub.external) if (shown(x.agent)) zoneOf(x.projectKey, x.cwd).items.push({ kind: "ext", id, x, at: x.updatedAt, since: x.updatedAt });
   // The Chats zone is always there (it is how you start a chat) and always first.
   if (!v.show.length || v.show.includes(hub.cfg().chatAgent)) zoneOf(CHATS_KEY, "Chats");
   const rows: Row[] = [];
-  const ordered = [...zones.entries()].sort((a, b) => (b[0] === CHATS_KEY ? 1 : 0) - (a[0] === CHATS_KEY ? 1 : 0) || b[1].activity - a[1].activity);
-  for (const [key, z] of ordered) {
+  const byName = ([ka, a]: [string, { name: string }], [kb, b]: [string, { name: string }]) =>
+    Number(kb === CHATS_KEY) - Number(ka === CHATS_KEY) || a.name.localeCompare(b.name, undefined, { sensitivity: "base", numeric: true }) || ka.localeCompare(kb);
+  for (const [key, z] of [...zones.entries()].sort(byName)) {
     const collapsed = v.collapsed.has(key);
-    const live = z.items.filter((i) => i.kind === "thread").length;
+    const status = (i: Item): ThreadStatus | undefined => (i.kind === "thread" ? i.t.status : i.x.running ? "running" : undefined);
+    const has = (s: ThreadStatus) => z.items.some((i) => status(i) === s);
     rows.push({
       kind: "zone",
       key,
       text: z.name,
       count: z.items.length || undefined,
       collapsed,
-      sub: live ? `${live} quest${live > 1 ? "s" : ""}` : undefined,
+      // The zone's mark: the most urgent of its rows, so a collapsed zone still says it needs you.
+      status: has("approval") ? "approval" : has("error") ? "error" : has("running") ? "running" : undefined,
+      unread: z.items.some((i) => i.kind === "thread" && i.t.unread) || undefined,
       act: { type: "zone", key },
       act2: { type: "newIn", key },
     });
     if (collapsed) continue;
-    // Quests first, then running / pinned desktop threads, then the rest by recency.
-    const rank = (i: Item) =>
-      i.kind === "thread" ? i.t.updatedAt + 3e13 : i.x.updatedAt + (i.x.running ? 2e13 : i.x.reason === "pinned" ? 1e13 : 0);
-    const items = z.items.sort((a, b) => rank(b) - rank(a));
-    const extCap = v.zoneAll.has(key) ? Infinity : hub.cfg().externalPerZone;
-    const extTotal = items.filter((i) => i.kind === "ext").length;
-    let extShown = 0;
+    const items = z.items.sort((a, b) => (a.kind === b.kind ? 0 : a.kind === "thread" ? -1 : 1) || b.since - a.since);
+    const all = v.zoneAll.has(key);
+    const extCap = all ? Infinity : hub.cfg().externalPerZone;
+    const id = (i: Item) => (i.kind === "thread" ? i.t.id : i.id);
+    const live = (i: Item) => ["approval", "running", "error"].includes(status(i) ?? "");
+    const keep = (i: Item) => v.selected === id(i) || live(i) || (i.kind === "thread" && !!i.t.unread);
+    const zoneRows: (Row & { at: number; pin?: boolean })[] = [];
+    let extShown = 0,
+      hidden = 0;
     for (const i of items) {
-      if (i.kind === "thread") {
-        rows.push({
-          kind: "thread",
-          key: i.t.id,
-          text: i.t.title,
-          agent: i.t.agent,
-          status: i.t.status,
-          unread: i.t.unread,
-          selected: v.selected === i.t.id,
-          act: { type: "select", id: i.t.id },
-          act2: { type: "archive", id: i.t.id },
-        });
-      } else if (extShown < extCap) {
-        extShown++;
-        rows.push({
-          kind: "ext",
-          key: i.id,
-          text: i.x.title,
-          agent: i.x.agent,
-          status: i.x.running ? "running" : undefined,
-          sub: (i.x.reason === "pinned" ? "★ " : "") + ago(i.x.updatedAt),
-          selected: v.selected === i.id,
-          act: { type: "select", id: i.id },
-          act2: { type: "archive", id: i.id },
-        });
+      const fits = all || (zoneRows.length < ROWS_PER_ZONE && (i.kind === "thread" || extShown < extCap));
+      if (!fits && !keep(i)) {
+        hidden++;
+        continue;
       }
+      if (i.kind === "ext") extShown++;
+      zoneRows.push(
+        i.kind === "thread"
+          ? { kind: "thread", key: i.t.id, text: i.t.title, agent: i.t.agent, status: i.t.status, unread: i.t.unread, sub: ago(i.at), at: i.at,
+              selected: v.selected === i.t.id, act: { type: "select", id: i.t.id }, act2: { type: "archive", id: i.t.id } }
+          : { kind: "ext", key: i.id, text: i.x.title, agent: i.x.agent, status: i.x.running ? "running" : undefined, sub: ago(i.at), at: i.at, pin: i.x.reason === "pinned",
+              selected: v.selected === i.id, act: { type: "select", id: i.id }, act2: { type: "archive", id: i.id } },
+      );
     }
-    if (extTotal > extShown) rows.push({ kind: "hint", key: `more:${key}`, text: `+${extTotal - extShown} more`, act: { type: "zoneMore", key } });
+    // Rows with the same title tell apart by age; when the age reads the same too, by the time itself.
+    const twins = zoneRows.filter((r) => zoneRows.some((o) => o !== r && o.text === r.text && o.sub === r.sub));
+    for (const r of twins) r.sub = stamp(r.at);
+    for (const { at: _at, pin, ...r } of zoneRows) rows.push(pin ? { ...r, sub: `★ ${r.sub}` } : r);
+    if (hidden) rows.push({ kind: "hint", key: `more:${key}`, text: `+${hidden} more`, act: { type: "zoneMore", key } });
     if (key === CHATS_KEY && !items.length) rows.push({ kind: "hint", key: "chat-hint", text: "Ask anything: + Chat or /fam ask", act: { type: "newIn", key } });
   }
   if (!rows.length)
@@ -393,7 +369,7 @@ function detail(hub: Hub, linked: boolean): DetailModel {
       const history = hub.extHistoryState.get(v.selected);
       const win = v.window[v.selected] ?? 150;
       const fork = mustFork(x);
-      const confirm = v.confirm?.extId === v.selected ? { text: v.confirm.text, fork, retry: fork && !!hub.backends[x.agent]?.heldElsewhere } : undefined;
+      const confirm = v.confirm?.extId === v.selected ? { text: v.confirm.text, fork, retry: fork && !!hub.backends[x.agent]?.heldElsewhere, hash: textHash(v.confirm.text) } : undefined;
       const from = originLabel(x.origin);
       const why = x.reason === "pinned" ? (x.starred ? "starred" : "pinned") : x.reason === "running" ? "working now" : "recent";
       return {
@@ -480,7 +456,7 @@ function threadDetail(hub: Hub, t: Thread): DetailModel {
     usage,
     todos: t.todos,
     todoNote: t.todoNote,
-    held: hub.view.held?.threadId === t.id ? { text: hub.view.held.text } : undefined,
+    held: hub.view.held?.threadId === t.id ? { text: hub.view.held.text, hash: textHash(hub.view.held.text) } : undefined,
     handOff: t.nativeId && hub.backends[t.agent]?.handOff && t.status !== "running" && t.status !== "approval" ? { app: providerInfo(t.agent).label } : undefined,
     more: t.entries.length > (hub.view.window[t.id] ?? 150),
     entries: groupTools(hub, t.entries.slice(-(hub.view.window[t.id] ?? 150))).map((e) => ({
@@ -499,18 +475,23 @@ function threadDetail(hub: Hub, t: Thread): DetailModel {
       requestId: e.requestId,
       level: e.level,
       cut: e.cut,
-      refused: e.refused && e.approval === "pending" ? REFUSED[e.refused.why] : undefined,
+      refused: e.refused && e.approval === "pending" ? refusedLine(e.refused.why, hub.cfg()) : undefined,
     })),
   };
 }
 
-/** The red line a refused card shows until the next decision (the toast says it too, but expires). */
-const REFUSED: Record<Refusal, string> = {
-  proof: "That click wasn't confirmed as yours. Click Approve again.",
-  fresh: "This request just appeared. Read it, then click again.",
-  cut: "Part of this request is hidden here. Approve it in full from Familiar's control panel on your PC, or Deny.",
-  view: "Use Full view and review the request before deciding.",
-};
+/** The red line a refused card shows until the next decision (the toast says it too, but expires).
+ * The Approve key comes first; clicking is named only while click approval is switched on; with
+ * neither, Requests waiting on the PC (approveAgain). */
+function refusedLine(why: Refusal, c: Config): string {
+  const again = approveAgain(c);
+  return {
+    proof: again ? `Not confirmed as yours. With this request on screen, ${again}.` : NO_KEY,
+    fresh: oneMoment(c),
+    cut: "Part of this request is hidden here. Approve it in full from Familiar's control panel on your PC, or Deny.",
+    view: "Use Full view and review the request before deciding.",
+  }[why];
+}
 
 /**
  * Tool-call display per config: "full" = every call; "hidden" = none (running calls still show as
@@ -589,7 +570,7 @@ function trackerLines(hub: Hub): TrackerLine[] {
       const done = t.todos.filter((x) => x.status === "completed").length;
       let activity =
         t.status === "approval"
-          ? "Needs your approval"
+          ? NEEDS_YOU
           : t.status === "error"
             ? "Failed — " + (t.lastError ?? "")
             : t.status === "running"
@@ -626,7 +607,7 @@ function statusLine(hub: Hub, link: { linked: boolean; fps: number }): RenderMod
   const providers = providerViews(hub);
   parts.push(...providers.map((p) => `${p.label} ${!p.enabled ? "off" : p.ready ? "✓" : "✗"}`));
   if (running) parts.push(`${running} running`);
-  if (approval) parts.push(`${approval} awaiting approval`);
+  if (approval) parts.push(needYou(approval));
   const versions = hub.versionMismatch();
   if (versions) parts.push(`addon ${versions.addon} / app ${versions.app}`);
   return { text: parts.join("  ·  "), level: !link.linked ? "off" : approval || !providers.some((p) => p.ready) ? "warn" : "ok" };
@@ -649,6 +630,13 @@ function providerView(hub: Hub, id: AgentKind): ProviderView {
     status: !enabled ? "switched off" : !s ? "not available in Familiar" : s.ready
       ? `ready${s.account ? ` (${s.account})` : ""}` : `not ready${s.error ? `: ${s.error}` : ""}`,
   };
+}
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+/** "12 Nov 14:05": the time itself, for rows whose title and age read the same. */
+export function stamp(ms: number) {
+  const d = new Date(ms);
+  return `${d.getDate()} ${MONTHS[d.getMonth()]} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
 export function ago(ms: number) {

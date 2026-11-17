@@ -1,11 +1,51 @@
-// Overlay geometry while the player drags or resizes a Familiar frame (pure, testable).
+// Window and overlay geometry (pure, testable).
 //
-// The addon reports one "dragstart" (the frame's rect, the cursor, the resize limits — all in
-// physical px of the game's client area); from then on the companion reads the OS cursor and
-// moves/resizes the overlay itself, so the Glass keeps up with the mouse instead of waiting for
-// updates through the Runestrip. The exact layout arrives when the drag ends.
+// Display maths: Electron and Win32 give the game's client and frame in physical screen px, the
+// displays' bounds in DIP; the capture works in frame px. Drags: the addon reports one "dragstart"
+// (the frame's rect, the cursor, the resize limits — all in physical px of the game's client area);
+// from then on the companion reads the OS cursor and moves/resizes the overlay itself, so the Glass
+// keeps up with the mouse instead of waiting for updates through the Runestrip. The exact layout
+// arrives when the drag ends.
 
 export type Rect = number[]; // [x, y, w, h]
+
+/** A rectangle in physical px (win32.ts Rect). */
+export interface PxRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/** A display's top-left in physical px from its DIP bounds (Electron) and scale factor. */
+export function physicalOrigin(bounds: { x: number; y: number }, scaleFactor: number): { x: number; y: number } {
+  return { x: Math.round(bounds.x * scaleFactor), y: Math.round(bounds.y * scaleFactor) };
+}
+
+/** The client area in frame px: `origin` is the captured frame's top-left on screen (the window's
+ * extended frame for window capture, the display's physical origin for screen capture). */
+export function clientInFrame(client: PxRect, origin: { x: number; y: number }): PxRect {
+  return { x: client.x - origin.x, y: client.y - origin.y, width: client.width, height: client.height };
+}
+
+/** Size of each corner region the capture searches first for the Runestrip (frame px): wide
+ * enough for the finder at the largest pitch and a full 64x4 strip at the default one. */
+export const CORNER_W = 700;
+export const CORNER_H = 160;
+
+/** The client's four corners in frame px (top-left first: the default anchor), each reaching
+ * 4 px outside the client for blur and rounding, clipped to the frame. */
+export function clientCorners(frame: { width: number; height: number }, client: PxRect): { x: number; y: number; w: number; h: number }[] {
+  const left = client.x - 4, top = client.y - 4;
+  const right = client.x + client.width + 4 - CORNER_W, bottom = client.y + client.height + 4 - CORNER_H;
+  const out: { x: number; y: number; w: number; h: number }[] = [];
+  for (const [x, y] of [[left, top], [right, top], [left, bottom], [right, bottom]]) {
+    const x0 = Math.max(0, x), y0 = Math.max(0, y);
+    const x1 = Math.min(frame.width, x + CORNER_W), y1 = Math.min(frame.height, y + CORNER_H);
+    if (x1 > x0 && y1 > y0) out.push({ x: x0, y: y0, w: x1 - x0, h: y1 - y0 });
+  }
+  return out;
+}
 
 export interface Drag {
   kind: "move" | "size";

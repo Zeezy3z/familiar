@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self' data:">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; img-src 'self'; media-src 'none'; object-src 'none'; font-src 'self' data:">
 <title>Familiar Glass</title>
 <link rel="stylesheet" href="overlay.css">
 </head>
@@ -14,15 +14,13 @@
   <div id="detail" class="pane">
     <div id="attention" class="catchup"></div>
     <div id="detail-scroll" class="scroll"><div id="content"></div></div>
-    <div id="latest" class="latest" data-act='{"type":"local","what":"bottom"}'>&#9660; Latest</div>
     <div id="focus-review"></div>
-    <div id="target"></div>
+    <div id="foot"><div id="target"></div><div id="latest" class="latest" data-act='{"type":"local","what":"bottom"}'>&#9660; Latest</div></div>
+    <div id="pinned"></div>
   </div>
   <div id="status"></div>
   <div id="tracker" class="pane light"><div id="lines"></div></div>
-  <div id="glow-approve" class="glow"></div>
   <div id="glow-stop" class="glow red"></div>
-  <div id="mode-label" aria-hidden="true"></div>
   <div id="mini-badge" aria-hidden="true"></div>
   <div id="toasts"></div>
   <script src="overlay.js"></script>

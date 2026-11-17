@@ -4,7 +4,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
-import { encodeFrameCells, Reassembler, symbolsToBytes, parseFrameBytes, FINDER_CELLS, frameCapacity } from "../src/link/codec";
+import { Reassembler, symbolsToBytes, parseFrameBytes, FINDER_CELLS, frameCapacity } from "../src/link/codec";
 import { ADDON_DIR, LuaVM } from "./lua";
 
 const api = JSON.parse(fs.readFileSync(path.join(__dirname, "fixtures/wow-api.json"), "utf8"));
@@ -83,10 +83,11 @@ describe("Familiar addon (headless)", () => {
     expect(l.panel).toBe(true);
     for (const k of ["list", "detail", "status", "win"]) expect(Array.isArray(l[k]), k).toBe(true);
     expect(l.rowH).toBeGreaterThan(0);
-    expect(l.keys.approve).toBeTruthy();
-    // The companion matches Always / Mode clicks to the real mouse on these rects before acting.
-    expect(l.keys.always).toBeTruthy();
-    expect(l.keys.mode).toBeTruthy();
+    // The Glass glows Stop: the only button rect the addon sends.
+    expect(Object.keys(l.keys)).toEqual(["stop"]);
+    // No native Approve / Always / Mode buttons: approving is the Approve key (or the Glass card), modes are the PC's.
+    expect(vm.run(`return tostring(NS.UI.keys.approve) .. "/" .. tostring(NS.UI.keys.always) .. "/" .. tostring(NS.UI.keys.native) .. "/" .. tostring(NS.UI.keys.mode)`)).toBe("nil/nil/nil/nil");
+    expect(l.native).toBeUndefined();
     expect(l.mini).toHaveLength(4); // and still there with the window open
   });
 
@@ -176,40 +177,87 @@ describe("Familiar addon (headless)", () => {
   });
 
   it("buttons and slash commands send keys and quick quests", () => {
-    vm.run(`NS.UI.keys.approve:GetScript("OnClick")()`);
+    vm.run(`NS.UI.keys.stop:GetScript("OnClick")()`);
     vm.run(`SlashCmdList.FAMILIAR("deny")`);
     vm.run(`SlashCmdList.FAMILIAR("codex summarize the open PRs")`);
     vm.run(`SlashCmdList.FAMILIAR("what changed today?")`);
     advance(3);
     const keys = messages.filter((m) => m.t === "key").map((m) => m.k);
-    expect(keys).toContain("approve");
+    expect(keys).toContain("stop");
     expect(keys).toContain("deny");
-    expect(messages.filter((m) => m.t === "key" && m.k === "approve").at(-1)).toMatchObject({ src: "button" });
+    expect(messages.filter((m) => m.t === "key" && m.k === "stop").at(-1)).toMatchObject({ src: "button" });
     expect(messages.filter((m) => m.t === "key" && m.k === "deny").at(-1)).toMatchObject({ src: "slash" });
     expect(last("quick")).toMatchObject({ agent: "codex", text: "summarize the open PRs" });
     expect(last("prompt").text).toBe("what changed today?");
   });
 
-  it("/fam suggest sends the idea to the companion as a key, capped at 500 bytes", () => {
-    vm.run(`SlashCmdList.FAMILIAR("suggest Add a || pipe Option")`);
-    advance(3);
-    expect(messages.filter((m) => m.t === "key" && m.k === "suggest").at(-1)).toMatchObject({ a: "Add a | pipe Option" });
-    vm.run(`SlashCmdList.FAMILIAR("suggest ${"x".repeat(499)}é")`);
-    advance(6);
-    expect(messages.filter((m) => m.t === "key" && m.k === "suggest").at(-1)!.a).toBe("x".repeat(499));
+  it("a single unknown word names the closest verb and starts no turn", () => {
+    const before = messages.length;
+    vm.run(`MOCK.chat = {} SlashCmdList.FAMILIAR("stpo") SlashCmdList.FAMILIAR("tracer") SlashCmdList.FAMILIAR("continue")`);
+    advance(2);
+    const sent = messages.slice(before).filter((m) => ["prompt", "quick", "ask", "key"].includes(m.t));
+    expect(sent).toEqual([]);
+    const chat = vm.run(`return table.concat(MOCK.chat, " || ")`) as string;
+    expect(chat).toContain('Unknown command "stpo" - did you mean /fam stop?');
+    expect(chat).toContain("did you mean /fam tracker?");
+    expect(chat).toContain('Unknown command "continue"');
+    expect(chat).toContain("type it in the Familiar window");
+    // Two or more words that don't start with a verb are a message for the selected quest.
+    vm.run(`SlashCmdList.FAMILIAR("continue please")`);
+    advance(1);
+    expect(last("prompt").text).toBe("continue please");
   });
 
-  it("un-escapes typed pipes, treats '/fam help me ...' as a prompt, refuses oversized text", () => {
+  it("a verb with arguments it doesn't take prints that verb's usage and starts no turn", () => {
+    const before = messages.length;
+    vm.run(`MOCK.chat = {}
+      SlashCmdList.FAMILIAR("help me fix the build")
+      SlashCmdList.FAMILIAR("strip the dead code")
+      SlashCmdList.FAMILIAR("stop the build")
+      SlashCmdList.FAMILIAR("sound loud")
+      SlashCmdList.FAMILIAR("show me the diff")
+      SlashCmdList.FAMILIAR("claude")`);
+    advance(2);
+    expect(messages.slice(before).filter((m) => ["prompt", "quick", "ask", "key"].includes(m.t))).toEqual([]);
+    const chat = vm.run(`return table.concat(MOCK.chat, " || ")`) as string;
+    expect(chat).toContain("/fam - open or close the window"); // help with words is still help
+    expect(chat).toContain("To send that as a message, type it in the Familiar window."); // and says where the sentence goes
+    for (const usage of ["usage: /fam tutorial | reload | diag | strip", "usage: /fam stop | deny", "usage: /fam sound [on | off | 0-100]", "usage: /fam show all", "usage: /fam claude | codex <message>"])
+      expect(chat).toContain(usage);
+  });
+
+  it("removed verbs are gone: they say where the setting went and send nothing", () => {
+    const before = messages.length;
+    const removed = ["approve", "always", "autostart off", "warnings on", "quiet on", "font bigger", "opacity 40", "private on", "suggest an idea", "native", "view focus", "draft discard", "caughtup"];
+    vm.run(`MOCK.chat = {} ${removed.map((c) => `SlashCmdList.FAMILIAR(${JSON.stringify(c)})`).join(" ")}`);
+    advance(2);
+    expect(messages.slice(before).filter((m) => ["prompt", "quick", "ask", "key"].includes(m.t))).toEqual([]);
+    const chat = vm.run(`return table.concat(MOCK.chat, " || ")`) as string;
+    for (const c of removed) expect(chat).toContain(`/fam ${c.split(" ")[0]} is gone:`);
+    expect(chat).toContain("Approve key");
+    expect(chat).toContain("Options -> AddOns -> Familiar");
+    // Legacy aliases and verbs without a replacement are simply unknown.
+    vm.run(`MOCK.chat = {} SlashCmdList.FAMILIAR("hide") SlashCmdList.FAMILIAR("unhide") SlashCmdList.FAMILIAR("sync") SlashCmdList.FAMILIAR("pin") SlashCmdList.FAMILIAR("archived")`);
+    advance(1);
+    expect((vm.run(`return table.concat(MOCK.chat, " || ")`) as string).match(/Unknown command/g)).toHaveLength(5);
+    expect(messages.slice(before).filter((m) => ["prompt", "quick", "ask", "key"].includes(m.t))).toEqual([]);
+  });
+
+  it("/fam help is about ten lines", () => {
+    vm.run(`MOCK.chat = {} SlashCmdList.FAMILIAR("help")`);
+    const lines = (vm.run(`return table.concat(MOCK.chat, "\\n")`) as string).split("\n");
+    expect(lines.length).toBeGreaterThanOrEqual(9);
+    expect(lines.length).toBeLessThanOrEqual(12);
+    for (const verb of ["stop", "deny", "tracker", "log", "stream", "sound", "diag", "ask", "strip", "reload", "tutorial", "archive", "unarchive", "open"])
+      expect(lines.join(" "), verb).toMatch(new RegExp(`\\b${verb}\\b`));
+    expect(lines.join(" ")).not.toMatch(/approve \||always|autostart|warnings|quiet|opacity|private|native|font/);
+  });
+
+  it("un-escapes typed pipes and refuses oversized text", () => {
     // WoW edit boxes hand us a typed "|" as "||".
     vm.run(`FamiliarComposer:SetText("grep x || wc -l") MOCK.fire(FamiliarComposer, "OnEnterPressed")`);
     advance(1.5);
     expect(last("prompt").text).toBe("grep x | wc -l");
-    vm.run(`SlashCmdList.FAMILIAR("help me fix the build")`);
-    vm.run(`SlashCmdList.FAMILIAR("strip the dead code")`);
-    advance(2);
-    const prompts = messages.filter((m) => m.t === "prompt").map((m) => m.text);
-    expect(prompts).toContain("help me fix the build");
-    expect(prompts).toContain("strip the dead code");
     const huge = "x".repeat(50_000);
     vm.run(`FamiliarComposer:SetText(string.rep("x", 50000)) MOCK.fire(FamiliarComposer, "OnEnterPressed")`);
     advance(0.5);
@@ -235,14 +283,23 @@ describe("Familiar addon (headless)", () => {
     vm.run(`SlashCmdList.FAMILIAR("strip tl")`);
   });
 
-  it("toggles tracker and native view without errors", () => {
-    vm.run(`SlashCmdList.FAMILIAR("tracker") SlashCmdList.FAMILIAR("tracker") SlashCmdList.FAMILIAR("native") SlashCmdList.FAMILIAR("help") SlashCmdList.FAMILIAR("diag") SlashCmdList.FAMILIAR("strip dim") SlashCmdList.FAMILIAR("strip vivid")`);
-    expect(vm.run(`return table.concat(MOCK.chat, " | ")`)).toContain("native JSON");
-    advance(1);
-    expect(last("layout").native).toBe(true);
-    vm.run(`SlashCmdList.FAMILIAR("native")`);
+  it("toggles the tracker, prints help and diagnostics without errors; strip dim / vivid are gone", () => {
+    vm.run(`MOCK.chat = {} SlashCmdList.FAMILIAR("tracker") SlashCmdList.FAMILIAR("tracker") SlashCmdList.FAMILIAR("help") SlashCmdList.FAMILIAR("diag") SlashCmdList.FAMILIAR("strip dim") SlashCmdList.FAMILIAR("strip vivid")`);
+    const chat = vm.run(`return table.concat(MOCK.chat, " | ")`);
+    expect(chat).toContain("native JSON");
+    expect(chat.match(/usage: \/fam tutorial \| reload \| diag \| strip/g)).toHaveLength(2);
     vm.run(`Familiar_OnCompartmentClick(nil, "LeftButton")`);
     advance(1);
+  });
+
+  it("right-clicking the tracker's header hides it and says how to bring it back", () => {
+    vm.run(`MOCK.chat = {} NS.Tracker.frame:Show()`);
+    const header = `(function() for _, f in ipairs(MOCK.frames) do if f.__parent == NS.Tracker.frame and f:GetScript("OnDragStart") then return f end end end)()`;
+    vm.run(`MOCK.fire(${header}, "OnMouseUp", "RightButton")`);
+    expect(vm.run(`return tostring(NS.Tracker.IsShown())`)).toBe("false");
+    expect(vm.run(`return MOCK.chat[#MOCK.chat]`)).toMatch(/right-click the minimap button or type \/fam tracker/);
+    vm.run(`SlashCmdList.FAMILIAR("tracker")`);
+    expect(vm.run(`return tostring(NS.Tracker.IsShown())`)).toBe("true");
   });
 
   it("reload command calls C_UI.Reload", () => {
@@ -250,35 +307,54 @@ describe("Familiar addon (headless)", () => {
     expect(vm.run(`return tostring(MOCK.reloaded)`)).toBe("true");
   });
 
-  it("window opacity: Options slider and /fam opacity fade the backgrounds and tell the Glass", () => {
+  it("window opacity: the Options slider fades the backgrounds and tells the Glass", () => {
     // Options -> AddOns -> Familiar has the slider, at the saved value (solid by default).
     expect(vm.run(`return MOCK.settings.category`)).toBe("Familiar");
     expect(vm.run(`local s = MOCK.settings.slider return s.name .. " " .. s.min .. "-" .. s.max .. " step " .. s.step`)).toBe("Window opacity 60-100 step 5");
     expect(vm.run(`return MOCK.settings.registered and "yes" or "no"`)).toBe("yes");
     expect(last("layout").op).toBeUndefined();
 
-    vm.run(`SlashCmdList.FAMILIAR("opacity 40%")`);
+    vm.run(`MOCK.settings.setting:SetValue(60)`);
     advance(1);
-    expect(last("layout").op).toBe(40);
-    expect(vm.run(`return FamiliarDB.opacity`)).toBe("40");
-    expect(vm.run(`return MOCK.settings.setting:GetValue()`)).toBe("40"); // the slider shows it too
-    expect(Number(vm.run(`return FamiliarFrame.__bg[4]`))).toBeCloseTo(0.4);
-    expect(Number(vm.run(`return NS.UI.listPane.__bg[4]`))).toBeCloseTo(0.85 * 0.4);
-    expect(Number(vm.run(`return NS.UI.detailPane.__bg[4]`))).toBeCloseTo(0.85 * 0.4);
+    expect(last("layout").op).toBe(60);
+    expect(vm.run(`return FamiliarDB.opacity`)).toBe("60");
+    expect(Number(vm.run(`return FamiliarFrame.__bg[4]`))).toBeCloseTo(0.6);
+    expect(Number(vm.run(`return NS.UI.listPane.__bg[4]`))).toBeCloseTo(0.85 * 0.6);
+    expect(Number(vm.run(`return NS.UI.detailPane.__bg[4]`))).toBeCloseTo(0.85 * 0.6);
     // Only the backgrounds fade: borders stay as they were.
     expect(Number(vm.run(`return NS.UI.listPane.__border[4]`))).toBeCloseTo(0.9);
 
-    // Moving the slider does the same.
     vm.run(`MOCK.settings.setting:SetValue(100)`);
     advance(1);
     expect(last("layout").op).toBeUndefined();
     expect(Number(vm.run(`return FamiliarFrame.__bg[4]`))).toBeCloseTo(1);
+  });
 
-    // No number opens the Options page; other words are a prompt, not a setting.
-    vm.run(`MOCK.settings.opened = nil SlashCmdList.FAMILIAR("opacity")`);
-    expect(vm.run(`return MOCK.settings.opened`)).toBe(vm.run(`return MOCK.settings.categoryId`));
-    vm.run(`SlashCmdList.FAMILIAR("opacity seems off")`);
-    expect(vm.run(`return FamiliarDB.opacity`)).toBe("100");
+  it("a saved Runestrip palette from an older version is dropped at load", () => {
+    const state = draftBoot(`FamiliarDB = { palette = "vivid", opacity = 40 }`);
+    expect(state.run(`return tostring(FamiliarDB.palette)`)).toBe("nil");
+    expect(state.run(`return tostring(FamiliarDB.opacity)`)).toBe("40");
+    // The strip is drawn in the one fixed set of levels whatever was saved.
+    expect(Number(state.run(`local r = NS.Link.FinderColor(6) return math.floor(r * 255 + 0.5)`))).toBe(84);
+  });
+
+  it("saved protocol constants and settings without a setter are dropped at load", () => {
+    const state = draftBoot(`FamiliarDB = { cols = 32, rows = 8, cell = 9, hold = 1, stripInset = 5, stripPos = "TOPRIGHT",
+      hover = true, hideInCombat = true, enterSends = false, minimap = { angle = 10, hide = true }, opacity = 80 }`);
+    expect(state.run(`local t = {} for _, k in ipairs({ "cols", "rows", "cell", "hold", "stripInset", "hover", "hideInCombat", "enterSends" }) do t[#t + 1] = k .. "=" .. tostring(FamiliarDB[k]) end return table.concat(t, " ")`))
+      .toBe("cols=nil rows=nil cell=nil hold=nil stripInset=nil hover=nil hideInCombat=nil enterSends=nil");
+    expect(state.run(`return tostring(FamiliarDB.minimap.hide) .. "/" .. FamiliarDB.minimap.angle`)).toBe("nil/10");
+    // Real settings survive; the strip uses Link.lua's constants whatever was saved.
+    expect(state.run(`return FamiliarDB.stripPos .. "/" .. FamiliarDB.opacity .. "/" .. tostring(FamiliarDB.logCollapsed)`)).toBe("TOPRIGHT/80/false");
+    expect(state.run(`return NS.Link.cols .. "x" .. NS.Link.rows .. " @" .. NS.Link.cell .. " hold " .. NS.Link.hold .. " inset " .. NS.Link.inset`)).toBe("64x4 @4 hold 0.07 inset 0");
+    expect(state.run(`return tostring(FamiliarRunestrip:GetWidth()) .. "x" .. tostring(FamiliarRunestrip:GetHeight())`)).toBe("256x16");
+    expect(state.run(`local p, _, _, x, y = FamiliarRunestrip:GetPoint() return p .. ":" .. x .. ":" .. y`)).toBe("TOPRIGHT:0:0");
+    // The minimap button exists again (hide had no way to be set or undone in game).
+    expect(state.run(`return tostring(FamiliarMinimapButton ~= nil)`)).toBe("true");
+    // Enter sends (enterSends = false is gone with it).
+    state.run(`FamiliarComposer:SetText("hello there") MOCK.fire(FamiliarComposer, "OnEnterPressed")`);
+    expect(state.run(`return #NS.db.outbox .. ":" .. FamiliarComposer:GetText()`)).toBe("1:");
+    expect(state.run(`return tostring(NS.Link.SetVisible)`)).toBe("nil");
   });
 
   it("a saved window opacity applies at login and survives focus view and back", () => {
@@ -360,9 +436,9 @@ function savedDraftState(state: LuaVM) {
 
 describe("character-local unfinished composer recovery", () => {
   it("persists ordinary reload/logout without sending or claiming a conversation", () => {
-    const state = draftBoot(`FamiliarDB = { enterSends = false, history = { "earlier" } }`);
+    const state = draftBoot(`FamiliarDB = { sendFocus = "stay", history = { "earlier" } }`);
     state.run(`FamiliarComposer:SetText("Unsent || code\\nsecond line") MOCK.event("PLAYER_LOGOUT")`);
-    const restored = draftBoot(savedDraftState(state) + `\nFamiliarSyncData = { selected = { id = "different-thread", title = "Other conversation" } }`);
+    const restored = draftBoot(savedDraftState(state) + `\nFamiliarSyncData = { generatedAt = GetServerTime(), acked = {} }`);
     expect(restored.run(`return FamiliarComposer:GetText()`)).toBe("Unsent || code\nsecond line");
     expect(restored.run(`return tostring(NS.UI.draftNotice:IsShown())`)).toBe("true");
     expect(restored.run(`return tostring(NS.UI.draftDiscard:IsShown())`)).toBe("true");
@@ -370,8 +446,7 @@ describe("character-local unfinished composer recovery", () => {
     expect(restored.run(`return tostring(FamiliarComposer:HasFocus())`)).toBe("false");
     expect(restored.run(`return tostring(#NS.db.outbox)`)).toBe("0");
     expect(restored.run(`return table.concat(draftSent, ",")`)).not.toMatch(/prompt|quick|ask/);
-    expect(restored.run(`return FamiliarSyncData.selected.id`)).toBe("different-thread");
-    expect(restored.run(`return tostring(NS.db.enterSends) .. "/" .. NS.db.history[1]`)).toBe("false/earlier");
+    expect(restored.run(`return tostring(NS.db.sendFocus) .. "/" .. NS.db.history[1]`)).toBe("stay/earlier");
   });
 
   it("does not overwrite a saved draft when composer initialization fails before restore", () => {
@@ -457,8 +532,10 @@ describe("character-local unfinished composer recovery", () => {
     expect(state.run(`return tostring(NS.UI.draftNotice:IsShown())`)).toBe("false");
     expect(draftBoot(savedDraftState(state)).run(`return FamiliarComposer:GetText()`)).toBe("");
     expect(state.run(`return tostring(NS.UI.draftDiscard:IsShown())`)).toBe("false");
+    // "/fam draft discard" is gone: it points at the Discard button and leaves the text alone.
     state.run(`FamiliarComposer:SetText("shortcut discard") SlashCmdList.FAMILIAR("draft discard")`);
-    expect(state.run(`return tostring(NS.charDB.composerDraft)`)).toBe("nil");
+    expect(state.run(`return tostring(NS.charDB.composerDraft)`)).toBe("shortcut discard");
+    expect(state.run(`return MOCK.chat[#MOCK.chat]`)).toContain("Discard button");
   });
 
   it("bounds storage without truncating text and handles missing or malformed older state", () => {
@@ -491,12 +568,12 @@ describe("character-local unfinished composer recovery", () => {
 
   it("uses per-character SavedVariables rather than leaking a draft through account settings", () => {
     expect(fs.readFileSync(path.join(ADDON_DIR, "Familiar.toc"), "utf8")).toContain("## SavedVariablesPerCharacter: FamiliarCharDB");
-    const first = draftBoot(`FamiliarDB = { enterSends = false } FamiliarCharDB = { composerDraft = "character one" }`);
-    const second = draftBoot(`FamiliarDB = { enterSends = false }`);
+    const first = draftBoot(`FamiliarDB = { sendFocus = "stay" } FamiliarCharDB = { composerDraft = "character one" }`);
+    const second = draftBoot(`FamiliarDB = { sendFocus = "stay" }`);
     expect(first.run(`return FamiliarComposer:GetText()`)).toBe("character one");
     expect(first.run(`return tostring(NS.db.composerDraft)`)).toBe("nil");
     expect(second.run(`return FamiliarComposer:GetText()`)).toBe("");
-    expect(second.run(`return tostring(NS.db.enterSends)`)).toBe("false");
+    expect(second.run(`return tostring(NS.db.sendFocus)`)).toBe("stay");
   });
 });
 
@@ -538,7 +615,34 @@ describe("outbox (prompts the companion may not have received)", () => {
     expect(vm.run(`return tostring(#NS.db.outbox)`)).toBe("1");
     vm.run(`FamiliarSyncData = { generatedAt = GetServerTime() - 30, stoppedAt = GetServerTime() - 30, acked = {}, list = {} }`);
     vm.run(`NS.ReconcileOutbox()`);
-    expect(vm.run(`return table.concat(MOCK.chat, " | ", ${Number(before) + 1})`)).toMatch(/did not reach[\s\S]*was closed at/);
+    expect(vm.run(`return table.concat(MOCK.chat, " | ", ${Number(before) + 1})`)).toMatch(/did not reach[\s\S]*Familiar was closed \d{4}-\d\d-\d\d \d\d:\d\d - start it on your PC/);
+  });
+
+  it("login never sends old prompts again by itself; only /fam resend does", () => {
+    const state = draftBoot(`FamiliarDB = { outbox = { { id = "w1", t = "prompt", text = "waiting since yesterday", at = GetServerTime() - 3600 } } }
+      FamiliarSyncData = { generatedAt = GetServerTime(), acked = {} }`);
+    state.run(`MOCK.advance(30)`);
+    expect(state.run(`return table.concat(draftSent, ",")`)).not.toMatch(/prompt|quick|ask/);
+    expect(state.run(`return tostring(#NS.db.outbox)`)).toBe("1");
+    expect(state.run(`return table.concat(MOCK.chat, " | ")`)).toContain("/fam resend sends it again");
+    state.run(`SlashCmdList.FAMILIAR("resend")`);
+    expect(state.run(`return table.concat(draftSent, ",")`)).toMatch(/prompt/);
+  });
+
+  it("sending while Familiar is known closed says the message waits in the outbox, not 'summoning'", () => {
+    const chatOf = (state: LuaVM) => state.run(`return table.concat(MOCK.chat, " | ")`) as string;
+    for (const sync of ["", `FamiliarSyncData = { generatedAt = GetServerTime() - 60, stoppedAt = GetServerTime() - 60, acked = {} }`]) {
+      const state = draftBoot(sync);
+      state.run(`MOCK.chat = {} SlashCmdList.FAMILIAR("claude tidy the notes") SlashCmdList.FAMILIAR("ask where is Auberdine?") SlashCmdList.FAMILIAR("fix the build please")`);
+      const chat = chatOf(state);
+      expect(chat.match(/kept in the outbox - Familiar isn't running/g)).toHaveLength(3);
+      expect(chat).not.toMatch(/summoning|asking/);
+      expect(state.run(`return tostring(#NS.db.outbox)`)).toBe("3");
+    }
+    // Running (a status saved without stoppedAt): the familiar is summoned as before.
+    const live = draftBoot(`FamiliarSyncData = { generatedAt = GetServerTime(), acked = {} }`);
+    live.run(`MOCK.chat = {} SlashCmdList.FAMILIAR("claude tidy the notes") SlashCmdList.FAMILIAR("fix the build please")`);
+    expect(chatOf(live)).toBe("|cff9d7cffFamiliar|r: summoning claude...");
   });
 
   it("says how many older messages it dropped: more than 20 waiting, or a day old", () => {
@@ -568,16 +672,7 @@ describe("outbox (prompts the companion may not have received)", () => {
     expect(chat(next)).toContain("1 older message was dropped");
   });
 
-  it("/fam autostart on|off goes to the companion", () => {
-    vm.run(`SlashCmdList.FAMILIAR("autostart off")`);
-    advance(1);
-    expect(last("key")).toMatchObject({ k: "autostart", a: "off" });
-    vm.run(`SlashCmdList.FAMILIAR("quiet on") SlashCmdList.FAMILIAR("caughtup")`);
-    advance(2);
-    expect(messages.filter(m => m.t === "key").slice(-2)).toMatchObject([{ k: "quiet", a: "on" }, { k: "caughtup" }]);
-  });
-
-  it("/fam sound <0-100> and <n>% go to the companion as the sound key, not as a prompt; other words still do", () => {
+  it("/fam sound <0-100> and <n>% go to Familiar as the sound key; other words print its usage", () => {
     advance(30);
     const prompts = () => messages.filter((m) => m.t === "prompt").length;
     const before = prompts();
@@ -590,26 +685,11 @@ describe("outbox (prompts the companion may not have received)", () => {
     vm.run(`SlashCmdList.FAMILIAR("sound loud")`);
     advance(2);
     expect(last("key")).toMatchObject({ k: "sound", a: "250" }); // not a setting
-    expect(prompts()).toBe(before + 1);
-    expect(last("prompt").text).toBe("sound loud");
-  });
-
-  it("/fam font | sound | warnings go to the companion; other words are prompts", () => {
+    expect(prompts()).toBe(before); // and not a message either
+    expect(vm.run(`return MOCK.chat[#MOCK.chat]`)).toContain("usage: /fam sound");
     vm.run(`SlashCmdList.FAMILIAR("sound off")`);
     advance(1);
     expect(last("key")).toMatchObject({ k: "sound", a: "off" });
-    vm.run(`SlashCmdList.FAMILIAR("warnings")`);
-    advance(1);
-    expect(last("key")).toMatchObject({ k: "warnings", a: "" });
-    vm.run(`SlashCmdList.FAMILIAR("font Bigger")`);
-    advance(1);
-    expect(last("key")).toMatchObject({ k: "font", a: "bigger" });
-    vm.run(`SlashCmdList.FAMILIAR("font 120")`);
-    advance(1);
-    expect(last("key")).toMatchObject({ k: "font", a: "120" });
-    vm.run(`SlashCmdList.FAMILIAR("font is too small in the log")`);
-    advance(1);
-    expect(last("key")).toMatchObject({ k: "font", a: "120" }); // not a setting
   });
 });
 
@@ -730,7 +810,7 @@ describe("responsiveness: priority, drag, resize grip", () => {
     expect(Number(vm.run(`return tostring(FamiliarFrame:GetWidth())`))).toBe(w0);
   });
 
-  it("focus mode crops native chrome, preserves the composer, and restores full view without saving focus geometry", () => {
+  it("compact view crops native chrome, preserves the composer, and restores full view without saving its geometry", () => {
     vm.run(`
       NS.UI.SetLogCollapsed(false)
       FamiliarFrame:SetSize(720, 440)
@@ -743,12 +823,13 @@ describe("responsiveness: priority, drag, resize grip", () => {
       FamiliarComposer:HighlightText(2, 5)
       FOCUS_COMPOSER = FamiliarComposer
       FOCUS_SAVED = NS.Json.encode(NS.db.window)
-      SlashCmdList.FAMILIAR("view focus")`);
+      NS.UI.SetFocusMode(true)`);
     expect(vm.run(`return tostring(FamiliarFrame:GetWidth()) .. ":" .. tostring(FamiliarFrame:GetHeight())`)).toBe("484:400");
-    expect(vm.run(`return tostring(NS.UI.focusMode) .. ":" .. tostring(NS.UI.focusBtn:IsShown()) .. ":" .. NS.UI.focusBtn:GetText()`)).toBe("true:true:Full view");
+    expect(vm.run(`return tostring(NS.UI.focusMode) .. ":" .. tostring(NS.UI.viewBtn:IsShown()) .. ":" .. NS.UI.viewBtn:GetText()`)).toBe("true:true:Full view");
     expect(vm.run(`local p, _, _, x, y = FamiliarFrame:GetPoint() return p .. ":" .. x .. ":" .. y`)).toBe("TOPLEFT:336:-268");
     expect(vm.run(`local w, h = FamiliarFrame:GetResizeBounds() return w .. ":" .. h`)).toBe("324:300");
-    expect(vm.run(`for _, f in ipairs(MOCK.frames) do if type(f.locked) == "string" and f.locked:find("queued messages are not provider receipts", 1, true) then return "fallback available" end end`)).toBe("fallback available");
+    // Without the Glass, the pane under it says it holds a saved status, not the conversation.
+    expect(vm.run(`return NS.UI.savedNote:GetText()`)).toContain("This is a saved status, not the conversation");
     expect(vm.run(`return tostring(NS.UI.listPane:IsShown()) .. ":" .. tostring(NS.UI.status:IsShown()) .. ":" .. tostring(NS.Tracker.IsShown())`)).toBe("false:false:false");
     expect(vm.run(`return tostring(FOCUS_COMPOSER == FamiliarComposer) .. ":" .. tostring(FamiliarComposer:HasFocus()) .. ":" .. tostring(FamiliarComposer:GetCursorPosition())`)).toBe("true:true:5");
     expect(vm.run(`return tostring(FamiliarComposer.__selection[1]) .. ":" .. tostring(FamiliarComposer.__selection[2])`)).toBe("2:5");
@@ -759,7 +840,7 @@ describe("responsiveness: priority, drag, resize grip", () => {
     expect(last("layout").keys.approve).toBeUndefined();
     vm.run(`NS.UI.Hide() NS.UI.Show() FamiliarFrame:SetSize(600, 500) MOCK.fire(NS.UI.grip, "OnMouseUp")`);
     expect(vm.run(`return tostring(NS.UI.focusMode) .. ":" .. tostring(NS.Json.encode(NS.db.window) == FOCUS_SAVED)`)).toBe("true:true");
-    vm.run(`MOCK.fire(FamiliarFrame, "OnDragStop") MOCK.fire(NS.UI.focusBtn, "OnClick")`);
+    vm.run(`MOCK.fire(FamiliarFrame, "OnDragStop") MOCK.fire(NS.UI.viewBtn, "OnClick")`);
     expect(vm.run(`local p, _, _, x, y = FamiliarFrame:GetPoint() return p .. ":" .. x .. ":" .. y`)).toBe("TOPLEFT:100:-228");
     expect(vm.run(`return tostring(FamiliarFrame:GetWidth()) .. ":" .. tostring(FamiliarFrame:GetHeight())`)).toBe("720:440");
     expect(vm.run(`return tostring(NS.UI.focusMode) .. ":" .. tostring(NS.UI.listPane:IsShown()) .. ":" .. tostring(NS.Tracker.IsShown())`)).toBe("false:true:true");
@@ -779,11 +860,11 @@ describe("responsiveness: priority, drag, resize grip", () => {
     vm.run(`NS.UI.SetLogCollapsed(false) FamiliarFrame:SetSize(720, 440) FamiliarComposer:SetText("") FamiliarComposer:ClearFocus()`);
   });
 
-  it("focus keys and slash decisions carry immediate context; navigation restores full view and preserves draft", () => {
-    vm.run(`NS.UI.SetFocusMode(true) FamiliarComposer:SetText("check target") NS.UI.Key("next") SlashCmdList.FAMILIAR("approve")`);
+  it("keys and slash decisions in compact view carry immediate context; navigation restores full view and preserves draft", () => {
+    vm.run(`NS.UI.SetFocusMode(true) FamiliarComposer:SetText("check target") NS.UI.Key("next") SlashCmdList.FAMILIAR("deny")`);
     expect(vm.run(`return NS.UI.draftNotice:GetText()`)).toContain("check the message target");
     advance(2);
-    expect(messages.filter(m => m.t === "key" && m.k === "approve").at(-1)).toMatchObject({ view: "focus", src: "slash" });
+    expect(messages.filter(m => m.t === "key" && m.k === "deny").at(-1)).toMatchObject({ view: "focus", src: "slash" });
     vm.run(`NS.UI.Key("back")`);
     expect(vm.run(`return tostring(NS.UI.focusMode)`)).toBe("false");
     expect(vm.run(`return FamiliarComposer:GetText()`)).toBe("check target");
@@ -828,11 +909,11 @@ describe("send feedback is the same for every way of sending", () => {
     expect(history().split(" || ").at(-1)).toBe("tidy the notes folder"); // Ctrl+Up recalls it like any other send
   });
 
-  it("on/off words work in any case instead of going to the agent as a prompt", () => {
+  it("on/off words work in any case instead of going to the familiar as a prompt", () => {
     const prompts = messages.filter((m) => m.t === "prompt").length;
-    vm.run(`SlashCmdList.FAMILIAR("quiet ON")`);
+    vm.run(`SlashCmdList.FAMILIAR("sound ON")`);
     advance(1);
-    expect(last("key")).toMatchObject({ k: "quiet", a: "on" });
+    expect(last("key")).toMatchObject({ k: "sound", a: "on" });
     expect(messages.filter((m) => m.t === "prompt").length).toBe(prompts);
   });
 
@@ -849,59 +930,141 @@ describe("send feedback is the same for every way of sending", () => {
 });
 
 describe("continue in the agent's own app", () => {
-  it("/fam open asks the companion to hand the selected conversation to its app; with words it's a prompt", () => {
+  it("/fam open asks Familiar to hand the selected quest to its app; with words it prints its usage", () => {
     vm.run(`SlashCmdList.FAMILIAR("open")`);
     advance(1);
     expect(last("key")).toMatchObject({ k: "open" });
+    const prompts = messages.filter((m) => m.t === "prompt").length;
     vm.run(`SlashCmdList.FAMILIAR("open the settings file")`);
     advance(1);
-    expect(last("prompt").text).toBe("open the settings file");
+    expect(messages.filter((m) => m.t === "prompt").length).toBe(prompts);
+    expect(vm.run(`return MOCK.chat[#MOCK.chat]`)).toContain("usage: /fam archive | unarchive | open");
   });
 });
 
 describe("UX round 3: keys, text size, combat, tracker", () => {
-  it("Scroll keybindings send wheel messages on the detail pane; Latest is a huge step", () => {
+  it("keybindings: Toggle, type to your familiar, Approve, Deny, Stop, Next, Prev - and nothing else", () => {
     const xml = fs.readFileSync(path.join(ADDON_DIR, "Bindings.xml"), "utf8");
-    for (const [name, call] of [["FAMILIAR_SCROLL_UP", 'Familiar.Scroll("up")'], ["FAMILIAR_SCROLL_DOWN", 'Familiar.Scroll("down")'], ["FAMILIAR_LATEST", 'Familiar.Scroll("latest")']]) {
-      expect(xml).toContain(`<Binding name="${name}" category="ADDONS">${call}</Binding>`);
-      expect(vm.run(`return tostring(_G.BINDING_NAME_${name})`)).not.toBe("nil");
-    }
-    const wheel = (call: string) => {
-      const before = messages.length;
-      vm.run(call);
-      advance(0.5);
-      return messages.slice(before).filter((m) => m.t === "wheel");
-    };
-    expect(wheel(`Familiar.Scroll("down")`)).toEqual([expect.objectContaining({ r: "detail", d: -4 })]);
-    expect(wheel(`Familiar.Scroll("up")`)).toEqual([expect.objectContaining({ r: "detail", d: 4 })]);
-    expect(wheel(`Familiar.Scroll("latest")`)).toEqual([expect.objectContaining({ r: "detail", d: -9999 })]);
-    expect(wheel(`Familiar.Scroll("sideways") Familiar.Scroll()`)).toEqual([]);
+    const names = [...xml.matchAll(/<Binding name="(\w+)"/g)].map((m) => m[1]);
+    expect(names).toEqual(["FAMILIAR_TOGGLE", "FAMILIAR_FOCUS", "FAMILIAR_APPROVE", "FAMILIAR_DENY", "FAMILIAR_STOP", "FAMILIAR_NEXT", "FAMILIAR_PREV"]);
+    for (const name of names) expect(vm.run(`return tostring(_G.BINDING_NAME_${name})`), name).not.toBe("nil");
+    expect(vm.run(`return tostring(Familiar.Scroll) .. tostring(Familiar.ToggleTracker) .. tostring(Familiar.ToggleLog) .. tostring(Familiar.ToggleView)`)).toBe("nilnilnilnil");
+    // "Focus" means the keyboard only: the message box binding, and /fam focus game | stay.
+    expect(vm.run(`return BINDING_NAME_FAMILIAR_FOCUS`)).toMatch(/keyboard/);
   });
 
-  it("/fam font sizes the quest list at once, still tells the companion, and follows its words", () => {
-    vm.run(`NS.UI.Show()`);
-    vm.run(`SlashCmdList.FAMILIAR("font reset")`);
-    advance(1);
-    const base = last("layout").rowH / 16; // physical pixels per row unit at 100%
-    expect(base).toBeGreaterThan(0);
-    const rowH = (cmd: string) => {
+  it("one view button cycles Full -> Quest only -> Compact -> Full", () => {
+    vm.run(`NS.UI.SetFocusMode(false) NS.UI.SetLogCollapsed(false) NS.UI.Show()`);
+    const state = () => vm.run(`return tostring(NS.UI.logCollapsed) .. ":" .. tostring(NS.UI.focusMode) .. ":" .. NS.UI.viewBtn:GetText()`);
+    expect(state()).toBe("false:false:Quest only");
+    vm.run(`MOCK.fire(NS.UI.viewBtn, "OnClick")`);
+    expect(state()).toBe("true:false:Compact");
+    expect(vm.run(`return tostring(NS.UI.listPane:IsShown())`)).toBe("false");
+    vm.run(`MOCK.fire(NS.UI.viewBtn, "OnClick")`);
+    expect(state()).toBe("true:true:Full view");
+    vm.run(`MOCK.fire(NS.UI.viewBtn, "OnClick")`);
+    expect(state()).toBe("false:false:Quest only");
+    expect(vm.run(`return tostring(NS.UI.listPane:IsShown())`)).toBe("true");
+    advance(2);
+    expect(last("layout")).toMatchObject({ focus: false, panel: true });
+    // /fam log also leaves compact view.
+    vm.run(`NS.UI.SetFocusMode(true) SlashCmdList.FAMILIAR("log")`);
+    expect(state()).toBe("true:false:Compact");
+    vm.run(`SlashCmdList.FAMILIAR("log")`);
+    expect(state()).toBe("false:false:Quest only");
+  });
+
+  it("+ Quest offers the familiars switched on, and starts at once when there is only one", () => {
+    const keysAfter = (run: string) => {
       const before = messages.length;
-      vm.run(`SlashCmdList.FAMILIAR(${JSON.stringify(cmd)})`);
+      vm.run(run);
       advance(1);
-      return { rowH: last("layout").rowH / base, keys: messages.slice(before).filter((m) => m.t === "key") };
+      return messages.slice(before).filter((m) => m.t === "key").map((m) => m.k);
     };
-    let r = rowH("font 130");
-    expect(r.rowH).toBeCloseTo(21, 1);
-    expect(r.keys).toEqual([expect.objectContaining({ k: "font", a: "130" })]);
-    expect(vm.run(`return NS.db.fontScale`)).toBe("1.3");
-    expect(rowH("font bigger").rowH).toBeCloseTo(22, 1); // 1.4
-    expect(rowH("font smaller").rowH).toBeCloseTo(21, 1); // back to 1.3
-    expect(rowH("font 500").rowH).toBeCloseTo(26, 1); // clamped to 160%
-    expect(rowH("font 10").rowH).toBeCloseTo(13, 1); // clamped to 80%
-    r = rowH("font is too small in the log"); // a prompt, not a size
-    expect(r.rowH).toBeCloseTo(13, 1);
-    expect(r.keys.map((k: any) => k.k)).toEqual([]);
-    expect(rowH("font reset").rowH).toBeCloseTo(16, 1);
+    vm.run(`NS.UI.SetFocusMode(false) NS.UI.Show() FamiliarSyncData = { generatedAt = GetServerTime(), acked = {}, providers = { "claude", "codex" } }`);
+    expect(vm.run(`return tostring(NS.UI.keys.newClaude) .. tostring(NS.UI.keys.newCodex)`)).toBe("nilnil"); // one button now
+    expect(keysAfter(`NS.UI.keys.newQuest:GetScript("OnClick")()`)).toEqual([]);
+    expect(vm.run(`return tostring(FamiliarQuestMenu:IsShown())`)).toBe("true");
+    const shown = vm.run(`local t = {} for _, b in ipairs(NS.UI.questMenu.buttons) do if b:IsShown() then t[#t + 1] = b:GetText() end end return table.concat(t, ",")`);
+    expect(shown).toBe("Claude Code,Codex");
+    // The menu opens over the quest list, where the Glass paints: it is reported as an occluder.
+    expect(last("layout").occ?.length ?? 0).toBeGreaterThanOrEqual(1);
+    const codex = `(function() for _, b in ipairs(NS.UI.questMenu.buttons) do if b.key == "newCodex" then return b end end end)()`;
+    expect(keysAfter(`MOCK.fire(${codex}, "OnClick")`)).toEqual(["newCodex"]);
+    expect(vm.run(`return tostring(FamiliarQuestMenu:IsShown())`)).toBe("false");
+    // Codex switched off in the control panel: + Quest starts a Claude quest directly.
+    vm.run(`FamiliarSyncData.providers = { "claude", "hermes" }`);
+    expect(keysAfter(`NS.UI.keys.newQuest:GetScript("OnClick")()`)).toEqual(["newClaude"]);
+    expect(vm.run(`return tostring(FamiliarQuestMenu:IsShown())`)).toBe("false");
+    // Closing the window closes the menu.
+    vm.run(`FamiliarSyncData.providers = nil NS.UI.keys.newQuest:GetScript("OnClick")() NS.UI.Hide()`);
+    expect(vm.run(`return tostring(FamiliarQuestMenu:IsShown())`)).toBe("false");
+    vm.run(`NS.UI.Show()`);
+    advance(1);
+  });
+
+  it("tooltip show / hide bursts cost one occluder check, and none while nothing of ours is visible", () => {
+    const state = draftBoot();
+    state.run(`MOCK.advance(5)`);
+    const layouts = () => Number(state.run(`local n = 0 for _, t in ipairs(draftSent) do if t == "layout" then n = n + 1 end end return n`));
+    // Far from the minimap button: tooltips churn, nothing covers our frames, nothing is sent.
+    let before = layouts();
+    state.run(`GameTooltip.__x = 900 for i = 1, 20 do GameTooltip:Show() GameTooltip:Hide() end MOCK.advance(0.2)`);
+    expect(layouts()).toBe(before);
+    // Over the button: one layout for the change, not one per show / hide.
+    before = layouts();
+    state.run(`GameTooltip.__x, GameTooltip.__y, GameTooltip.__w, GameTooltip.__h = 90, 90, 80, 40 for i = 1, 5 do GameTooltip:Hide() GameTooltip:Show() end MOCK.advance(0.2)`);
+    expect(layouts()).toBe(before + 1);
+    // Nothing of ours visible (button hidden, window and tracker closed): nothing is sent.
+    state.run(`GameTooltip:Hide() MOCK.advance(0.2) if NS.Tracker.IsShown() then NS.Tracker.Toggle() end FamiliarMinimapButton:Hide() MOCK.advance(1)`);
+    before = layouts();
+    state.run(`for i = 1, 5 do GameTooltip:Show() GameTooltip:Hide() end MOCK.advance(0.2)`);
+    expect(layouts()).toBe(before);
+    // A failing check stays alive (the guard keeps it) instead of switching occluders off for good.
+    state.run(`FamiliarMinimapButton:Show() NS.Minimap.button = setmetatable({}, { __index = function() error("boom") end })
+      GameTooltip:Show() MOCK.advance(0.2) NS.Minimap.button = FamiliarMinimapButton`);
+    before = layouts();
+    state.run(`GameTooltip:Hide() GameTooltip:Show() MOCK.advance(0.2)`);
+    expect(layouts()).toBe(before + 1);
+  });
+
+  it("the periodic layout resend slows down while the window is closed", () => {
+    const state = draftBoot();
+    const layouts = () => Number(state.run(`local n = 0 for _, t in ipairs(draftSent) do if t == "layout" then n = n + 1 end end return n`));
+    state.run(`NS.UI.Hide() MOCK.advance(5)`);
+    let before = layouts();
+    state.run(`MOCK.advance(32)`);
+    expect(layouts() - before).toBeLessThanOrEqual(2);
+    state.run(`NS.UI.Show() MOCK.advance(1)`);
+    before = layouts();
+    state.run(`MOCK.advance(32)`);
+    expect(layouts() - before).toBeGreaterThanOrEqual(7);
+  }, 30_000); // simulates 64 s of game time in the Lua VM; slow on a busy PC
+
+  it("the window states what it knows about Familiar: never ran, closed (dated), or a dated saved status", () => {
+    const at = (sync: string) => {
+      const s = draftBoot(sync);
+      const status = s.run(`for _, f in ipairs(MOCK.frames) do if f.__parent == NS.UI.status and f.__kind == "FontString" then return f:GetText() end end`) as string;
+      return { status, note: s.run(`return NS.UI.savedNote:GetText()`) as string };
+    };
+    const date = /\d{4}-\d\d-\d\d \d\d:\d\d/.source;
+    const never = at("");
+    expect(never.status).toContain("Familiar isn't running on your PC - start it there");
+    expect(never.note).toContain("No saved status: Familiar hasn't run on your PC yet");
+    const closed = at(`FamiliarSyncData = { generatedAt = GetServerTime() - 600, stoppedAt = GetServerTime() - 600, acked = {} }`);
+    expect(closed.status).toMatch(new RegExp(`Familiar was closed ${date} - start it on your PC`));
+    expect(closed.note).toMatch(new RegExp(`Familiar was closed on ${date}\\.`));
+    const saved = at(`FamiliarSyncData = { generatedAt = GetServerTime() - 60, acked = {}, notice = "Saved quests need attention." }`);
+    expect(saved.note).toMatch(new RegExp(`Saved ${date}\\. Live view resumes when the game window is active; if it does not, open Familiar from the tray\\.`));
+    expect(saved.status).toMatch(new RegExp(`Saved ${date} - not live`));
+    expect(saved.note).toContain("Saved quests need attention.");
+    for (const s of [never, closed, saved]) {
+      expect(s.note).toContain("This is a saved status, not the conversation");
+      expect(s.status + s.note).not.toMatch(/isn't drawing|is it running/);
+    }
+    // The window never shows titles or text from a saved copy an older version wrote.
+    const old = draftBoot(`FamiliarSyncData = { generatedAt = GetServerTime(), acked = {}, list = { { kind = "thread", text = "OLD-TITLE" } }, selected = { title = "OLD-TITLE", text = "OLD-REPLY" } }`);
+    expect(old.run(`local t = {} for _, f in ipairs(MOCK.frames) do if f.__kind == "FontString" then t[#t + 1] = f:GetText() end end return table.concat(t, "|")`)).not.toMatch(/OLD-/);
   });
 
   it("login adopts the companion's text size from FamiliarSync; without it, the saved size stays", () => {
@@ -926,32 +1089,27 @@ describe("UX round 3: keys, text size, combat, tracker", () => {
     expect(rowHAt(`FamiliarSyncData = { fontScale = "big" }`).rows).toBe(16);
   });
 
-  it("/fam stream and /fam tutorial go to the companion and are listed in /fam help", () => {
+  it("/fam stream only turns Stream-safe on; /fam tutorial opens the practice quest; both are in /fam help", () => {
     const keysSince = (before: number) => messages.slice(before).filter((m) => m.t === "key");
     let before = messages.length;
-    vm.run(`SlashCmdList.FAMILIAR("stream on") SlashCmdList.FAMILIAR("stream OFF") SlashCmdList.FAMILIAR("stream")`);
+    vm.run(`MOCK.chat = {} SlashCmdList.FAMILIAR("stream on") SlashCmdList.FAMILIAR("stream OFF") SlashCmdList.FAMILIAR("stream")`);
     advance(2);
-    expect(keysSince(before)).toEqual([
-      expect.objectContaining({ k: "stream", a: "on" }),
-      expect.objectContaining({ k: "stream", a: "off" }),
-      expect.objectContaining({ k: "stream", a: "" }),
-    ]);
+    expect(keysSince(before)).toEqual([expect.objectContaining({ k: "stream", a: "on" }), expect.objectContaining({ k: "stream", a: "on" })]);
+    expect(vm.run(`return table.concat(MOCK.chat, " | ")`)).toContain("turn it off in the control panel");
     before = messages.length;
     vm.run(`NS.UI.Hide() SlashCmdList.FAMILIAR("tutorial")`);
     advance(1);
     expect(keysSince(before)).toEqual([expect.objectContaining({ k: "tutorial", src: "slash", view: "full" })]);
     expect(vm.run(`return tostring(NS.UI.IsShown())`)).toBe("true");
-    // With extra words these are prompts for the selected quest, as for every other command.
+    // With extra words these print their usage: no key and no message for a familiar.
     before = messages.length;
     vm.run(`SlashCmdList.FAMILIAR("tutorial for dummies") SlashCmdList.FAMILIAR("stream is blurry")`);
     advance(2);
-    expect(keysSince(before).filter((k) => k.k === "tutorial" || k.k === "stream")).toEqual([]);
-    expect(messages.slice(before).filter((m) => m.t === "prompt").map((m) => m.text)).toEqual(["tutorial for dummies", "stream is blurry"]);
+    expect(messages.slice(before).filter((m) => ["key", "prompt"].includes(m.t))).toEqual([]);
     vm.run(`MOCK.chat = {} SlashCmdList.FAMILIAR("help")`);
     const help = vm.run(`return table.concat(MOCK.chat, " || ")`);
-    expect(help).toMatch(/\/fam stream \[on \| off\]/);
+    expect(help).toMatch(/\/fam stream - turn Stream-safe on/);
     expect(help).toMatch(/\/fam tutorial/);
-    expect(help).toMatch(/jump to the latest reply/);
   });
 
   it("the combat flag keeps flowing: PLAYER_REGEN_DISABLED / ENABLED set layout.combat", () => {
@@ -1034,11 +1192,10 @@ describe("minimap button rect (layout.mini)", () => {
     expect(mini(state)).toBe(state.run(`return table.concat(NS.Layout.prect(FamiliarMinimapButton), ",")`));
   });
 
-  it("is absent when the button was never created (db.minimap.hide)", () => {
+  it("is there even when an older version saved minimap.hide (it had no way to be set or undone)", () => {
     const state = draftBoot(`FamiliarDB = { minimap = { angle = 210, hide = true } }`);
-    expect(state.run(`return tostring(FamiliarMinimapButton)`)).toBe("nil");
-    expect(mini(state)).toBe("none");
-    expect(state.run(`NS.Layout.Send() return tostring(NS.Layout.Build().mini)`)).toBe("nil");
+    expect(state.run(`return tostring(FamiliarDB.minimap.hide)`)).toBe("nil");
+    expect(mini(state)).toBe("102,845,32,32");
   });
 
   it("is absent while the button is hidden, and back when it is shown again", () => {
@@ -1084,6 +1241,8 @@ describe("minimap button rect (layout.mini)", () => {
       return state.run(`return table.concat(MOCK.chat, "|")`).split("|").find((l) => l.includes("minimap:")) ?? "";
     };
     expect(diag(draftBoot())).toMatch(/minimap: 102,845 32×32$/);
-    expect(diag(draftBoot(`FamiliarDB = { minimap = { angle = 210, hide = true } }`))).toMatch(/minimap: hidden$/);
+    const hidden = draftBoot();
+    hidden.run(`FamiliarMinimapButton:Hide()`);
+    expect(diag(hidden)).toMatch(/minimap: hidden$/);
   });
 });

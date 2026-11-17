@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import { CodexBackend, prettyCommand } from "../src/agents/codex";
-import { ClaudeBackend } from "../src/agents/claude";
+import { ClaudeBackend, insideFolder, INSTRUCTIONS_MAX, projectInstructions } from "../src/agents/claude";
 import type { AgentEvent } from "../src/agents/types";
 import { approvalText, editPreview, FULL_CAP, summarizeTool, truncatePreview } from "../src/agents/types";
 import { projectRootOf } from "../src/hub/projects";
@@ -312,6 +312,83 @@ describe("Claude automatic retry", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("project instructions without the player's agent configuration", () => {
+  const zone = () => fs.mkdtempSync(path.join(os.tmpdir(), "fam-ins-"));
+
+  it("reads CLAUDE.md and .claude/CLAUDE.md as text, and nothing else in the folder", () => {
+    const dir = zone();
+    fs.writeFileSync(path.join(dir, "CLAUDE.md"), "﻿Use tabs.\n");
+    fs.mkdirSync(path.join(dir, ".claude"));
+    fs.writeFileSync(path.join(dir, ".claude", "CLAUDE.md"), "Run npm test first.");
+    fs.writeFileSync(path.join(dir, ".claude", "settings.json"), JSON.stringify({ hooks: { PreToolUse: [] }, permissions: { allow: ["Bash"] } }));
+    fs.writeFileSync(path.join(dir, ".mcp.json"), JSON.stringify({ mcpServers: { x: { command: "evil" } } }));
+    const ins = projectInstructions(dir)!;
+    expect(ins.files).toEqual(["CLAUDE.md", ".claude/CLAUDE.md"]);
+    expect(ins.text).toContain("Use tabs.");
+    expect(ins.text).toContain("Run npm test first.");
+    expect(ins.text).not.toContain("﻿");
+    expect(ins.text).not.toMatch(/hooks|permissions|mcpServers|evil/);
+    expect(ins.cut).toBe(false);
+  });
+
+  it("has none for a folder without them (or a CLAUDE.md that is a folder or blank)", () => {
+    const dir = zone();
+    expect(projectInstructions(dir)).toBeUndefined();
+    fs.mkdirSync(path.join(dir, "CLAUDE.md"));
+    fs.mkdirSync(path.join(dir, ".claude"));
+    fs.writeFileSync(path.join(dir, ".claude", "CLAUDE.md"), "  \n");
+    expect(projectInstructions(dir)).toBeUndefined();
+    expect(projectInstructions(path.join(dir, "missing"))).toBeUndefined();
+  });
+
+  it("never follows a link out of the quest's folder", () => {
+    const outside = zone();
+    fs.writeFileSync(path.join(outside, "CLAUDE.md"), "secret from elsewhere");
+    fs.mkdirSync(path.join(outside, "dot"));
+    fs.writeFileSync(path.join(outside, "dot", "CLAUDE.md"), "also elsewhere");
+    const dir = zone();
+    let linked = true;
+    try {
+      fs.symlinkSync(path.join(outside, "CLAUDE.md"), path.join(dir, "CLAUDE.md"), "file");
+    } catch {
+      linked = false; // Windows without Developer Mode cannot make file links
+    }
+    fs.symlinkSync(path.join(outside, "dot"), path.join(dir, ".claude"), "junction"); // no rights needed
+    expect(projectInstructions(dir)).toBeUndefined();
+    if (linked) expect(fs.lstatSync(path.join(dir, "CLAUDE.md")).isSymbolicLink()).toBe(true);
+    // The path check itself.
+    const root = path.join(outside, "zone");
+    expect([root, path.join(root, "CLAUDE.md"), path.join(root, "..x", "CLAUDE.md")].map((p) => insideFolder(root, p))).toEqual([true, true, true]);
+    expect([outside, path.join(root, "..", "CLAUDE.md"), path.parse(root).root + "elsewhere"].map((p) => insideFolder(root, p))).toEqual([false, false, false]);
+  });
+
+  it("caps the text and says it was cut", () => {
+    const dir = zone();
+    fs.writeFileSync(path.join(dir, "CLAUDE.md"), "x".repeat(INSTRUCTIONS_MAX - 10));
+    fs.mkdirSync(path.join(dir, ".claude"));
+    fs.writeFileSync(path.join(dir, ".claude", "CLAUDE.md"), "y".repeat(100));
+    const ins = projectInstructions(dir)!;
+    expect(ins.cut).toBe(true);
+    expect(ins.chars).toBe(INSTRUCTIONS_MAX);
+    expect(ins.text.match(/y/g)?.length).toBe(10);
+    expect(ins.text).toContain(`[Cut at ${INSTRUCTIONS_MAX} characters.]`);
+  });
+
+  it("becomes the quest's system prompt, with a log line naming the files (startQuery: switch off, not a chat)", () => {
+    const dir = zone();
+    fs.writeFileSync(path.join(dir, "CLAUDE.md"), "Prefer small diffs.");
+    const lines: string[] = [];
+    const b = new ClaudeBackend({ log: (s) => lines.push(s), version: "t" });
+    const options: any = {};
+    (b as any).addInstructions({ cwd: dir }, options);
+    expect(options.systemPrompt).toContain("Prefer small diffs.");
+    expect(lines.join("\n")).toMatch(/project instructions: CLAUDE\.md .*settings, hooks and MCP servers not loaded/);
+    const none: any = {};
+    (b as any).addInstructions({ cwd: zone() }, none);
+    expect(none.systemPrompt).toBeUndefined();
   });
 });
 

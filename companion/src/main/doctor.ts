@@ -3,7 +3,7 @@
 // main supplies the facts; the control panel shows the line and Copy diagnostics carries it.
 
 export interface Doctor {
-  step: "game" | "frames" | "strip" | "crc" | "covered" | "ok";
+  step: "game" | "frames" | "strip" | "ramp" | "crc" | "covered" | "ok";
   level: "ok" | "warn" | "muted";
   text: string;
 }
@@ -16,8 +16,9 @@ export interface DoctorFacts {
   foreground: boolean;
   captureMode: "window" | "screen";
   /** fps: 0 when no frame statistics arrived lately. lock: where the strip was found (null: not
-   * found). lastOk: the last decoded strip frame (ms epoch, 0 = never). */
-  stats: { fps: number; crc: number; lock: { x: number; y: number; pitch: number } | null | undefined; lastOk: number };
+   * found). lastOk: the last decoded strip frame (ms epoch, 0 = never). rampAt: when the strip's
+   * finder was last seen with its grey steps run together (clipped or crushed; ms epoch, 0 = never). */
+  stats: { fps: number; crc: number; lock: { x: number; y: number; pitch: number } | null | undefined; lastOk: number; rampAt?: number };
   /** Since when the game has been on screen for this link attempt (found or restored), ms epoch. */
   startedAt: number;
   now: number;
@@ -51,9 +52,12 @@ export function linkDoctor(s: DoctorFacts): Doctor {
     return waited > FRAMES_GRACE_MS
       ? warn("frames", "WoW is open but Familiar gets no picture of it. Another always-on-top app may block capture; try the other display mode, or HDR off for that monitor.")
       : waiting("frames", "Starting to read the WoW window…");
+  // The strip is on screen but drawn with its grey steps run together: nothing in it can be read.
+  if (s.now - (s.stats.rampAt || 0) < LINK_FRESH_MS)
+    return warn("ramp", "Familiar sees the strip, but its grey steps look the same, so it can't be read. HDR or a colour filter is the usual cause: turn HDR off for this monitor, and set WoW's Gamma and Contrast, graphics-driver colour settings and tools like ReShade back to default.");
   // The strip was found but no frame decoded for LINK_FRESH_MS: its colours don't read back.
   if (s.stats.lock)
-    return warn("crc", "The strip is there but can't be read. A colour filter, HDR or a scaling mismatch is the usual cause: /fam strip vivid, HDR off, or move WoW to one monitor.");
+    return warn("crc", "The strip is there but can't be read. A colour filter, HDR or a scaling mismatch is the usual cause: turn HDR and colour filters off, or move WoW to one monitor.");
   return waited > STRIP_GRACE_MS
     ? warn("strip", "Familiar sees the game but no coloured strip in its top-left corner. In game: is Familiar ticked in AddOns? Type /fam strip — it should say TOPLEFT. If something covers that corner, /fam strip tr.")
     : waiting("strip", "Looking for the coloured strip in WoW's top-left corner…");

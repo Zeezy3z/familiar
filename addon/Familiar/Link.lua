@@ -17,29 +17,18 @@ Link.FINDER_CELLS = 8
 Link.FLAG_IDLE = 1
 Link.FLAG_REPEAT = 2
 Link.FINDER = {
-  { 255, 0, 255 }, { 0, 255, 0 }, { 0, 0, 0 }, { 85, 85, 85 },
-  { 170, 170, 170 }, { 255, 255, 255 }, { 0, 255, 255 }, { 255, 255, 0 },
+  { 255, 0, 255 }, { 0, 255, 0 }, { 0, 0, 0 }, { 28, 28, 28 },
+  { 56, 56, 56 }, { 84, 84, 84 }, { 0, 255, 255 }, { 255, 255, 0 },
 }
--- Channel levels per palette (must match companion/src/link/codec.ts PALETTES). "dim" keeps the
--- data cells near-black; the decoder calibrates from the ramp cells, which use the same levels.
-Link.PALETTES = {
-  vivid = { [0] = 0, 85 / 255, 170 / 255, 1 },
-  dim = { [0] = 0, 28 / 255, 56 / 255, 84 / 255 },
-}
-local LEVEL = Link.PALETTES.vivid
+-- Channel levels of a 2-bit symbol component (must match companion/src/link/codec.ts LEVELS).
+-- Kept low on purpose: some clients draw the strip brighter than asked, and a full-range ramp
+-- (0/85/170/255) then clips its top steps so the companion can never read it. The decoder
+-- calibrates from the ramp cells, which use these same levels.
+Link.LEVELS = { [0] = 0, 28 / 255, 56 / 255, 84 / 255 }
+local LEVEL = Link.LEVELS
 
-function Link.SetPalette(name)
-  LEVEL = Link.PALETTES[name] or Link.PALETTES.vivid
-  Link.palette = Link.PALETTES[name] and name or "vivid"
-end
-Link.palette = "vivid"
-
--- RGB (0..1) of finder cell i (1..8): detection cells stay vivid, ramp cells follow the palette.
+-- RGB (0..1) of finder cell i (1..8): detection cells are full colour, ramp cells (3..6) are LEVELS.
 function Link.FinderColor(i)
-  if i >= 3 and i <= 6 then
-    local v = LEVEL[i - 3]
-    return v, v, v
-  end
   local f = Link.FINDER[i]
   return f[1] / 255, f[2] / 255, f[3] / 255
 end
@@ -122,11 +111,14 @@ end
 -- Outbox / scheduler ---------------------------------------------------------------------------
 -- A message is a string; it is split into frames that each stay on screen for at least
 -- `hold` seconds and `minFrames` rendered frames so a 30 fps capture never misses one.
+-- Protocol constants: never saved per player (an older version saved them in FamiliarDB; Core
+-- drops those at load).
 
 Link.cols = 64
 Link.rows = 4
 Link.cell = 4 -- physical pixels per cell
 Link.hold = 0.07
+Link.inset = 0 -- physical pixels between the strip and its screen corner
 Link.minFrames = 2
 Link.idleCols = 32 -- idle beacon is a single thin row
 
@@ -222,7 +214,7 @@ function Link.ApplyGeometry()
   local pos = ns.db and ns.db.stripPos or "TOPLEFT"
   local ox = (pos == "TOPLEFT" or pos == "BOTTOMLEFT") and 1 or -1
   local oy = (pos == "TOPLEFT" or pos == "TOPRIGHT") and -1 or 1
-  strip:SetPoint(pos, UIParent, pos, ox * (ns.db and ns.db.stripInset or 0), oy * (ns.db and ns.db.stripInset or 0))
+  strip:SetPoint(pos, UIParent, pos, ox * Link.inset, oy * Link.inset)
   strip:SetSize(Link.cols * Link.cell, Link.rows * Link.cell)
   for i, tex in ipairs(cellTex) do
     local c = (i - 1) % Link.cols
@@ -280,8 +272,4 @@ function Link.Init()
     if cells then paint(cells, cols, rows) end
   end))
   Link.frame = strip
-end
-
-function Link.SetVisible(on)
-  if strip then strip:SetShown(on) end
 end

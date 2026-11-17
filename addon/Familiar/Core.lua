@@ -1,89 +1,54 @@
 -- Familiar core: saved settings, the outgoing message API, events and slash commands.
 -- The addon is a "terminal": it owns the in-game chrome and input, transmits everything over the
--- Runestrip, and lets the companion paint live content on top (the Glass overlay).
+-- Runestrip, and lets Familiar on the PC paint live content on top (the Glass).
 local ADDON, ns = ...
 
 ns.VERSION = (C_AddOns and C_AddOns.GetAddOnMetadata or GetAddOnMetadata)(ADDON, "Version") or "dev"
 -- Bindings.xml needs a global. Export only what it calls, as wrappers: nothing here reaches ns,
 -- Send, Link or the saved settings. Any addon can still call these, so each is exactly what a
--- keypress does and nothing more (the companion verifies approvals against real input anyway).
+-- keypress does and nothing more (Familiar verifies approvals against real input anyway).
 local BIND_KEYS = { approve = true, deny = true, stop = true, next = true, prev = true }
--- Scroll bindings reuse the wheel message; the Glass treats a huge negative step on "detail" as
--- "jump to the latest reply" (the same as clicking Latest).
-local SCROLL_STEPS = { up = 4, down = -4, latest = -9999 }
 _G.Familiar = {
-  Scroll = function(dir) if SCROLL_STEPS[dir] then ns.UI.Wheel("detail", SCROLL_STEPS[dir]) end end,
   Toggle = function() ns.UI.Toggle() end,
   Focus = function() ns.UI.Focus() end,
   Key = function(k) if BIND_KEYS[k] then ns.UI.Key(k, "bind") end end,
-  ToggleTracker = function() ns.Tracker.Toggle() end,
-  ToggleLog = function() ns.UI.ToggleLog() end,
-  ToggleView = function() ns.UI.ToggleFocusMode() end,
 }
 
 BINDING_HEADER_FAMILIAR = "Familiar"
-BINDING_NAME_FAMILIAR_TOGGLE = "Toggle Familiar window"
-BINDING_NAME_FAMILIAR_FOCUS = "Speak to your familiar (focus composer)"
-BINDING_NAME_FAMILIAR_APPROVE = "Approve pending request"
-BINDING_NAME_FAMILIAR_DENY = "Deny pending request"
+BINDING_NAME_FAMILIAR_TOGGLE = "Open or close the Familiar window"
+BINDING_NAME_FAMILIAR_FOCUS = "Type to your familiar (puts the keyboard in the message box)"
+BINDING_NAME_FAMILIAR_APPROVE = "Approve the pending request"
+BINDING_NAME_FAMILIAR_DENY = "Deny the pending request"
 BINDING_NAME_FAMILIAR_STOP = "Stop the running turn"
 BINDING_NAME_FAMILIAR_NEXT = "Next quest"
 BINDING_NAME_FAMILIAR_PREV = "Previous quest"
-BINDING_NAME_FAMILIAR_SCROLL_UP = "Scroll the quest up"
-BINDING_NAME_FAMILIAR_SCROLL_DOWN = "Scroll the quest down"
-BINDING_NAME_FAMILIAR_LATEST = "Jump to the latest reply"
-BINDING_NAME_FAMILIAR_TRACKER = "Toggle quest tracker"
-BINDING_NAME_FAMILIAR_VIEW = "Toggle conversation-only focus view"
-BINDING_NAME_FAMILIAR_LOG = "Collapse / expand the quest log"
 
 local defaults = {
   stripPos = "TOPLEFT",
-  palette = "vivid", -- "dim" = near-black data cells (try once the link is confirmed working)
-  stripInset = 0,
-  cell = 4,
-  cols = 64,
-  rows = 4,
-  hold = 0.07,
   window = { point = "CENTER", x = 0, y = 40, w = 720, h = 440 },
   shown = false,
   tracker = { shown = true, point = "RIGHT", x = -60, y = 120, w = 240, h = 150 },
-  minimap = { angle = 210, hide = false },
-  fontScale = 1, -- quest list text size, 0.8-1.6 (/fam font; the companion's setting is adopted at login)
-  opacity = 100, -- window background, percent (Options -> AddOns -> Familiar, /fam opacity)
-  hideInCombat = false,
-  hover = false, -- stream hover positions to the Glass (more strip traffic)
-  enterSends = true,
-  sendFocus = "game", -- after Send, keys go back to the game ("stay": keep typing in the composer)
+  minimap = { angle = 210 },
+  fontScale = 1, -- quest list text size, 0.8-1.6 (the control panel's Text size, adopted at login)
+  opacity = 100, -- window background, percent (Options -> AddOns -> Familiar)
+  sendFocus = "game", -- after Send, keys go back to the game ("stay": keep typing in the message box)
+  logCollapsed = false, -- the quest list is hidden (view button, /fam log)
   history = {},
-  outbox = {}, -- prompts not yet confirmed by the companion (see ns.SendTracked)
-  chatContext = true, -- tell chats your class / level / zone (/fam ask context off)
+  outbox = {}, -- prompts not yet confirmed by Familiar (see ns.SendTracked)
+  chatContext = true, -- tell chats your class, level, location and quest log (/fam ask context off)
+  -- Optional, absent until used: logExpandedW (window width before the quest list was hidden),
+  -- outboxDropped (prompts pushed out of a full outbox, reported at the next login).
 }
+-- Keys older versions saved that are no longer settings: the Runestrip's protocol constants
+-- (Link.lua owns them), the palette, and options that had no way to set them.
+local RETIRED = { "palette", "stripInset", "cell", "cols", "rows", "hold", "hover", "hideInCombat", "enterSends" }
 
--- Text size words, the same as the companion's /fam font: bigger | smaller | reset | 80-160 (or a
--- factor). Returns the new scale (0.8-1.6, steps of 0.1), or nil if the words aren't a size.
+-- A text size read from FamiliarSync or saved settings: 0.8-1.6 in steps of 0.1; unusable means 100%.
 local FONT_MIN, FONT_MAX = 0.8, 1.6
-local function clampFont(s)
-  return math.floor(math.min(FONT_MAX, math.max(FONT_MIN, s)) * 10 + 0.5) / 10
-end
-function ns.FontScaleFor(cur, arg)
-  local a = (arg or ""):lower()
-  local s
-  if a == "bigger" or a == "larger" or a == "up" or a == "+" then s = cur + 0.1
-  elseif a == "smaller" or a == "down" or a == "-" then s = cur - 0.1
-  elseif a == "reset" or a == "default" then s = 1
-  else
-    local digits = a:match("^(%d+)%%?$")
-    if not digits then return nil end
-    local n = tonumber(digits)
-    s = n > 4 and n / 100 or n
-  end
-  return clampFont(s)
-end
--- A scale read from FamiliarSync or saved settings: anything unusable means 100%.
 function ns.SanitizeFontScale(v)
   v = tonumber(v)
   if not v or v ~= v then return 1 end
-  return clampFont(v)
+  return math.floor(math.min(FONT_MAX, math.max(FONT_MIN, v)) * 10 + 0.5) / 10
 end
 
 local function applyDefaults(dst, src)
@@ -98,8 +63,8 @@ local function applyDefaults(dst, src)
 end
 
 -- Outgoing messages -----------------------------------------------------------------------------
--- reliable: transmitted twice (the companion de-duplicates). key: coalesce with queued same-key.
--- Guard: run a handler protected. The first failure is reported once (chat + companion log) and
+-- reliable: transmitted twice (Familiar de-duplicates). key: coalesce with queued same-key.
+-- Guard: run a handler protected. The first failure is reported once (chat + Familiar's log) and
 -- the handler switches itself off, so a bug can never spam errors every frame or tooltip.
 local reported = {}
 function ns.Guard(name, fn, keepAlive)
@@ -121,13 +86,13 @@ end
 
 local encodeJSON = (C_EncodingUtil and C_EncodingUtil.SerializeJSON) or ns.Json.encode
 
--- WoW edit boxes escape a typed "|" as "||"; agents must receive what the player typed.
+-- WoW edit boxes escape a typed "|" as "||"; familiars must receive what the player typed.
 function ns.Unescape(text)
   return (text:gsub("||", "|"))
 end
 
 -- Background messages wait behind everything the player is doing right now.
-local BACKGROUND = { quests = true, hello = true, hover = true }
+local BACKGROUND = { quests = true, hello = true }
 
 function ns.Send(msg, reliable, key)
   msg.v = 1
@@ -136,10 +101,32 @@ function ns.Send(msg, reliable, key)
   return ns.Link.Enqueue(payload, { reliable = reliable, key = key, urgent = not BACKGROUND[msg.t] })
 end
 
+-- Saved status ----------------------------------------------------------------------------------
+-- FamiliarSync is written by Familiar on the PC and read only at login / reload: a timestamp and
+-- a status, never the conversation. This is everything the addon can know about Familiar without
+-- the Glass: "never" (no saved status: it has not run), "closed" (it said so when it quit), or
+-- "saved" (it was running when this was saved; the game window may merely be inactive now).
+local function when(t) return date("%Y-%m-%d %H:%M", tonumber(t) or 0) end
+function ns.SavedState()
+  local d = FamiliarSyncData
+  if type(d) ~= "table" then
+    return "never", "Familiar isn't running on your PC - start it there",
+      "No saved status: Familiar hasn't run on your PC yet. Start it there; it shows your quests over this window."
+  elseif d.stoppedAt then
+    return "closed", "Familiar was closed " .. when(d.stoppedAt) .. " - start it on your PC",
+      "Familiar was closed on " .. when(d.stoppedAt) .. ". Start it on your PC to see your quests here."
+  end
+  return "saved", "Saved " .. when(d.generatedAt) .. " - not live",
+    "Saved " .. when(d.generatedAt) .. ". Live view resumes when the game window is active; if it does not, open Familiar from the tray."
+end
+
+-- Familiar is known not to be running (as of login / reload).
+function ns.AppClosed() return ns.SavedState() ~= "saved" end
+
 -- Outbox -----------------------------------------------------------------------------------------
--- Nothing tells the addon live whether the companion is reading the Runestrip. So prompts get an
--- id and stay in FamiliarDB.outbox until the companion lists that id in FamiliarSync (read at
--- login / reload). Whatever is left can be resent; the companion ignores ids it already handled.
+-- Nothing tells the addon live whether Familiar is reading the Runestrip. So prompts get an id and
+-- stay in FamiliarDB.outbox until Familiar lists that id in FamiliarSync (read at login / reload).
+-- Whatever is left can be resent on request; Familiar ignores ids it already handled.
 local idSeq = 0
 function ns.SendTracked(msg)
   idSeq = idSeq + 1
@@ -156,7 +143,7 @@ function ns.SendTracked(msg)
 end
 
 -- One line about the character for chats ("level 20 Night Elf Rogue (Alliance) in Darkshore -
--- Auberdine"). Only read from the game's own API; the companion uses it for chats only.
+-- Auberdine"). Only read from the game's own API; Familiar uses it for chats only.
 function ns.GameContext()
   if not ns.db.chatContext then return nil end
   local ok, ctx = pcall(function()
@@ -173,9 +160,10 @@ function ns.GameContext()
   return ok and ctx or nil
 end
 
--- At login / reload: drop what the companion confirmed and tell the player about the rest.
+-- At login / reload: drop what Familiar confirmed and tell the player about the rest. Nothing is
+-- sent again unless the player asks (/fam resend).
 local function reconcileOutbox()
-  local data = FamiliarSyncData
+  local data = type(FamiliarSyncData) == "table" and FamiliarSyncData or nil
   local acked = {}
   for _, id in ipairs(data and data.acked or {}) do acked[id] = true end
   local now = GetServerTime()
@@ -187,8 +175,8 @@ local function reconcileOutbox()
       expired = expired + 1
     else
       keep[#keep + 1] = m
-      -- Missed for sure if a snapshot written after it doesn't list it, or the companion was
-      -- closed / silent (heartbeat every 5 min) when it was sent.
+      -- Missed for sure if a status saved after it doesn't list it, or Familiar was closed /
+      -- silent (it saves at least every 5 min) when it was sent.
       local after = data and data.generatedAt and data.generatedAt >= (m.at or 0) + 5
       local down = not data or (data.stoppedAt and data.stoppedAt <= (m.at or 0) + 5) or now - (data.generatedAt or 0) > 600
       if after or down then missed = missed + 1 end
@@ -207,18 +195,15 @@ local function reconcileOutbox()
     ns.Print(("|cffff9d2e%d older message%s dropped|r from the outbox (it keeps the newest 20, for a day) and can't be resent."):format(
       dropped, dropped > 1 and "s were" or " was"))
   end
-  if data and data.stoppedAt then
-    ns.Print(("the companion was closed at %s - start Familiar on your PC."):format(date("%H:%M", data.stoppedAt)))
-  elseif not data then
-    ns.Print("start Familiar on your PC to talk to your agents (it paints over this window).")
-  end
+  local state, short = ns.SavedState()
+  if state ~= "saved" then ns.Print(short .. ".") end
 end
 ns.ReconcileOutbox = reconcileOutbox
 
 local function resend()
   local n = 0
   for _, m in ipairs(ns.db.outbox) do
-    -- Same id: the companion drops it if the first copy did arrive after all.
+    -- Same id: Familiar drops it if the first copy did arrive after all.
     if ns.Send({ t = m.t, id = m.id, agent = m.agent, text = m.text, new = m.new, ctx = m.ctx }, true) then n = n + 1 end
   end
   ns.Print(n > 0 and ("resent %d message%s."):format(n, n > 1 and "s" or "") or "nothing to resend.")
@@ -253,16 +238,14 @@ local function hello()
   ns.Send({
     t = "hello",
     addon = ns.VERSION,
-    viewKeys = 1, -- every native key carries its own full/focus context
     build = version .. "." .. build,
     iface = iface,
     char = UnitName("player"),
     realm = GetRealmName(),
     locale = GetLocale(),
-    syncAt = FamiliarSyncData and FamiliarSyncData.generatedAt or 0,
+    syncAt = type(FamiliarSyncData) == "table" and FamiliarSyncData.generatedAt or 0,
   }, false, "hello")
 end
-ns.Hello = hello
 
 -- Events ----------------------------------------------------------------------------------------
 local ev = CreateFrame("Frame")
@@ -275,19 +258,19 @@ ev:RegisterEvent("PLAYER_REGEN_ENABLED")
 ev:SetScript("OnEvent", ns.Guard("events", function(_, event, arg1)
   if event == "ADDON_LOADED" and arg1 == ADDON then
     FamiliarDB = FamiliarDB or {}
+    for _, k in ipairs(RETIRED) do FamiliarDB[k] = nil end
+    if type(FamiliarDB.minimap) == "table" then FamiliarDB.minimap.hide = nil end
     applyDefaults(FamiliarDB, defaults)
     ns.db = FamiliarDB
-    -- WoW scopes this file to the current account / realm / character. Never bind an unsent
-    -- composer to FamiliarSync.selected: that snapshot is not a live conversation target.
+    -- WoW scopes this file to the current account / realm / character. The saved status never
+    -- names a conversation, so an unsent message box is never bound to one.
     if type(FamiliarCharDB) ~= "table" then FamiliarCharDB = {} end
     ns.charDB = FamiliarCharDB
-    ns.Link.cols, ns.Link.rows, ns.Link.cell, ns.Link.hold = ns.db.cols, ns.db.rows, ns.db.cell, ns.db.hold
-    ns.Link.SetPalette(ns.db.palette)
   elseif event == "PLAYER_LOGIN" then
-    -- The companion's text size is the source at login (so the control panel's setting reaches the
-    -- quest list after a /reload); without a snapshot, keep what /fam font last set here.
-    local synced = FamiliarSyncData and FamiliarSyncData.fontScale
-    ns.db.fontScale = ns.SanitizeFontScale(synced ~= nil and synced or ns.db.fontScale)
+    -- The control panel's text size is the source at login (so it reaches the quest list after a
+    -- /reload); without a saved status, keep the last size.
+    local synced = type(FamiliarSyncData) == "table" and FamiliarSyncData.fontScale
+    ns.db.fontScale = ns.SanitizeFontScale(synced or ns.db.fontScale)
     -- Each module starts independently: one failing must not take the others (or the link) down.
     initStep("link", ns.Link.Init)
     initStep("window", ns.UI.Init)
@@ -304,217 +287,242 @@ ev:SetScript("OnEvent", ns.Guard("events", function(_, event, arg1)
   elseif event == "PLAYER_LOGOUT" then
     -- SavedVariables are written after this event on ordinary logout and /reload.
     if ns.UI.SaveDraft then ns.UI.SaveDraft() end
-  elseif event == "PLAYER_REGEN_DISABLED" then
-    ns.inCombat = true
-    if ns.db.hideInCombat then ns.UI.Hide(true) end
-    ns.Layout.Dirty()
-  elseif event == "PLAYER_REGEN_ENABLED" then
-    ns.inCombat = false
-    if ns.db.hideInCombat and ns.db.shown then ns.UI.Show() end
+  elseif event == "PLAYER_REGEN_DISABLED" or event == "PLAYER_REGEN_ENABLED" then
+    ns.inCombat = event == "PLAYER_REGEN_DISABLED"
     ns.Layout.Dirty()
   end
 end, true))
 
 -- Slash commands --------------------------------------------------------------------------------
-local HELP = {
-  "/fam - toggle the Familiar window",
-  "/fam <message> - send a message to the selected quest (thread)",
-  "/fam claude <message> | /fam codex <message> - start a new quest with that familiar (also hermes, grok... when installed)",
-  "/fam deny | stop - act on the selected quest (approve / always: click the card, or your Approve keybind)",
-  "Mode button - permission mode for the selected quest: Ask first <-> Plan only. Accept edits and Auto are chosen in the desktop control panel.",
-  "/fam tracker - toggle the quest tracker",
-  "Keybindings (Options -> Keybindings -> AddOns -> Familiar): scroll the quest up / down, jump to the latest reply. Page Up / Page Down / End work well.",
-  "/fam view focus | full - conversation-only view, or restore full controls (session only)",
-  "/fam log - collapse / expand the quest log (just the quest you're in)",
-  "/fam strip [tl|tr|bl|br] - move the Runestrip (link) to a screen corner",
-  "/fam strip dim | vivid - near-black or colourful Runestrip",
-  "/fam reload - reload the UI to pull a fresh native snapshot",
-  "/fam diag - print link/screen diagnostics",
-  "/fam tools - tool calls: grouped / every step / hidden",
-  "/fam pin - pin or unpin the selected desktop thread (listed even when old)",
-  "/fam open - continue the selected quest in its agent's own app (Claude or Codex); Familiar lets go of it first",
-  "/fam archive - archive the selected quest or thread (or right-click it); also in Codex/Hermes",
-  "/fam unarchive - restore everything archived from Familiar; /fam archived counts them",
-  "/fam show all | claude | codex - filter the Quest Log by agent",
-  "/fam suggest <idea> - open a pre-filled GitHub issue in your browser (up to 500 characters); nothing is sent until you submit it there",
-  "/fam ask <question> - chat (no project, web search): game questions, anything; /fam ask new <q> starts a fresh chat",
-  "/fam ask context on | off - include your class, level, zone and quest log in chats",
-  "/fam resend | discard - send again / drop messages that did not reach the PC",
-  "/fam draft discard - clear the unfinished composer draft for this character",
-  "/fam autostart [on | off] - start Familiar with Windows (in the tray)",
-  "/fam quiet [on | off] - defer ordinary completion notices; approvals and failures remain",
-  "/fam private [on | off] - hide names (streaming): zones and quests become Project 1 / Quest #1; replies and what you type stay visible",
-  "/fam caughtup - mark the selected quest's saved update caught up (never approves a request)",
-  "/fam stream [on | off] - Stream-safe: hide names and blur replies on the Glass (approval cards stay readable; click a blurred reply to read it)",
-  "/fam tutorial - replay A Familiar Face, the practice quest",
-  "/fam font bigger | smaller | reset | 80-160 - text size in the Familiar window (the quest list follows at once)",
-  "/fam opacity [0-100] - window background opacity; no number opens Options -> AddOns -> Familiar",
-  "/fam sound [on | off | 0-100] - chimes when a quest finishes, needs approval or fails",
-  "/fam warnings [on | off] - notices as raid warnings (mid-screen) or small in the Familiar window",
-  "/fam native - toggle native (copyable) view of the current transcript",
-  "/fam focus [game | stay] - after sending, give the keyboard back to the game (default) or keep typing",
-}
+-- One table: each verb has an argument check, a handler and one help line (verbs that share a
+-- line share its text). Anything that is not a verb and has more than one word is a message for
+-- the selected quest. A single unknown word, or a verb with arguments it doesn't take, never
+-- reaches a familiar: it prints the closest verb or that verb's usage.
 
-local KEYWORDS = { approve = true, deny = true, always = true, stop = true }
--- Commands that take no argument; with extra words the line is a prompt ("/fam help me fix X").
-local COMMANDS = { help = true, diag = true, tracker = true, native = true, reload = true, sync = true, tools = true, caughtup = true,
-  pin = true, hide = true, hidden = true, unhide = true, resend = true, discard = true,
-  archive = true, unarchive = true, archived = true, log = true, open = true, tutorial = true }
--- No-argument commands handled by the companion.
-local COMPANION_KEYS = { caughtup = true, tools = true, pin = true, hide = true, hidden = true, unhide = true,
-  archive = true, unarchive = true, archived = true, open = true }
-local STRIP_ARGS = { [""] = true, tl = true, tr = true, bl = true, br = true, dim = true, vivid = true }
--- "/fam font bigger" sets the text size; "/fam font is too small, why" is a prompt.
-local FONT_WORDS = { [""] = true, bigger = true, smaller = true, larger = true, reset = true, default = true, up = true, down = true, ["+"] = true, ["-"] = true }
-local function IsFontArg(rest)
-  rest = rest:lower()
-  return FONT_WORDS[rest] or rest:match("^%d+%%?$") ~= nil
-end
-
--- "/fam show claude,codex" filters the Quest Log; "/fam show me the diff" is a prompt.
--- Providers: Claude and Codex always, plus whatever the companion has installed (Hermes, Grok...),
--- as listed in the last FamiliarSync snapshot.
+-- Familiars: Claude and Codex always, plus whatever Familiar has installed (Hermes, Grok...), as
+-- listed in the last saved status.
 local function IsProvider(word)
   if word == "claude" or word == "codex" then return true end
-  for _, id in ipairs(FamiliarSyncData and FamiliarSyncData.providers or {}) do
+  for _, id in ipairs(type(FamiliarSyncData) == "table" and FamiliarSyncData.providers or {}) do
     if id == word then return true end
   end
   return false
 end
 
 local function IsAgentFilter(rest)
+  if rest == "" then return false end
   for word in rest:lower():gmatch("[^%s,]+") do
     if word ~= "all" and not IsProvider(word) then return false end
   end
   return true
 end
 
+local function viewName() return ns.UI.focusMode and "focus" or "full" end
+local function setting(k, a) ns.Send({ t = "key", k = k, a = a, view = viewName() }, true) end
+local function key(k) return function() ns.UI.Key(k, "slash") end end
+
+local NONE = function(rest) return rest == "" end
+local ANY = function() return true end
+local function oneOf(...)
+  local ok = {}
+  for i = 1, select("#", ...) do ok[select(i, ...)] = true end
+  return function(rest) return ok[rest:lower()] == true end
+end
+
+local HELP_FIRST = {
+  "/fam - open or close the window; /fam <message> - send it to the selected quest",
+  "/fam claude | codex <message> - start a new quest with that familiar (others too, when installed)",
+}
+local H = {
+  ask = "/fam ask <question> - chat with no zone (game questions, web search); ask new <question> starts a fresh chat; ask context on | off",
+  decide = "/fam stop | deny - stop the running turn / deny the pending request (approve with your Approve key)",
+  panes = "/fam tracker | log - show or hide the quest tracker / the quest list",
+  stream = "/fam stream - turn Stream-safe on: names hidden, replies veiled on the Glass (turn it off in the control panel)",
+  sound = "/fam sound [on | off | 0-100] - chimes when a quest finishes, needs approval or fails",
+  quest = "/fam archive | unarchive | open - archive the selected quest / restore archived ones / continue it in its familiar's own app",
+  outbox = "/fam resend | discard - send again / drop messages that did not reach Familiar",
+  misc = "/fam tutorial | reload | diag | strip tl | tr | bl | br - practice quest / reload the UI / diagnostics / move the Runestrip",
+  more = "/fam show all | claude | codex, tools, focus game | stay - filter the quest list / tool call detail / where keys go after Send",
+}
+
+local function diag()
+  local version, build, _, iface = GetBuildInfo()
+  local w, h = GetPhysicalScreenSize()
+  ns.Print(("client %s.%s (interface %s) - addon %s"):format(version, build, tostring(iface), ns.VERSION))
+  ns.Print(("screen %dx%d px - UI scale %.3f - Runestrip %s %dx%d @%dpx scale %.4f - queue %d"):format(
+    w, h, UIParent:GetEffectiveScale(), ns.db.stripPos, ns.Link.cols, ns.Link.rows, ns.Link.cell,
+    ns.Link.frame and ns.Link.frame:GetEffectiveScale() or 0, ns.Link.QueueDepth()))
+  -- Which frames are under the cursor (and do they take the mouse wheel)? Helps diagnose scrolling.
+  local names = {}
+  for i, f in ipairs(GetMouseFoci() or {}) do
+    local ok, desc = pcall(function()
+      return (f:GetName() or ("<" .. f:GetObjectType() .. ">")) .. (f:IsMouseWheelEnabled() and "+wheel" or "")
+    end)
+    names[i] = ok and desc or "?"
+  end
+  ns.Print("icon: " .. (ns.iconSource == "own" and "own" or ns.iconSource == "fallback" and "fallback (game icon)" or "not drawn"))
+  local mini = ns.Layout.prect(ns.Minimap.button)
+  ns.Print(mini and ("minimap: %d,%d %d\195\151%d"):format(mini[1], mini[2], mini[3], mini[4]) or "minimap: hidden")
+  ns.Print("under cursor: " .. (#names > 0 and table.concat(names, ", ") or "nothing"))
+  local _, short = ns.SavedState()
+  ns.Print(("native JSON %s - %s - window %s - tracker %s"):format(
+    (C_EncodingUtil and C_EncodingUtil.SerializeJSON) and "yes" or "no", short,
+    ns.UI.IsShown() and "open" or "closed", ns.Tracker.IsShown() and "shown" or "hidden"))
+end
+
+local CORNERS = { tl = "TOPLEFT", tr = "TOPRIGHT", bl = "BOTTOMLEFT", br = "BOTTOMRIGHT" }
+local function strip(rest)
+  local pos = CORNERS[rest:lower()]
+  if pos then
+    ns.db.stripPos = pos
+    ns.Link.ApplyGeometry()
+  end
+  local w, h = GetPhysicalScreenSize()
+  ns.Print(("Runestrip %s, %dx%d cells @ %dpx, queue %d - screen %dx%d px - UI scale %.3f - strip scale %.4f"):format(
+    ns.db.stripPos, ns.Link.cols, ns.Link.rows, ns.Link.cell, ns.Link.QueueDepth(), w, h,
+    UIParent:GetEffectiveScale(), ns.Link.frame and ns.Link.frame:GetEffectiveScale() or 0))
+end
+
+local function ask(rest)
+  local lower = rest:lower()
+  if lower == "context off" or lower == "context on" then
+    ns.db.chatContext = lower == "context on"
+    ns.Print(ns.db.chatContext and "chats will know your class, level, location and quest log." or "chats no longer get your class, level, location or quest log.")
+    ns.Send({ t = "quests", text = ns.db.chatContext and ns.Quests.Snapshot() or nil }, false, "quests")
+  elseif rest == "" then
+    ns.UI.Key("newChat", "slash")
+    ns.UI.Show()
+  else
+    ns.UI.SetFocusMode(false)
+    local fresh, text = false, rest
+    if lower:match("^new%s") then fresh, text = true, strtrim(rest:sub(5)) end
+    ns.UI.SendTyped({ t = "ask", text = ns.Unescape(text), new = fresh or nil, ctx = ns.GameContext() }, text, "asking...")
+  end
+end
+
+local printHelp
+local VERBS = {
+  -- Help with words is still help; a sentence after it gets the same hint as other verbs'.
+  { "help", ANY, function(rest)
+    printHelp()
+    if rest:find("%s") then ns.Print("To send that as a message, type it in the Familiar window.") end
+  end },
+  { "ask", ANY, ask, H.ask },
+  { "stop", NONE, key("stop"), H.decide },
+  { "deny", NONE, key("deny"), H.decide },
+  { "tracker", NONE, function() ns.Tracker.Toggle() end, H.panes },
+  { "log", NONE, function() ns.UI.ToggleLog() end, H.panes },
+  -- The game may only turn Stream-safe on; turning it off is a control panel choice.
+  { "stream", oneOf("", "on"), function() setting("stream", "on") end, H.stream },
+  { "sound", function(rest) return oneOf("", "on", "off")(rest) or rest:match("^%d+%%?$") ~= nil end,
+    function(rest) setting("sound", rest:lower()) end, H.sound },
+  { "archive", NONE, key("archive"), H.quest },
+  { "unarchive", NONE, key("unarchive"), H.quest },
+  { "open", NONE, key("open"), H.quest },
+  { "resend", NONE, resend, H.outbox },
+  { "discard", NONE, function()
+    local n = #ns.db.outbox
+    ns.db.outbox = {}
+    ns.Print(("dropped %d unsent message%s."):format(n, n == 1 and "" or "s"))
+  end, H.outbox },
+  { "tutorial", NONE, function()
+    -- Familiar selects the practice quest; make sure the window is open to show it.
+    ns.UI.SetFocusMode(false)
+    ns.UI.Key("tutorial", "slash")
+    ns.UI.Show()
+  end, H.misc },
+  { "reload", NONE, function() C_UI.Reload() end, H.misc },
+  { "diag", NONE, diag, H.misc },
+  { "strip", oneOf("", "tl", "tr", "bl", "br"), strip, H.misc },
+  -- No other way to set these three: the quest list filter is remembered by Familiar, tool call
+  -- detail and keyboard-after-Send have no control panel switch.
+  { "show", IsAgentFilter, function(rest) setting("show", rest:lower()) end, H.more },
+  { "tools", NONE, key("tools"), H.more },
+  { "focus", oneOf("", "game", "stay"), function(rest)
+    if rest ~= "" then ns.db.sendFocus = rest:lower() end
+    ns.Print(ns.db.sendFocus == "stay" and "after Send, you keep typing in Familiar (/fam focus game to change)." or "after Send, your keys go back to the game (/fam focus stay to change).")
+  end, H.more },
+}
+local BY_NAME = {}
+for _, v in ipairs(VERBS) do BY_NAME[v[1]] = v end
+
+-- Verbs that left /fam: say where each went, so an old habit ("/fam autostart off") is never sent
+-- to a familiar as a message.
+local MOVED = {
+  approve = "approve with your Approve key (register it in the control panel)",
+  always = "\"Always\" is in the control panel only",
+  autostart = "starting with Windows is in the control panel",
+  warnings = "notice style is in the control panel",
+  quiet = "holding notices is in the control panel (Play -> Notifications)",
+  font = "text size is in the control panel",
+  opacity = "window opacity is in Options -> AddOns -> Familiar",
+  private = "/fam stream turns Stream-safe on; Hide names alone is in the control panel",
+  suggest = "Suggest a change is in the control panel",
+  native = "the window keeps a saved status only; the conversation shows on the Glass",
+  view = "use the view button at the bottom left of the window",
+  draft = "use the Discard button above the message box",
+  caughtup = "use Caught up on the Glass",
+}
+
+function printHelp()
+  for _, line in ipairs(HELP_FIRST) do ns.Print(line) end
+  local seen = {}
+  for _, v in ipairs(VERBS) do
+    if v[4] and not seen[v[4]] then
+      seen[v[4]] = true
+      ns.Print(v[4])
+    end
+  end
+end
+
+-- Edit distance, for "did you mean".
+local function distance(a, b)
+  local prev = {}
+  for j = 0, #b do prev[j] = j end
+  for i = 1, #a do
+    local cur = { [0] = i }
+    for j = 1, #b do
+      cur[j] = math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a:byte(i) == b:byte(j) and 0 or 1))
+    end
+    prev = cur
+  end
+  return prev[#b]
+end
+
+local function closest(word)
+  local best, bestD = "help", math.huge
+  local names = { "claude", "codex" }
+  for _, v in ipairs(VERBS) do names[#names + 1] = v[1] end
+  for _, name in ipairs(names) do
+    local d = distance(word, name)
+    if d < bestD then best, bestD = name, d end
+  end
+  return best
+end
+
 SLASH_FAMILIAR1 = "/fam"
 SLASH_FAMILIAR2 = "/familiar"
 SlashCmdList.FAMILIAR = function(input)
   input = strtrim(input or "")
+  if input == "" then return ns.UI.Toggle() end
   local cmd, rest = input:match("^(%S+)%s*(.-)$")
-  cmd = cmd and cmd:lower()
-  if input == "" then
-    ns.UI.Toggle()
-  elseif COMMANDS[cmd] and rest ~= "" then
-    ns.UI.SendPrompt(input)
-  elseif cmd == "strip" and not STRIP_ARGS[rest] then
-    ns.UI.SendPrompt(input)
-  elseif cmd == "help" then
-    for _, line in ipairs(HELP) do ns.Print(line) end
-  elseif KEYWORDS[cmd] and rest == "" then
-    ns.UI.Key(cmd, "slash")
-  elseif cmd == "view" and (rest:lower() == "focus" or rest:lower() == "full") then
-    ns.UI.SetFocusMode(rest:lower() == "focus")
-    ns.UI.Show()
-  elseif IsProvider(cmd) then
-    ns.UI.SetFocusMode(false)
-    if ns.UI.SendTyped({ t = "quick", agent = cmd, text = ns.Unescape(rest) }, rest) then ns.Print("summoning " .. cmd .. "...") end
-  elseif cmd == "focus" and (rest == "" or rest:lower() == "game" or rest:lower() == "stay") then
-    if rest ~= "" then ns.db.sendFocus = rest:lower() end
-    ns.Print(ns.db.sendFocus == "stay" and "after sending, you keep typing in Familiar (/fam focus game to change)." or "after sending, your keys go back to the game (/fam focus stay to change).")
-  elseif cmd == "ask" then
-    local lower = rest:lower()
-    if lower == "context off" or lower == "context on" then
-      ns.db.chatContext = lower == "context on"
-      ns.Print(ns.db.chatContext and "chats will know your class, level, zone and quest log." or "chats no longer get your class, level, zone or quest log.")
-      ns.Send({ t = "quests", text = ns.db.chatContext and ns.Quests.Snapshot() or nil }, false, "quests")
-    elseif rest == "" then
-      ns.UI.Key("newChat", "slash")
-      ns.UI.Show()
-    else
-      ns.UI.SetFocusMode(false)
-      local fresh, text = false, rest
-      if lower:match("^new%s") then fresh, text = true, strtrim(rest:sub(5)) end
-      if ns.UI.SendTyped({ t = "ask", text = ns.Unescape(text), new = fresh or nil, ctx = ns.GameContext() }, text) then ns.Print("asking...") end
-    end
-  elseif cmd == "draft" and rest:lower() == "discard" then
-    ns.UI.DiscardDraft()
-  elseif cmd == "resend" then
-    resend()
-  elseif cmd == "discard" then
-    local n = #ns.db.outbox
-    ns.db.outbox = {}
-    ns.Print(("dropped %d unsent message%s."):format(n, n == 1 and "" or "s"))
-  elseif (cmd == "autostart" or cmd == "sound" or cmd == "warnings" or cmd == "quiet" or cmd == "private" or cmd == "stream") and (rest == "" or rest:lower() == "on" or rest:lower() == "off"
-      or (cmd == "sound" and rest:match("^%d+%%?$"))) then -- /fam sound 40 | 55%: the volume, for the companion
-    ns.Send({ t = "key", k = cmd, a = rest:lower(), view = ns.UI.focusMode and "focus" or "full" }, true)
-  elseif cmd == "font" and IsFontArg(rest) then
-    -- The quest list's rows are native, so they follow here and now; the companion sets the rest.
-    local scale = ns.FontScaleFor(ns.db.fontScale, rest)
-    if scale then ns.UI.SetFontScale(scale) end
-    ns.Send({ t = "key", k = "font", a = rest:lower(), view = ns.UI.focusMode and "focus" or "full" }, true)
-  elseif cmd == "opacity" and (rest == "" or rest:match("^%d+%%?$")) then
-    if rest == "" then ns.Options.Open() else ns.Options.SetOpacity(rest:match("%d+")) end
-    ns.Print(("window background opacity %d%%."):format(ns.db.opacity))
-  elseif cmd == "diag" then
-    local version, build, _, iface = GetBuildInfo()
-    local w, h = GetPhysicalScreenSize()
-    ns.Print(("client %s.%s (interface %s) - addon %s"):format(version, build, tostring(iface), ns.VERSION))
-    ns.Print(("screen %dx%d px - UI scale %.3f - strip %s %s %dx%d @%dpx scale %.4f - queue %d"):format(
-      w, h, UIParent:GetEffectiveScale(), ns.db.stripPos, ns.db.palette, ns.Link.cols, ns.Link.rows, ns.Link.cell,
-      ns.Link.frame and ns.Link.frame:GetEffectiveScale() or 0, ns.Link.QueueDepth()))
-    -- Which frames are under the cursor (and do they take the mouse wheel)? Helps diagnose scrolling.
-    local foci = GetMouseFoci() or {}
-    local names = {}
-    for i, f in ipairs(foci or {}) do
-      local ok, desc = pcall(function()
-        return (f:GetName() or ("<" .. f:GetObjectType() .. ">")) .. (f:IsMouseWheelEnabled() and "+wheel" or "")
-      end)
-      names[i] = ok and desc or "?"
-    end
-    ns.Print("icon: " .. (ns.iconSource == "own" and "own" or ns.iconSource == "fallback" and "fallback (game icon)" or "not drawn"))
-    local mini = ns.Layout.prect(ns.Minimap.button)
-    ns.Print(mini and ("minimap: %d,%d %d\195\151%d"):format(mini[1], mini[2], mini[3], mini[4]) or "minimap: hidden")
-    ns.Print("under cursor: " .. (#names > 0 and table.concat(names, ", ") or "nothing"))
-    ns.Print(("native JSON %s - snapshot %s - window %s - tracker %s"):format(
-      (C_EncodingUtil and C_EncodingUtil.SerializeJSON) and "yes" or "no",
-      FamiliarSyncData and date("%H:%M:%S", FamiliarSyncData.generatedAt or 0) or "none",
-      ns.UI.IsShown() and "open" or "closed", ns.Tracker.IsShown() and "shown" or "hidden"))
-  elseif cmd == "tracker" then
-    ns.Tracker.Toggle()
-  elseif cmd == "log" and rest == "" then
-    ns.UI.ToggleLog()
-  elseif cmd == "tutorial" then
-    -- The hub selects the practice quest; make sure the window is open to show it.
-    ns.UI.SetFocusMode(false)
-    ns.UI.Key("tutorial", "slash")
-    ns.UI.Show()
-  elseif COMPANION_KEYS[cmd] then
-    ns.UI.Key(cmd, "slash")
-  elseif cmd == "show" and IsAgentFilter(rest) then
-    ns.Send({ t = "key", k = "show", a = rest:lower(), view = ns.UI.focusMode and "focus" or "full" }, true)
-  elseif cmd == "suggest" then
-    -- The companion opens a pre-filled GitHub issue form; the player submits it in the browser.
-    if rest == "" then ns.Print("/fam suggest <idea> - opens a pre-filled GitHub issue in your browser (up to 500 characters).")
-    else
-      local text = ns.Unescape(rest)
-      if #text > 500 then -- cut at a character boundary, not inside a UTF-8 sequence
-        local cut = 500
-        while cut > 0 and (text:byte(cut + 1) or 0) >= 128 and text:byte(cut + 1) < 192 do cut = cut - 1 end
-        text = text:sub(1, cut)
-      end
-      ns.Send({ t = "key", k = "suggest", a = text, view = ns.UI.focusMode and "focus" or "full" }, true)
-    end
-  elseif cmd == "native" then
-    ns.UI.ToggleNative()
-  elseif cmd == "reload" or cmd == "sync" then
-    C_UI.Reload()
-  elseif cmd == "strip" then
-    local map = { tl = "TOPLEFT", tr = "TOPRIGHT", bl = "BOTTOMLEFT", br = "BOTTOMRIGHT" }
-    if map[rest] then
-      ns.db.stripPos = map[rest]
-      ns.Link.ApplyGeometry()
-    elseif rest == "dim" or rest == "vivid" then
-      ns.db.palette = rest
-      ns.Link.SetPalette(rest)
-    end
-    local w, h = GetPhysicalScreenSize()
-    ns.Print(("Runestrip %s, %dx%d cells @ %dpx, queue %d - screen %dx%d px - UI scale %.3f - strip scale %.4f"):format(
-      ns.db.stripPos, ns.Link.cols, ns.Link.rows, ns.Link.cell, ns.Link.QueueDepth(), w, h,
-      UIParent:GetEffectiveScale(), ns.Link.frame and ns.Link.frame:GetEffectiveScale() or 0))
-  else
-    ns.UI.SendPrompt(input)
+  cmd = cmd:lower()
+  if MOVED[cmd] then return ns.Print(("/fam %s is gone: %s."):format(cmd, MOVED[cmd])) end
+  local verb = BY_NAME[cmd]
+  if verb then
+    if verb[2](rest) then return verb[3](rest) end
+    -- A sentence that happens to start with a command word ("/fam stop doing that"): say how to send it.
+    return ns.Print("usage: " .. (verb[4] or HELP_FIRST[1])
+      .. (rest:find("%s") and " - to send that as a message, type it in the Familiar window." or ""))
   end
+  if IsProvider(cmd) then
+    if rest == "" then return ns.Print("usage: " .. HELP_FIRST[2]) end
+    ns.UI.SetFocusMode(false)
+    return ns.UI.SendTyped({ t = "quick", agent = cmd, text = ns.Unescape(rest) }, rest, "summoning " .. cmd .. "...")
+  end
+  if rest == "" then
+    return ns.Print(('Unknown command "%s" - did you mean /fam %s? /fam help lists commands. To send one word to your quest, type it in the Familiar window.'):format(
+      cmd, closest(cmd)))
+  end
+  ns.UI.SendPrompt(input)
 end

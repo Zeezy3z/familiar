@@ -1,14 +1,15 @@
-// Round 4 control-panel journeys: the built control.html through the synthetic preview bridge. Commands that
-// main serves (captureSnapshot, openSnapshot, projectAdd, projectRemove, claudeRetry, checkUpdate, openUrl) are stood in for
-// here and recorded in window.preview.sent; nothing leaves the page. Returns { checkName: passed } like
-// glass-round3-journey.mjs, so the smoke can report each one.
+// Round 4 control-panel journeys: the built control.html through the synthetic preview bridge, on the fixed page
+// (header · Requests waiting · the status line · Play · Safety · Familiars · Projects · Troubleshooting · footer).
+// Commands that main serves (captureSnapshot, openSnapshot, projectAdd, projectRemove, claudeRetry, checkUpdate, openUrl)
+// are stood in for here and recorded in window.preview.sent; nothing leaves the page. Returns { checkName: passed }
+// like glass-round3-journey.mjs, so the smoke can report each one.
 export async function controlRound4Journey(page, origin, width, snapshot = async () => {}) {
   const results = {};
   const check = (name, passed) => { results[`control-${width}/${name}`] = !!passed; };
   const open = async () => {
     await page.setViewportSize({ width, height: 640 });
     await page.goto(`${origin}/control.html?scenario=linked`);
-    await page.waitForFunction(() => document.getElementById('chat-agent')?.value === 'claude');
+    await page.waitForFunction(() => window.preview?.state && document.getElementById('journey-title')?.textContent);
     // Preview infrastructure only: what main answers, and what the panel sent.
     await page.evaluate(() => {
       const p = window.preview, api = window.familiar, real = api.invoke;
@@ -41,9 +42,9 @@ export async function controlRound4Journey(page, origin, width, snapshot = async
     p.emit('status', p.state);
   }, patch);
   const sent = () => page.evaluate(() => JSON.stringify(window.preview.sent));
-  const openAdvanced = () => page.evaluate(() => { document.getElementById('advanced').open = true; });
-  const openLink = () => page.evaluate(() => { document.getElementById('advanced').open = true; document.querySelector('.diagnostics').open = true; });
-  const localError = group => page.locator(group).evaluate(el => el.previousElementSibling?.matches('[data-action-feedback]') ? el.previousElementSibling.textContent : '');
+  const openTroubleshooting = () => page.evaluate(() => { document.getElementById('troubleshooting').open = true; });
+  // The answer written beside a control (control.ts say(): its settings row, button group or card).
+  const said = selector => page.locator(selector).evaluate(el => el.closest('.set, .btns, #familiars, #status')?.querySelector(':scope > .fb')?.textContent ?? '');
 
   // ---- The familiar's portrait in the header follows the journey ----
   const portrait = () => page.evaluate(() => {
@@ -55,7 +56,7 @@ export async function controlRound4Journey(page, origin, width, snapshot = async
   await open();
   let now = await portrait();
   check('portrait: linked shows the idle familiar, round with a hairline ring, before the title and decorative', now.src === 'assets/idle-192.png' && now.loaded && now.alt === ''
-    && now.w === 56 && now.h === 56 && now.radius === '50%' && now.ring && now.beforeTitle);
+    && now.w === 40 && now.h === 40 && now.radius === '50%' && now.ring && now.beforeTitle);
   const title = () => page.locator('#journey-title').textContent();
   await status({ 'work.working': 2 });
   check('portrait: a quest running on a finished journey makes it work', await face() === 'working-192.png');
@@ -63,8 +64,8 @@ export async function controlRound4Journey(page, origin, width, snapshot = async
   check('portrait: back to idle when nothing is running', await face() === 'idle-192.png');
   await status({ game: null });
   check('portrait: waiting for WoW is still idle, in the familiar\'s voice', await face() === 'idle-192.png' && await title() === "I'm waiting for WoW.");
-  // Round 7: a request waiting on a finished journey makes it ask (assets/asking-192.png, lane A's art). A build
-  // without that picture falls back to idle, once, and never shows a broken image.
+  // A request waiting on a finished journey makes it ask (assets/asking-192.png). A build without that picture falls
+  // back to idle, once, and never shows a broken image.
   await open();
   const asking = await page.evaluate(() => fetch('assets/asking-192.png').then(r => r.ok, () => false));
   await status({ 'work.approvals': 1, 'work.working': 1 });
@@ -74,7 +75,6 @@ export async function controlRound4Journey(page, origin, width, snapshot = async
   await status({ 'work.approvals': 0 });
   await page.waitForFunction(() => document.getElementById('portrait').getAttribute('src') === 'assets/working-192.png');
   check('portrait: answered, it goes back to work', await face() === 'working-192.png');
-  await open();
 
   // ---- Link Doctor and "Save what Familiar sees" ----
   await open();
@@ -84,12 +84,11 @@ export async function controlRound4Journey(page, origin, width, snapshot = async
   const body = () => page.locator('#journey-text').evaluate(el => ({ text: el.textContent, warn: el.classList.contains('warn') }));
   now = await link();
   check('portrait: the Link step undone makes it puzzled, and the title says so above the doctor\'s sentence', await face() === 'puzzled-192.png' && await title() === "I can't see the game yet.");
-  // Round 7 (deliberate): the strip says Not linked yet (the sentence is its title); the doctor's words, in warn colour, are the journey text.
   check('doctor: the Link step says Not linked yet; the journey text says why, in the doctor\'s words and warn colour', now.text === 'Not linked yet' && now.title === doctor && !now.warn && !now.done
     && JSON.stringify(await body()) === JSON.stringify({ text: doctor, warn: true }));
-  await openLink();
-  check('doctor: Link details repeat the sentence', (await page.locator('#link').textContent()).includes('Link doctor') && (await page.locator('#link').textContent()).includes('no coloured strip'));
-  check('doctor: Save what Familiar sees sits under Link details and nothing is saved by itself', await page.locator('#b-snapshot').isVisible() && await sent() === '[]');
+  await openTroubleshooting();
+  check('doctor: Troubleshooting repeats the sentence under Runestrip link', (await page.locator('#link').textContent()).includes('Link doctor') && (await page.locator('#link').textContent()).includes('no coloured strip'));
+  check('doctor: Save what Familiar sees sits under the link details and nothing is saved by itself', await page.locator('#b-snapshot').isVisible() && await sent() === '[]');
   await snapshot(`control-${width}-doctor-strip`);
   await page.evaluate(() => { window.preview.answer.captureSnapshot = { ok: true, file: 'C:\\Users\\player\\AppData\\Roaming\\Familiar\\strip-20261103-153012.png' }; });
   await page.locator('#b-snapshot').click();
@@ -104,67 +103,65 @@ export async function controlRound4Journey(page, origin, width, snapshot = async
   await page.evaluate(() => { window.preview.answer.captureSnapshot = { ok: false, why: 'Familiar has no picture of the game yet.' }; });
   await page.locator('#b-snapshot').click();
   await page.waitForFunction(() => !document.getElementById('snapshot-result').textContent);
-  check('snapshot: a refusal clears the old result and says why beside the button', (await localError('.btns:has(#b-snapshot)')).includes('Familiar has no picture of the game yet.'));
+  await page.waitForFunction(() => document.querySelector('.btns:has(#b-snapshot) > .fb')?.textContent);
+  check('snapshot: a refusal clears the old result and says why beside the button', (await said('#b-snapshot')).includes('Familiar has no picture of the game yet.'));
   await status({ doctor: null });
   now = await link();
   check('doctor: without a doctor the Link step keeps its own wording (as its title) and the journey text its own', now.text === 'Not linked yet' && now.title.startsWith('Restart WoW, tick Familiar and Familiar Sync')
     && (await body()).text.startsWith('The coloured dots top-left') && !(await body()).warn);
   await status({ linked: true, layout: { panel: true }, doctor: { step: 'ok', level: 'ok', text: 'Game link working.' } });
-  now = await link();
-  check('doctor: once linked the step says Game link working', now.text === 'Game link working' && now.done);
+  check('doctor: once linked the strip goes and the line says All set', await page.locator('#journey-steps').isHidden() && await title() === 'All set — type /fam in WoW');
 
-  // ---- Claude Code download on the Familiars card ----
+  // ---- Claude Code download on the Familiars card (always in place: the page never moves) ----
   await open();
-  await openAdvanced();
   const claude = () => page.locator('#providers .prov').first().evaluate(row => ({ text: row.querySelector('.d').textContent, bar: row.querySelector('progress')?.getAttribute('value') ?? null, button: row.querySelector('[data-retry]')?.textContent ?? null, markup: !!row.querySelector('.d img') }));
   await status({ 'providers.0.installed': false, 'providers.0.enabled': false, 'providers.0.signedIn': null, 'providers.0.detail': 'Not downloaded yet', claude: { state: 'downloading', pct: 43, mb: 112 } });
   let row = await claude();
   check('portrait: while Claude Code downloads it works', await face() === 'working-192.png');
-  check('claude: the row shows progress, with a bar and nothing to click', row.text === 'Downloading Claude Code · 43 % of 112 MB' && row.bar === '43' && row.button === null);
-  const cardUp = () => page.evaluate(() => !document.getElementById('advanced').contains(document.getElementById('familiars')));
-  check('claude: while it downloads the card sits above Advanced, though another agent is ready', await cardUp());
+  check('claude: the row shows progress, with a bar and nothing to click', row.text === '◌ Downloading Claude Code · 43 % of 112 MB' && row.bar === '43' && row.button === null);
   await snapshot(`control-${width}-claude-downloading`);
   await status({ claude: { state: 'failed', error: '<img src=x onerror="window.__pwned=1">' } });
   row = await claude();
-  check('claude: a failure names the reason as plain text and offers Retry, in view without opening Advanced', row.text.includes('couldn\'t be downloaded (<img src=x') && row.text.endsWith('Other agents still work.') && row.button === 'Retry' && !row.markup
-    && await page.evaluate(() => window.__pwned) === undefined && await cardUp() && await page.locator('#providers [data-retry]').isVisible());
+  check('claude: a failure names the reason as plain text and offers Retry', row.text.includes('couldn\'t be downloaded (<img src=x') && row.text.endsWith('Other agents still work.') && row.button === 'Retry' && !row.markup
+    && await page.evaluate(() => window.__pwned) === undefined && await page.locator('#providers [data-retry]').isVisible());
   await page.evaluate(() => { window.preview.answer.claudeRetry = { state: 'downloading', pct: 0 }; });
   await page.locator('#providers [data-retry]').click();
-  await page.waitForFunction(() => window.preview.sent.length >= 1);
-  check('claude: Retry sends one claudeRetry and says where to watch', await sent() === '[{"cmd":"claudeRetry"}]' && (await page.locator('#feedback').textContent()).includes('Progress is on the Familiars card'));
+  await page.waitForFunction(() => window.preview.sent.length >= 1 && document.getElementById('providers-fb').textContent);
+  check('claude: Retry sends one claudeRetry and says so under the Familiars card', await sent() === '[{"cmd":"claudeRetry"}]' && await page.locator('#providers-fb').textContent() === 'Claude Code is downloading.');
   await status({ claude: { state: 'missing' } });
-  check('claude: missing offers Retry, as the quest page and the Familiars card tell the player', (await claude()).button === 'Retry' && await cardUp());
+  check('claude: missing offers Retry', (await claude()).button === 'Retry');
   await status({ 'providers.0.installed': true, 'providers.0.enabled': true, 'providers.0.signedIn': true, 'providers.0.detail': 'Signed in', claude: { state: 'present' } });
   row = await claude();
-  check('claude: once on disk the row is the ordinary one and the card goes back under Advanced', row.text === 'Signed in' && row.bar === null && row.button === null && !await cardUp());
+  check('claude: once on disk the row is the ordinary one', row.text === '✓ Ready' && row.bar === null && row.button === null);
 
   // ---- Projects ----
   await open();
   const place = () => page.evaluate(() => {
     const card = document.getElementById('projects');
-    return { visible: !card.hidden && getComputedStyle(card).display !== 'none', inAdvanced: document.getElementById('advanced').contains(card),
-      above: !!(card.compareDocumentPosition(document.getElementById('essentials')) & Node.DOCUMENT_POSITION_FOLLOWING),
-      below: !!(document.getElementById('journey').compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING),
+    return { visible: !card.hidden && getComputedStyle(card).display !== 'none',
+      afterFamiliars: !!(document.getElementById('familiars').compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING),
+      beforeTroubleshooting: !!(card.compareDocumentPosition(document.getElementById('troubleshooting')) & Node.DOCUMENT_POSITION_FOLLOWING),
       rows: [...card.querySelectorAll('#project-rows .prov')].map(r => [r.querySelector('.n').textContent, r.querySelector('.d').textContent]),
       buttons: [...card.querySelectorAll('.btns button')].map(b => b.textContent) };
   });
-  await status({ projects: 3 }); // an older main reports a plain count (the fixtures may carry the newer shape)
+  check('projects: with folders set the card is collapsed to one line that counts them', await page.evaluate(() => !document.getElementById('projects').open)
+    && await page.locator('#project-count').textContent() === '1 folder');
+  await status({ projects: 3 }); // an older main reports a plain count
   check('projects: an older status (a plain count) shows no card', !(await place()).visible);
   await status({ projects: { explicit: [], roots: [], history: 3 } });
+  await page.locator('#projects > summary').click(); // the player opens it (it opens by itself only on a first run with no folder)
   let where = await place();
-  check('projects: with no folder yet the card sits between the steps and the essentials, outside Advanced', where.visible && !where.inAdvanced && where.above && where.below
+  check('projects: the card sits between Familiars and Troubleshooting, with its two buttons and no rows yet', where.visible && where.afterFamiliars && where.beforeTroubleshooting
     && JSON.stringify(where.buttons) === JSON.stringify(['Add a project folder…', 'Add a folder of projects…']) && where.rows.length === 0);
   const lead = () => page.locator('#projects .hint').first().textContent();
   check('projects: with no folder the hint starts in the familiar\'s voice and keeps today\'s sentence', (await lead()).startsWith("Give me a folder and I'll have somewhere to go. Zones in your Quest Log are project folders."));
   await snapshot(`control-${width}-projects-empty`);
-  await openAdvanced();
   await page.locator('#b-project-add').click();
   await page.waitForFunction(() => document.querySelectorAll('#project-rows .prov').length === 1);
   where = await place();
   check('projects: once a folder is added the lead sentence goes', (await lead()).startsWith('Zones in your Quest Log'));
-  check('projects: Add a project folder asks main for a project and lists the answer; the card moves into Advanced', await sent() === '[{"cmd":"projectAdd","args":{"kind":"project"}}]'
-    && JSON.stringify(where.rows) === JSON.stringify([['Project', 'C:\\work\\one']]) && where.inAdvanced
-    && (await page.locator('#project-result').textContent()).includes('C:\\work\\one'));
+  check('projects: Add a project folder asks main for a project, lists the answer and names it beside the buttons', await sent() === '[{"cmd":"projectAdd","args":{"kind":"project"}}]'
+    && JSON.stringify(where.rows) === JSON.stringify([['Project', 'C:\\work\\one']]) && where.visible && (await said('#b-project-add')).includes('C:\\work\\one'));
   await page.evaluate(() => { window.preview.add = { ok: true, path: 'D:\\code' }; });
   await page.locator('#b-root-add').click();
   await page.waitForFunction(() => document.querySelectorAll('#project-rows .prov').length === 2);
@@ -173,14 +170,13 @@ export async function controlRound4Journey(page, origin, width, snapshot = async
   await snapshot(`control-${width}-projects-some`);
   await page.evaluate(() => { window.preview.add = { ok: false, why: 'That folder is excluded by your config.' }; });
   await page.locator('#b-project-add').click();
-  await page.waitForFunction(() => document.querySelector('.btns:has(#b-project-add)').previousElementSibling?.matches('[data-action-feedback]'));
-  check('projects: a refused folder says why beside the buttons and is not listed', (await localError('.btns:has(#b-project-add)')).includes('That folder is excluded by your config.')
+  await page.waitForFunction(() => document.querySelector('.btns:has(#b-project-add) > .fb')?.classList.contains('err'));
+  check('projects: a refused folder says why beside the buttons and is not listed', (await said('#b-project-add')).includes('That folder is excluded by your config.')
     && (await place()).rows.length === 2);
   await page.evaluate(() => { window.preview.add = { ok: false }; });
   await page.locator('#b-project-add').click();
   await page.waitForFunction(() => !document.getElementById('b-project-add').disabled);
-  check('projects: cancelling the dialog says nothing, neither a result nor an error', await localError('.btns:has(#b-project-add)') === ''
-    && await page.locator('#project-result').textContent() === '' && await page.locator('#feedback').textContent() === '' && (await place()).rows.length === 2);
+  check('projects: cancelling the dialog says nothing, neither a result nor an error', await said('#b-project-add') === '' && (await place()).rows.length === 2);
   await page.evaluate(() => { window.preview.add = { ok: true, path: 'C:\\x\\<b>bold</b>' }; });
   await page.locator('#b-project-add').click();
   await page.waitForFunction(() => document.querySelectorAll('#project-rows .prov').length === 3);
@@ -195,7 +191,7 @@ export async function controlRound4Journey(page, origin, width, snapshot = async
     await page.waitForFunction(n => document.querySelectorAll('#project-rows .prov').length < n, before);
   }
   where = await place();
-  check('projects: with the last folder gone the card returns above the essentials', where.visible && !where.inAdvanced && where.above && where.below);
+  check('projects: with the last folder gone the card stays in its place, empty', where.visible && where.afterFamiliars && where.beforeTroubleshooting && where.rows.length === 0);
 
   // ---- Versions and "Check for updates" ----
   await open();
@@ -213,7 +209,6 @@ export async function controlRound4Journey(page, origin, width, snapshot = async
   check('versions: the panel never decides that they differ: mismatch false shows nothing', !(await header()).shown);
   for (const odd of ['dev', '<img src=x onerror="window.__pwned=1">'])
     { await update(odd); check(`versions: addon "${odd.slice(0, 12)}" shows nothing`, !(await header()).shown && await page.evaluate(() => window.__pwned) === undefined); }
-  await openAdvanced();
   await new Promise(resolve => setTimeout(resolve, 1200)); // a synthetic status tick or two
   check('updates: nothing is checked by itself', await sent() === '[]');
   const url = 'https://github.com/Zeezy3z/familiar/releases/tag/v0.3.0';
@@ -254,22 +249,20 @@ export async function controlRound4Journey(page, origin, width, snapshot = async
   check('updates: any other failure is named in main\'s words', (await line()).text === 'Couldn\'t check for updates: GitHub answered 403.');
   // A panel opened after the click: the answer comes with the status.
   await open();
-  await openAdvanced();
   await status({ update: { app: '0.2.0', addon: '0.2.0', mismatch: false, last: { current: '0.2.0', latest: '0.3.0', newer: true, url } } });
   u = await line();
   check('updates: status.update.last alone shows the line, and still nothing was sent', u.text === '0.3.0 is out · Open the download page' && u.open && await sent() === '[]');
 
   // ---- Windows notice setting ----
   await open();
-  await openAdvanced();
   check('notices: the Windows notice box is on by default', await page.locator('#ui-tray').isChecked()
-    && (await page.locator('label:has(#ui-tray)').textContent()).includes('Windows notice when a request is waiting and WoW isn\'t in front'));
+    && (await page.locator('label:has(#ui-tray)').textContent()).includes('Windows notice when a request is waiting'));
   await page.locator('#ui-tray').uncheck();
   await page.waitForFunction(() => window.preview.calls.some(c => c.cmd === 'uiSettings'));
   check('notices: unticking sends one trayNotices preference and the box stays off', JSON.stringify(await page.evaluate(() => window.preview.calls.filter(c => c.cmd === 'uiSettings').map(c => c.args))) === '[{"trayNotices":false}]'
     && !await page.locator('#ui-tray').isChecked());
 
-  // ---- Round 6: the workshop header ----
+  // ---- The workshop header ----
   await open();
   const band = await page.evaluate(async () => {
     const h = document.querySelector('header'), r = h.getBoundingClientRect();
@@ -280,10 +273,10 @@ export async function controlRound4Journey(page, origin, width, snapshot = async
       overflow: h.scrollWidth > h.clientWidth + 1 };
   });
   check('header: the painted desk sits behind the title, the image is served (200) and decodes at 1600×400', band.bg.includes('workshop-1600.jpg') && band.status === 200 && band.img[0] === 1600 && band.img[1] === 400);
-  check('header: at least 112 px tall, and its badges wrap inside it at this width without clipping', band.height >= 112 && !band.clipped && !band.overflow);
+  check('header: compact (56 to 100 px tall), and its badges wrap inside it at this width without clipping', band.height >= 56 && band.height <= 100 && !band.clipped && !band.overflow);
   await snapshot(`control-${width}-header`);
 
-  // ---- Round 6: Sounds ----
+  // ---- Sounds ----
   await open();
   await page.evaluate(() => { // a counting stand-in for the Web Audio API: any node, any method; nothing is heard
     const audio = window.__audio = { contexts: 0, nodes: 0 };
@@ -303,8 +296,9 @@ export async function controlRound4Journey(page, origin, width, snapshot = async
   check('sounds: dragging shows the number but sends nothing yet', await page.locator('#ui-volume-out').textContent() === '35' && await uiCalls() === '[]');
   await page.locator('#ui-volume').fill('40');
   await page.waitForFunction(() => window.preview.calls.some(c => c.cmd === 'uiSettings'));
-  check('sounds: releasing the slider sends one soundVolume preference and the panel keeps it', await uiCalls() === '[{"soundVolume":40}]'
-    && await page.locator('#ui-volume').inputValue() === '40' && await page.locator('#ui-volume-out').textContent() === '40' && (await page.locator('#feedback').textContent()).includes('Sound volume 40%'));
+  await page.waitForFunction(() => document.querySelector('.set:has(#ui-volume) > .fb')?.textContent);
+  check('sounds: releasing the slider sends one soundVolume preference, the panel keeps it and says so beside it', await uiCalls() === '[{"soundVolume":40}]'
+    && await page.locator('#ui-volume').inputValue() === '40' && await page.locator('#ui-volume-out').textContent() === '40' && await said('#ui-volume') === 'Sound volume 40%');
   await page.locator('#b-sound-sample').click();
   const first = await sample();
   await page.locator('#b-sound-sample').click();
@@ -314,50 +308,20 @@ export async function controlRound4Journey(page, origin, width, snapshot = async
     && built.contexts === 1 && built.nodes > 0 && !await page.locator('#ui-sound').isChecked());
   for (let i = 0; i < 5; i++) await page.locator('#b-sound-sample').click();
   check('sounds: after six samples the cycle starts again at Quest started', await sample() === 'Played: Quest started' && (await audio()).contexts === 1);
-  const hint = () => page.locator('#ui-sound-hint').textContent();
-  check('sounds: the hint names the six cues and the slash command, and says the sounds are off in game while unticked',
-    (await hint()).startsWith('Cues for quest started, needs your approval, approved, Quest Complete, answer ready and Quest Failed. Silent while a quest works. Also /fam sound on | off | 0-100.') && (await hint()).endsWith('Sounds are off in game.'));
-  await page.locator('#ui-sound').check();
-  await page.waitForFunction(() => !document.getElementById('ui-sound-hint').textContent.includes('off in game'));
-  await page.locator('#ui-sound').uncheck();
-  await page.waitForFunction(() => document.getElementById('ui-sound-hint').textContent.endsWith('Sounds are off in game.'));
-  check('sounds: ticking Sounds drops the off line and unticking brings it back', (await hint()).endsWith('Sounds are off in game.'));
-  // Round 7 (deliberate): the "Also in game" line goes; each row's sub-label carries its command.
-  check('sounds: each In game row names its /fam command, and the Also in game line is gone', JSON.stringify(await page.locator('#essentials .set .sl > span').allTextContents()) === JSON.stringify(['/fam font', '/fam stream on | off', '/fam sound 0-100'])
-    && !(await page.locator('#essentials').textContent()).includes('Also in game'));
+  check('sounds: the switch says what the cues are for, as its tooltip', await page.locator('#ui-sound').getAttribute('title') === 'Short cues for what happened; silent while a quest works');
   await snapshot(`control-${width}-sounds`);
 
-  // ---- Round 7: a settings page ----
+  // ---- A settings page: label · control · one hint; two button styles ----
   await open();
-  await openAdvanced();
-  const rows = await page.evaluate(() => [...document.querySelectorAll('.set')].map(set => {
-    const sh = [...set.children].filter(c => c.classList.contains('sh'));
-    const lh = sh[0] ? parseFloat(getComputedStyle(sh[0]).lineHeight) : 0;
-    return { label: set.querySelector('.sl > :first-child')?.textContent, sh: sh.length, oneLine: !!sh[0] && sh[0].scrollHeight <= 1.6 * lh, text: sh[0]?.textContent };
-  }));
-  check('settings: every setting is a row with exactly one hint line', rows.length === 9 && rows.every(r => r.sh === 1 && r.text));
-  if (width >= 700) check('settings: each hint line is one line at this width', rows.every(r => r.oneLine));
-  const how = await page.evaluate(() => [...document.querySelectorAll('details.how')].map(d => ({ card: d.closest('section')?.id, open: d.open,
-    summary: d.querySelector('summary').textContent, text: [...d.querySelectorAll('p')].map(p => p.textContent) })));
-  check('settings: every How it works is closed on load', how.length === 6 && how.every(h => !h.open && h.summary === 'How it works'));
-  const inGame = how.find(h => h.card === 'essentials')?.text ?? [];
-  // The old hint words, verbatim (round 7 moved them; deliberate test change: the selector, not the words).
-  check('settings: the In game card keeps its three explanations word for word', inGame[0] === 'Body text changes at once. The quest list follows after /reload (or use /fam font in game).'
-    && inGame[1] === 'Hide names and blur replies on the Glass. Approval cards stay readable: you must see what you approve. What you type in the box is still on screen.'
-    && inGame[2]?.startsWith('Cues for quest started, needs your approval, approved, Quest Complete, answer ready and Quest Failed. Silent while a quest works. Also /fam sound on | off | 0-100.'));
-  const quests = how.find(h => h.card === 'quests-card')?.text ?? [];
-  check('settings: the New quests card keeps the Approve key steps, Quiet play, the Windows notice and Hide names word for word', quests.length === 4
-    && quests[0].startsWith('1. In WoW: Esc → Options → Keybindings → AddOns → Familiar → Approve pending request.') && quests[1].endsWith('agents continue working.')
-    && quests[2].endsWith('Local only: nothing is sent anywhere.') && quests[3].endsWith('Also /fam private on | off.'));
-  check('settings: the mode warning stays out of How it works', await page.evaluate(() => !document.getElementById('ui-mode-warn').closest('details.how')));
-  const buttons = await page.evaluate(() => ({ quiet: [...document.querySelectorAll('button.quiet')].map(b => b.id).sort(), ok: document.querySelectorAll('button.ok').length,
-    red: ['b-install', 'b-chosen', 'b-sound-sample', 'b-project-add', 'b-suggest'].filter(id => { const b = document.getElementById(id); return b && !b.classList.contains('quiet') && !b.classList.contains('ok'); }).length }));
-  check('buttons: the nine utilities are ghosts, the actions stay red, and nothing is green without a request', JSON.stringify(buttons.quiet) === JSON.stringify(['b-config', 'b-diag', 'b-logs', 'b-pause', 'b-refresh', 'b-reload', 'b-snapshot', 'b-toast', 'b-update'])
-    && buttons.ok === 0 && buttons.red === 5);
-  const surfaces = await page.evaluate(() => ({ image: getComputedStyle(document.getElementById('journey')).backgroundImage, top: getComputedStyle(document.getElementById('journey')).borderTopWidth,
-    hints: [...document.querySelectorAll('.steps li .hint')].map(h => ({ title: h.title, one: h.scrollHeight <= 1.6 * parseFloat(getComputedStyle(h).lineHeight), ellipsis: getComputedStyle(h).textOverflow === 'ellipsis' })) }));
-  check('journey: a flat card with a 2 px rule on top', surfaces.image === 'none' && surfaces.top === '2px');
-  check('journey: each step hint is one line, with its whole sentence as the title', surfaces.hints.length === 3 && surfaces.hints.every(h => h.title && h.one && h.ellipsis));
+  const rows = await page.evaluate(() => [...document.querySelectorAll('.set')].map(set => ({ id: set.closest('section')?.id, label: !!set.querySelector(':scope > .sl'), control: !!set.querySelector(':scope > .sc') })));
+  check('settings: Play has four rows and Safety five (the open quest, new quests, the Approve key and the two switches), each a label and a control',
+    rows.filter(r => r.id === 'play').length === 4 && rows.filter(r => r.id === 'safety').length === 5 && rows.every(r => r.label && r.control));
+  const buttons = await page.evaluate(() => ({ ok: document.querySelectorAll('button.ok').length,
+    plain: ['b-pause', 'b-config', 'b-reload', 'b-logs', 'b-diag', 'b-refresh', 'b-snapshot', 'b-toast', 'b-update', 'b-install', 'b-sound-sample', 'b-project-add', 'b-key-set']
+      .filter(id => { const b = document.getElementById(id); return b && !b.classList.contains('primary') && !b.classList.contains('ok'); }).length }));
+  check('buttons: everything on a healthy page is the quiet style, and nothing is green without a request', buttons.ok === 0 && buttons.plain === 13);
+  const surface = await page.evaluate(() => ({ image: getComputedStyle(document.getElementById('status')).backgroundImage, top: getComputedStyle(document.getElementById('status')).borderTopWidth }));
+  check('status line: a flat card with a 2 px rule on top', surface.image === 'none' && surface.top === '2px');
   check('version: the header shows the running version from the status', /^v\d+\.\d+\.\d+/.test(await page.locator('#ver').textContent()));
   return results;
 }

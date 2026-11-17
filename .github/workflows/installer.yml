@@ -8,10 +8,16 @@ name: Windows installer
 # An unsigned installer is never published: a new unsigned exe that captures the screen, polls mouse
 # buttons and registers a Run key is what antivirus and SmartScreen flag. Setup: docs/releasing.md,
 # "Signed installer".
+# A v* tag runs it through release.yml, only after the verify job (typecheck, tests, build) passed;
+# a manual run on a branch packages (and, with SIGNING_READY, signs) but uploads nothing.
 on:
   workflow_dispatch:
-  push:
-    tags: ['v*']
+  workflow_call:
+    secrets:
+      AZURE_TENANT_ID:
+        required: false
+      AZURE_CLIENT_ID:
+        required: false
 permissions:
   contents: read
 concurrency:

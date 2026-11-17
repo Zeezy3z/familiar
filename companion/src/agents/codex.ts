@@ -194,6 +194,10 @@ function modeParams(mode: Mode) {
  * desktop-control tools. Codex has no approval policy that sends every command to the player
  * ("untrusted" still runs read-only commands, and reads can reach any file), so the shell is
  * switched off instead. MCP servers from the user's own Codex config are not switched off. */
+/** Without the player's own configuration (StartOptions.inheritConfig off): no plugins or apps.
+ * MCP servers and rules in ~/.codex/config.toml are read by the shared app-server itself; no
+ * per-thread switch for them is known here. */
+const OWN_CONFIG_OFF = { plugins: false, apps: false };
 const CHAT_TOOLS_OFF = { shell_tool: false, unified_exec: false, plugins: false, apps: false, browser_use: false, computer_use: false };
 
 const PLAN_INSTRUCTIONS = "[Plan only: investigate and propose a concrete plan; do not modify files or run commands that change state.]";
@@ -390,6 +394,7 @@ export class CodexBackend implements AgentBackend {
           approvalPolicy: mp.approvalPolicy,
           approvalsReviewer: mp.approvalsReviewer,
           sandbox: mp.sandbox,
+          ...(o.inheritConfig ? {} : { config: { features: OWN_CONFIG_OFF } }),
           ...(o.model ? { model: o.model } : {}),
         };
     if (o.resumeNativeId && o.fork) {

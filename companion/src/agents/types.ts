@@ -3,11 +3,10 @@
 /** Provider id: "claude", "codex", or an ACP agent id ("hermes", "grok", ...). See providers.ts. */
 export type AgentKind = string;
 
-/** Permission posture, cycled in-game. Mapped per backend (see claude.ts / codex.ts). */
+/** Permission posture, chosen in the control panel (never from the game). Mapped per backend (see
+ * claude.ts / codex.ts). */
 export type Mode = "ask" | "edits" | "plan" | "auto";
 export const MODES: Mode[] = ["ask", "edits", "plan", "auto"];
-/** Modes the in-game Mode key cycles through. Accept edits and Auto are chosen only in the control panel. */
-export const GAME_MODES: Mode[] = ["ask", "plan"];
 export const MODE_LABEL: Record<Mode, string> = {
   ask: "Ask first",
   edits: "Accept edits",
@@ -101,6 +100,9 @@ export interface StartOptions {
   fork?: boolean; // fork instead of resume (safe when the original may be live elsewhere)
   /** A chat (no repo): web search, no shell or project files, these standing instructions. */
   chat?: ChatOptions;
+  /** Load the player's own agent configuration (allow rules, hooks, MCP servers). Off by default
+   * (config key inheritAgentConfig): the quest starts without it. */
+  inheritConfig?: boolean;
 }
 
 export interface ChatOptions {

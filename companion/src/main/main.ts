@@ -17,8 +17,8 @@ import type { AgentBackend, Mode } from "../agents/types";
 import { MODES } from "../agents/types";
 import { resolveCommand } from "../agents/which";
 import { claudeDownloadError, claudeHome, claudeRoute, claudeStatus, companionDir, downloadClaude, type ClaudeFetch } from "../agents/claude-download";
-import { appDataDir, clampVolume, DEFAULT_CONFIG, loadConfig, saveConfig } from "../hub/config";
-import { FONT_MAX, FONT_MIN, Hub, soundMessage, type Toast } from "../hub/hub";
+import { appDataDir, DEFAULT_CONFIG, loadConfig, saveConfig } from "../hub/config";
+import { Hub, privacyOf, soundMessage, type Toast } from "../hub/hub";
 import { buildModel } from "../hub/viewmodel";
 import { activity } from "../hub/activity";
 import { isIssueUrl, suggestionUrl, type SuggestVersions } from "../hub/suggest";
@@ -43,18 +43,20 @@ import {
   windowsAbove,
 } from "./win32";
 import { RefusalLog, screenCaptureTrusted, stripScreenBox, type Verdict } from "./capture-gate";
-import { bindingToVk, corroborateClick, corroborateKey, NO_PROOF, PressLog, Proof, Rect as ClientRect, TRUSTED } from "./physical";
-import { Drag, dragLayout, dragZone, LogMemo, logLayout, rememberLog } from "./geometry";
+import { actKey, ApprovalGate, bindingToVk, corroborateClick, KEY_HELD, KEY_WINDOW_MS, NO_PROOF, PressLog, Proof, proofCovers, Rect as ClientRect, TRUSTED } from "./physical";
+import { clientInFrame, Drag, dragLayout, dragZone, LogMemo, logLayout, physicalOrigin, rememberLog } from "./geometry";
 import { findWowInstall, installAddon, interfaceCheck, SnapshotWriter, tocInterfaces, uninstallAddon, WowInstall } from "./wow";
 import { RUNNING_BUILD } from "./build";
-import { devEnabled, serveDevHooks } from "./dev-hooks";
+import { devEnabled, distributed, serveDevHooks, stripDevEnv } from "./dev-hooks";
 import { changedConfigKeys, describeAddonMessage, describeOverlayAction, diagnosticsText, logLine, redact, rotateLog } from "./log-file";
 import { linkDoctor } from "./doctor";
 import { trayNoticeFor } from "./notices";
 import { paintBadge, trayBadgeFor, type TrayBadge } from "./tray-badge";
 import { checkUpdate, isReleasesUrl, type CheckUpdate } from "./update";
 
-const VERSION = "0.6.0";
+/** package.json's version, stamped in by scripts/build.mjs; Electron's own reading of it otherwise. */
+declare const __FAMILIAR_VERSION__: string | undefined;
+const VERSION = typeof __FAMILIAR_VERSION__ === "string" ? __FAMILIAR_VERSION__ : app.getVersion();
 
 // ---- installed build (electron-builder) --------------------------------------------------------
 // Packaged-only: a source run (electron.exe <companion dir>, via boot.cjs) skips all of this.
@@ -62,8 +64,10 @@ const PACKAGED = app.isPackaged;
 companionDir.packaged = PACKAGED; // where Claude lives (claude-download.ts claudeHome)
 /** The addon the companion installs: the repo's copy, or the installer's under resources\. */
 const REPO_ADDON = PACKAGED ? path.join(process.resourcesPath, "addon", "Familiar") : path.resolve(__dirname, "..", "..", "addon", "Familiar");
+// Dev/test hooks and the FAMILIAR_* overrides never exist in a distributed build (the installed app
+// or the release download); only a source checkout honours them. Before anything reads them.
+if (distributed(PACKAGED)) stripDevEnv();
 if (PACKAGED) {
-  delete process.env.FAMILIAR_DEV; // dev/test hooks never exist in an installed build
   // The source run's Chromium profile (%APPDATA%\<package.json name>), so both hold the same
   // single-instance lock and never run side by side, and Chromium's caches stay out of the
   // %APPDATA%\Familiar config folder (the packaged default, from productName).
@@ -159,8 +163,6 @@ let captureStats: any = {};
 let lastMsgAt = 0;
 let overlayKey = "0";
 let overlayShown = false;
-/** When the Glass last turned visible: a decision key needs it showing for 400 ms (it was seen). */
-let overlayShownAt = 0;
 let paused = false;
 let captureStarted = false;
 let lastCaptureTry = 0;
@@ -178,6 +180,80 @@ let searchSince = 0;
 let lastCover: { exe: string; at: number } | undefined;
 
 const linked = () => Date.now() - (captureStats.lastOk ?? 0) < 3000;
+
+// Capture rate. Reading the whole game window at 30 fps is most of this process's idle CPU. While
+// WoW has not been in front (it or the Glass) for BACK_AFTER_MS, or is minimized, the player cannot
+// act on the addon, so the stream drops to BACK_FPS; it goes back to FRONT_FPS on the first tick the
+// game is in front. Never lower while in front: strip frames are held 70 ms and the addon cannot be
+// asked to resend. At BACK_FPS the idle beacon still decodes about twice a second, so linked() (3 s)
+// and the Link Doctor stay true. A (re)start opens the stream at FRONT_FPS (openFps) and a lower
+// rate follows as a "rate" message (checkRate sends it once the stream reports its cap); in front,
+// a stream that measurably stays well under FRONT_FPS is restarted once (checkRate).
+const FRONT_FPS = 30;
+const BACK_FPS = 2;
+const BACK_AFTER_MS = 3000;
+let captureFps = FRONT_FPS;
+let frontAt = 0;
+let rateSentAt = 0;
+let rateTries = 0;
+/** How a new rate reaches a running stream: false sends the capture page "rate" (applyConstraints
+ * on the live track); true restarts the stream with the new fps in its "start" (the 3.4% measured
+ * on the owner's PC came from a restart). Which one lowers the source's own rate is measured live. */
+const RATE_BY_RESTART = false;
+/** The rate a (re)start opens the stream at: always the full rate, unless rates change by restart. */
+const openFps = () => (RATE_BY_RESTART ? captureFps : FRONT_FPS);
+let slowSince = 0; // in front, the measured rate has been well under FRONT_FPS since then
+let slowRestarted = false; // the one restart for that happened; cleared when the wanted rate changes
+
+/** The rate the capture should run at now. Updates frontAt; call once per tick, after fg/minimized. */
+function wantedFps(now: number): number {
+  if (!game) return FRONT_FPS;
+  if (!minimized && (fg === game.key || fg === overlayKey)) frontAt = now;
+  return minimized || now - frontAt > BACK_AFTER_MS ? BACK_FPS : FRONT_FPS;
+}
+
+/** Hand captureFps to the running stream (see RATE_BY_RESTART). */
+function applyRate(now: number) {
+  if (!captureStarted || !capture) return; // the next start carries captureFps
+  rateSentAt = now;
+  rateTries++;
+  if (RATE_BY_RESTART) {
+    captureStarted = false;
+    lastCaptureTry = 0;
+  } else capture.webContents.send("rate", { fps: captureFps });
+}
+
+/** Each second's frame statistics. In the background: the cap the track reports; a lower rate that
+ * did not take (a stream that opened at the full rate, or a rate that reached the page between two
+ * streams) is sent again, at most 3 times per change. In front: the measured rate; well under
+ * FRONT_FPS for 3 s (raising a running track's rate may not take) restarts the stream once, which
+ * opens it at the full rate. */
+function checkRate(s: any, now: number) {
+  // A stream that just opened, or a rate that was just raised, needs a few seconds before its
+  // measured rate means anything; restarting sooner only costs the lock again.
+  if (!captureStarted || now - rateSentAt < 4000 || now - captureStartedAt < 5000) return void (slowSince = 0);
+  if (captureFps === BACK_FPS) {
+    const cap = Number(s?.fpsCap);
+    if (!(cap > BACK_FPS + 0.5)) return;
+    if (rateTries < 3) applyRate(now);
+    else if (rateTries === 3) {
+      rateTries++;
+      log(`[capture] the stream reports ${cap} fps; wanted ${captureFps} fps. Leaving it.`);
+    }
+    return;
+  }
+  const fps = Number(s?.fps);
+  // Stuck means still at the background rate. A healthy stream in front measures anywhere from
+  // about 9 to 28 fps on a real game (frames arrive as the window repaints), so a plain "under
+  // half" test restarted healthy streams.
+  if (!gameInFront() || !(fps <= BACK_FPS + 1.5)) return void (slowSince = 0);
+  slowSince ||= now;
+  if (now - slowSince < 3000 || slowRestarted) return;
+  slowRestarted = true;
+  log(`[capture] the stream delivers ${fps} fps with WoW in front (wanted ${FRONT_FPS}); restarting it once`);
+  captureStarted = false;
+  lastCaptureTry = 0;
+}
 
 /** Each window gets its own preload exposing only the IPC its page uses (only control gets cmd). */
 function webPrefs(page: "control" | "overlay" | "capture") {
@@ -229,6 +305,8 @@ function createOverlay() {
   overlay.webContents.on("did-finish-load", () => {
     // A Glass loaded while the game is behind another window still learns the dev-input flag.
     overlay?.webContents.send("vis", { visible: overlayShown, devInput: devEnabled() });
+    gate.report([], Date.now()); // a fresh page has painted nothing yet
+    sendApprove(true);
     pushAll();
   });
 }
@@ -262,6 +340,9 @@ function createControl() {
   control.on("closed", () => (control = null));
   // Minimizing the panel tucks it into the tray like closing it does; the tray reopens it.
   control.on("minimize", () => control?.hide());
+  // Hidden, it got no status pushes (sendStatus): one now brings it up to date.
+  control.on("show", () => sendStatus());
+  control.on("restore", () => sendStatus());
 }
 
 /** The familiar's face with the state badge (tray-badge.ts) painted onto each representation: 16 px
@@ -353,6 +434,8 @@ function tick() {
     }
     wrongClient = null;
     searchSince = now;
+    frontAt = now;
+    captureFps = FRONT_FPS; // found: wanted in front from here (wantedFps)
     log(`[wow] found ${game.exe} "${game.title}" class=${game.cls}`);
     hub.wake().catch((e) => log("[hub] wake: " + e));
     // No install known yet: the running game's own folder is the install (doInstall probes with its exe path).
@@ -362,10 +445,19 @@ function tick() {
   minimized = isMinimized(game.hwnd);
   if (wasMinimized && !minimized) searchSince = now;
   fg = foregroundKey();
+  const fps = wantedFps(now);
+  if (fps !== captureFps) {
+    captureFps = fps;
+    rateTries = 0;
+    slowRestarted = false;
+    log(`[capture] ${fps === BACK_FPS ? (minimized ? "WoW minimized" : "WoW in the background") : "WoW in front"}: ${fps} fps`);
+    applyRate(now);
+  }
   const c = clientRectOnScreen(game.hwnd);
   const f = extendedFrameBounds(game.hwnd);
   if (c && (!client || c.x !== client.x || c.y !== client.y || c.width !== client.width || c.height !== client.height)) {
     client = c;
+    gate.rearm(now);
     placeOverlay();
   }
   if (f) {
@@ -410,6 +502,7 @@ function tick() {
 async function startCapture() {
   if (!game || !frameRect || !client || !capture) return;
   captureStartedAt = Date.now();
+  gate.rearm(captureStartedAt); // the link starts over: nothing shown before it approves anything
   if (captureMode === "screen") return startScreenCapture();
   const sources = await desktopCapturer.getSources({ types: ["window"], thumbnailSize: { width: 0, height: 0 } });
   const id = `window:${game.key}:0`;
@@ -419,21 +512,31 @@ async function startCapture() {
     captureStarted = false;
     return;
   }
+  const inFrame = clientInFrame(client, frameRect);
   const cfgMsg = {
     sourceId: src.id,
     w: frameRect.width,
     h: frameRect.height,
-    fps: 30,
-    clientX: client.x - frameRect.x,
-    clientY: client.y - frameRect.y,
+    fps: openFps(),
+    clientX: inFrame.x,
+    clientY: inFrame.y,
+    clientW: inFrame.width,
+    clientH: inFrame.height,
   };
-  log(`[capture] start ${src.id} ${cfgMsg.w}x${cfgMsg.h} client@${cfgMsg.clientX},${cfgMsg.clientY}`);
-  capture.webContents.send("start", cfgMsg);
+  log(`[capture] start ${src.id} ${cfgMsg.w}x${cfgMsg.h} client@${cfgMsg.clientX},${cfgMsg.clientY} ${cfgMsg.fps} fps`);
+  sendStart(cfgMsg);
+}
+
+/** Every start opens at openFps(); checkRate lowers it when main wants less, and watches it in front. */
+function sendStart(cfgMsg: { fps: number }) {
+  rateSentAt = Date.now();
+  rateTries = 0;
+  capture?.webContents.send("start", cfgMsg);
 }
 
 /** The monitor screen capture records for the game, and its top-left in physical px (frame origin). */
 const gameDisplay = (c: Rect) => screen.getDisplayMatching(screen.screenToDipRect(null, c));
-const displayOrigin = (d: Electron.Display) => ({ x: Math.round(d.bounds.x * d.scaleFactor), y: Math.round(d.bounds.y * d.scaleFactor) });
+const displayOrigin = (d: Electron.Display) => physicalOrigin(d.bounds, d.scaleFactor);
 
 /** In screen-capture mode the frame is the whole monitor: strip messages count only while the game
  * (or our Glass) is in front and no other window sits over the strip (capture-gate.ts). */
@@ -462,10 +565,10 @@ async function startScreenCapture() {
   }
   const w = Math.round(disp.size.width * disp.scaleFactor);
   const h = Math.round(disp.size.height * disp.scaleFactor);
-  const o = displayOrigin(disp);
-  const cfgMsg = { sourceId: src.id, w, h, fps: 30, clientX: client.x - o.x, clientY: client.y - o.y };
-  log(`[capture] start screen ${src.id} ${w}x${h} client@${cfgMsg.clientX},${cfgMsg.clientY}`);
-  capture.webContents.send("start", cfgMsg);
+  const inFrame = clientInFrame(client, displayOrigin(disp));
+  const cfgMsg = { sourceId: src.id, w, h, fps: openFps(), clientX: inFrame.x, clientY: inFrame.y, clientW: inFrame.width, clientH: inFrame.height };
+  log(`[capture] start screen ${src.id} ${w}x${h} client@${cfgMsg.clientX},${cfgMsg.clientY} ${cfgMsg.fps} fps`);
+  sendStart(cfgMsg);
 }
 
 function placeOverlay() {
@@ -475,10 +578,11 @@ function placeOverlay() {
   overlay.setBounds(screen.screenToDipRect(overlay, client)); // second pass settles mixed-DPI moves
 }
 
-function overlayNeeded(model?: ReturnType<typeof buildModel>) {
+function overlayNeeded() {
   if (!layout || layout.ui === false) return false;
-  const m = model ?? lastModel;
-  return !!(layout.panel || (layout.tracker && m?.tracker.length) || m?.toasts.length);
+  if (layout.panel) return true;
+  const m = hub ? currentModel() : undefined;
+  return !!((layout.tracker && m?.tracker.length) || m?.toasts.length);
 }
 
 function updateVisibility() {
@@ -488,8 +592,8 @@ function updateVisibility() {
   if (want !== overlayShown) {
     overlayShown = want;
     if (want) {
-      overlayShownAt = Date.now();
       placeOverlay();
+      if (!modelSent) sendModel(); // what changed while it was hidden, before it shows
       // The window stays up once shown; "hidden" is full transparency (click-through either way),
       // so coming back (Alt-Tab) is instant instead of a repaint from scratch.
       if (!overlay.isVisible()) overlay.showInactive();
@@ -531,6 +635,7 @@ function onAddonMessages(msgs: any[]) {
         // Mid-drag layouts (periodic refresh, OnSizeChanged) are older than the cursor: ignore them;
         // the exact one follows the addon's dragstop.
         if (drag) break;
+        if (layoutPlace(m) !== layoutPlace(layout)) gate.rearm(Date.now()); // the Glass moves with it
         layout = m;
         logMemo = rememberLog(m) ?? logMemo;
         overlay?.webContents.send("layout", m);
@@ -550,29 +655,27 @@ function onAddonMessages(msgs: any[]) {
         endDrag("dragstop");
         break;
       case "click": {
-        // Hit-test where the mouse really was, and only let the resulting overlay action approve
-        // anything if a physical release on that region backs this message (physical.ts).
+        // Hit-test where the mouse really was. This only places the click on the Glass: what the
+        // resulting action may grant is decided by the gate, against the Glass's own buttons.
         const rect = (["list", "detail", "tracker", "status"].includes(m.r) ? layout?.[m.r] : undefined) as ClientRect | undefined;
         const proof = corroborateClick(presses, rect, typeof m.x === "number" && typeof m.y === "number" ? { x: m.x, y: m.y } : undefined, Date.now(), toClient);
         if (proof.ok) {
           m.x = proof.x;
           m.y = proof.y;
         }
-        log(`[addon] click ${m.r} ${m.x},${m.y} ${m.b} ${proof.ok ? "corroborated" : "unverified: " + proof.why}`);
-        clickProof = { at: Date.now(), proof };
+        log(`[addon] click ${m.r} ${m.x},${m.y} ${m.b} ${proof.ok ? "placed by the mouse" : "as reported: " + proof.why}`);
         overlay?.webContents.send("input", m);
         break;
       }
       case "wheel":
         overlay?.webContents.send("input", m); // not logged: one line per tick, written on this thread
         break;
-      case "hover":
-        overlay?.webContents.send("input", m);
-        break;
       default:
         if (m.t === "error") log(`[addon] LUA ERROR in ${m.where}: ${m.err}`);
         else log(describeAddonMessage(m));
-        hub.handleAddon(m, m.t === "key" ? keyProof(m) : NO_PROOF);
+        if (m.t === "hello") gate.rearm(Date.now()); // login or /reload: the link starts over
+        if (m.t === "key" && m.k === "approve") approveHint(m);
+        else hub.handleAddon(m, NO_PROOF);
     }
   }
 }
@@ -683,49 +786,77 @@ function endDrag(why: string, revert = false) {
 }
 
 // ---- physical input (read-only GetAsyncKeyState / GetCursorPos; nothing is ever sent) -----------
-// One 10 ms sampler feeds two things: the PressLog that corroborates approvals from the game
-// (physical.ts), and drag prediction below.
+// One sampler feeds two things: the PressLog that corroborates approvals from the game
+// (physical.ts), and drag prediction below. Every 10 ms while that input can matter (the Glass is
+// showing, it has painted a granting button, a key hint waits for its release, a press may become a
+// drag); every 50 ms otherwise. No approval can be proven then: the gate is live only while the
+// Glass shows, and a card needs STABLE_MS of live time, all sampled at 10 ms.
 const presses = new PressLog();
 const VK_SHIFT = 0x10,
   VK_CONTROL = 0x11,
   VK_MENU = 0x12;
 const approveBind = () => (cfg.approveKey ? bindingToVk(cfg.approveKey) : undefined);
 
-/** Decision keys must coincide with real input: the button under the mouse, or the registered key.
- * The addon's `src` only picks which check runs; lying about it never helps. */
-const CORROBORATED_KEYS = new Set(["approve", "always", "mode"]);
-function keyProof(m: any): Proof {
-  if (!CORROBORATED_KEYS.has(m.k)) return TRUSTED;
-  if (!overlayShown || Date.now() - overlayShownAt < 400) return { ok: false, how: "none", why: "Glass not showing" };
-  if (m.src === "bind") return m.k === "mode" ? { ok: false, how: "bind", why: "Mode has no keybind" } : corroborateKey(presses, approveBind(), Date.now());
-  if (m.src === "slash") return { ok: false, how: "none", why: "slash commands cannot approve" };
-  return corroborateClick(presses, layout?.keys?.[m.k], undefined, Date.now(), toClient);
+/** Which cards the Glass has painted and for how long (physical.ts). Approval authority is here:
+ * the addon's messages are hints, and none of its rectangles (layout.keys, layout.detail) is used. */
+const gate = new ApprovalGate();
+/** Where the addon's window sits; a change moves the Glass, so every card waits again. */
+const layoutPlace = (l: any) => JSON.stringify(l ? [l.scr, l.win, l.list, l.detail, l.panel, l.focus, l.ui] : null);
+
+/** "key approve" from the game says only that something asked to approve. It counts when the
+ * registered Approve key was really pressed and released while the Glass showed the request; the
+ * hub then checks the proof names the request it would approve. A hint that arrives while the key
+ * is still down waits for the release. */
+let heldHint: { m: any; until: number } | undefined;
+function approveHint(m: any) {
+  const now = Date.now();
+  const proof: Proof = m.src === "slash" ? { ok: false, how: "none", why: "slash commands cannot approve" } : gate.proveKey(presses, approveBind(), now);
+  if (proof.why === KEY_HELD) heldHint ??= { m, until: now + KEY_WINDOW_MS };
+  else hub.handleAddon(m, proof);
 }
 
-/** Proof for the overlay action that a forwarded click produces (within 250 ms; consumed once). */
-let clickProof: { at: number; proof: Proof } | undefined;
+/** The Glass shows how to approve: by the key alone, or by click too (config approveByClick). */
+let approveSent = "";
+function sendApprove(force = false) {
+  const a = { byClick: !!cfg.approveByClick, key: approveBind() ? cfg.approveKey : "" };
+  if (!force && JSON.stringify(a) === approveSent) return;
+  approveSent = JSON.stringify(a);
+  overlay?.webContents.send("approve", a);
+}
 
 // Drag prediction: watches for a press-and-move on the window's frame so following starts before
 // "dragstart" arrives (that takes a strip frame or two).
 let press: { x: number; y: number; zone: ReturnType<typeof dragZone> } | null = null;
-setInterval(() => {
-  if (!game) return;
+const SAMPLE_FAST_MS = 10;
+const SAMPLE_SLOW_MS = 50;
+/** Buttons and keys at the last sample: a change is a press or release ("edge"). */
+let lastInput = "";
+function sampleInput() {
+  const now = Date.now();
+  if (!game) return gate.setLive(false, now);
   const c = cursorPos();
   const bind = approveBind();
   const down = new Set<number>();
   if (bind && keyDown(bind.vk)) down.add(bind.vk);
   const left = leftButtonDown();
-  presses.sample({
-    at: Date.now(),
-    x: c?.x ?? -1e6,
-    y: c?.y ?? -1e6,
-    left,
-    right: rightButtonDown(),
-    down,
-    ctrl: keyDown(VK_CONTROL),
-    shift: keyDown(VK_SHIFT),
-    alt: keyDown(VK_MENU),
-  });
+  const right = rightButtonDown();
+  const ctrl = keyDown(VK_CONTROL),
+    shift = keyDown(VK_SHIFT),
+    alt = keyDown(VK_MENU);
+  const input = `${+left}${+right}${+down.size}${+ctrl}${+shift}${+alt}`;
+  // A card counts only while the Glass shows and the game (or the Glass) is the foreground window.
+  // tick() reads the foreground every 100 ms; at any press or release (a click elsewhere, Alt-Tab,
+  // the Approve key) with a card on the Glass it is read here and now, before the input is logged,
+  // so input made as focus leaves the game never counts and leaving voids the cards' wait.
+  if (input !== lastInput && gate.size) fg = foregroundKey();
+  lastInput = input;
+  gate.setLive(overlayShown && !minimized && (fg === game.key || fg === overlayKey), now);
+  presses.sample({ at: now, x: c?.x ?? -1e6, y: c?.y ?? -1e6, left, right, down, ctrl, shift, alt });
+  if (heldHint && !(bind && down.has(bind.vk))) {
+    const h = heldHint;
+    heldHint = undefined;
+    if (Date.now() <= h.until) hub.handleAddon(h.m, gate.proveKey(presses, bind, Date.now()));
+  }
   if (drag || !overlayShown || !layout?.panel || !layout.win || !left) {
     if (!drag) press = null;
     return;
@@ -740,17 +871,75 @@ setInterval(() => {
     beginFollow({ ...press.zone, c0: { x: cc.x, y: cc.y } }, { ...layout }, true);
     press = null;
   }
-}, 10);
+}
+(function sampleLoop() {
+  try {
+    sampleInput();
+  } catch (e) {
+    log("[input] " + e);
+  }
+  const fast = overlayShown || gate.size > 0 || !!heldHint || !!press;
+  setTimeout(sampleLoop, fast ? SAMPLE_FAST_MS : SAMPLE_SLOW_MS);
+})();
 
 // ---- render pushes ------------------------------------------------------------------------------
+// The Glass gets the render model only while it shows (once more the moment it shows again), and a
+// streaming reply at most every DELTA_PUSH_MS; anything else (the turn ending, a toast, a card) is
+// pushed within PUSH_MS. The model itself is built only when something needs it.
+const PUSH_MS = 40;
+const DELTA_PUSH_MS = 150;
 let lastModel: ReturnType<typeof buildModel> | undefined;
+/** The hub changed since lastModel was built / since the Glass last got it. */
+let modelStale = true;
+let modelSent = false;
 let pushTimer: NodeJS.Timeout | undefined;
-function schedulePush() {
-  if (pushTimer) return;
+let pushDue = 0;
+function schedulePush(why?: string) {
+  const due = Date.now() + (why === "delta" ? DELTA_PUSH_MS : PUSH_MS);
+  if (pushTimer && pushDue <= due) return;
+  if (pushTimer) clearTimeout(pushTimer);
+  pushDue = due;
   pushTimer = setTimeout(() => {
     pushTimer = undefined;
     pushAll();
-  }, 40);
+  }, due - Date.now());
+}
+
+function currentModel() {
+  if (modelStale || !lastModel) {
+    lastModel = buildModel(hub, { linked: linked(), fps: captureStats.fps ?? 0 });
+    modelStale = false;
+  }
+  return lastModel;
+}
+
+function sendModel() {
+  if (!overlay || !hub) return;
+  overlay.webContents.send("model", currentModel());
+  if (layout) overlay.webContents.send("layout", layout);
+  modelSent = true;
+}
+
+/** "Copy reply" on the Glass: that reply's text onto the Windows clipboard. Like any clicked Glass
+ * action that does something outside the game, it needs a real mouse release inside the Glass's
+ * own Copy button for exactly this reply (the gate's proof; the Glass paints that button with act
+ * { type: "copyReply", thread, label: <entry id> }); the addon's word never writes the clipboard.
+ * Quests only: a desktop thread's history entries have no stable ids to bind the proof to. */
+function copyReply(a: { thread?: unknown; entry?: unknown }, now: number, trusted?: Proof) {
+  const thread = typeof a.thread === "string" ? a.thread : "";
+  const entry = typeof a.entry === "string" ? a.entry : "";
+  const key = actKey({ type: "copyReply", thread, label: entry });
+  const proof = trusted ?? (gate.has(key) ? gate.proveClick(presses, key, client, now) : NO_PROOF);
+  if (!proofCovers(proof, key)) {
+    log(`[copy] refused: ${proof.why ?? "no proof for this button"}`);
+    return hub.toast("That click could not be matched to your mouse on that button. Move onto it and click again.", "info");
+  }
+  const e = hub.replyText(thread, entry);
+  if (!e?.text.trim()) return hub.toast("Nothing to copy.", "info");
+  if (e.streaming) return hub.toast("The reply is still being written. Copy it when it is done.", "info");
+  clipboard.writeText(e.text);
+  log(`[copy] reply copied to the clipboard (${e.text.length} characters)`);
+  hub.toast("Copied", "info");
 }
 
 /** Requests that already had a Windows notice (thread + request id): one balloon per request. */
@@ -762,18 +951,22 @@ function markNoticed(key: string) {
 }
 const gameInFront = () => !!game && !minimized && (fg === game.key || fg === overlayKey);
 
-/** An approval toast while WoW isn't in front (or is minimized): a Windows notice, so a request
- * doesn't sit unseen while you're at the desk. Its click opens the control panel (balloon-click),
- * which lists every pending request. Never moves focus; generic under Hide names. */
+/** An approval toast, or a finished turn's, while WoW isn't in front (or is minimized): a Windows
+ * notice, so a request or an answer doesn't sit unseen while you're at the desk. One per request,
+ * one per finished turn (its toast; a toast held through a fight keeps its id). Its click opens the
+ * control panel (balloon-click), which lists every pending request. Never moves focus; generic
+ * under Hide names; trayNoticeFor (notices.ts) decides, under the same on/off setting. */
 function noticeFor(x: Toast) {
-  if (x.kind !== "approval" || !x.requestId || noticed.has(noticeKey(x.threadId, x.requestId))) return;
+  const key = x.kind === "approval" ? (x.requestId ? noticeKey(x.threadId, x.requestId) : undefined) : x.kind === "done" ? `done\0${x.id}` : undefined;
+  if (!key || noticed.has(key)) return;
   const t = x.threadId ? hub.threads.get(x.threadId) : undefined;
+  if (t?.kind === "tutorial") return;
   const n = trayNoticeFor({ kind: x.kind, project: t ? hub.projectName(t) : undefined, questTitle: t?.title },
     { gameInFront: gameInFront(), privateMode: !!cfg.privateMode, trayNotices: cfg.trayNotices !== false });
   if (!n || !tray) return;
-  markNoticed(noticeKey(x.threadId, x.requestId));
+  markNoticed(key);
   tray.displayBalloon({ title: n.title, content: n.content, noSound: true, respectQuietTime: true });
-  log("[notice] request waiting while WoW isn't in front: Windows notice shown");
+  log(`[notice] ${x.kind === "done" ? "quest finished" : "request waiting"} while WoW isn't in front: Windows notice shown`);
 }
 
 /** A request too long for the in-game card waits on the PC: make the control panel easy to reach
@@ -815,16 +1008,33 @@ function pushAll() {
   if (!hub) return;
   settleRequests();
   refreshTray();
-  lastModel = buildModel(hub, { linked: linked(), fps: captureStats.fps ?? 0 });
-  overlay?.webContents.send("model", lastModel);
-  if (layout) overlay?.webContents.send("layout", layout);
-  updateVisibility();
+  modelStale = true;
+  modelSent = false;
+  sendApprove();
+  updateVisibility(); // pushes the model if the Glass turns visible
+  if (overlayShown && !modelSent) sendModel();
   sendStatus();
 }
 
 function uiSettings() {
   return { fontScale: cfg.fontScale, sound: cfg.sound, soundVolume: cfg.soundVolume, raidWarnings: cfg.raidWarnings !== false, quiet: !!cfg.quiet, privateMode: !!cfg.privateMode,
-    streamSafe: !!cfg.privateMode && !!cfg.blurTranscript, defaultMode: cfg.defaultMode, approveKey: cfg.approveKey ?? "", trayNotices: cfg.trayNotices !== false };
+    streamSafe: !!cfg.privateMode && !!cfg.blurTranscript, defaultMode: cfg.defaultMode, approveKey: cfg.approveKey ?? "", trayNotices: cfg.trayNotices !== false,
+    approveByClick: cfg.approveByClick === true, inheritAgentConfig: cfg.inheritAgentConfig === true, privacy: privacyOf(cfg) };
+}
+
+/** The addon's Interface list (Familiar.toc), read again only when the file changes or the addon is
+ * reinstalled, not on every status snapshot. */
+let tocCache: { mtime: number; list: number[] } | undefined;
+function addonInterfaces(): number[] {
+  const toc = path.join(REPO_ADDON, "Familiar.toc");
+  let mtime = -1;
+  try {
+    mtime = fs.statSync(toc).mtimeMs;
+  } catch {
+    /* missing: tocInterfaces says [] */
+  }
+  if (tocCache?.mtime !== mtime) tocCache = { mtime, list: tocInterfaces(toc) };
+  return tocCache.list;
 }
 
 function statusSnapshot() {
@@ -834,7 +1044,7 @@ function statusSnapshot() {
     storage: hub?.storage,
     work: hub ? activity(hub) : null,
     game: game ? { exe: game.exe, title: game.title, cls: game.cls, client, frame: frameRect, minimized, foreground: fg === game.key } : null,
-    capture: { ...captureStats, mode: captureMode },
+    capture: { ...captureStats, mode: captureMode, wantFps: captureFps },
     linked: linked(),
     lastMsgAgo: lastMsgAt ? Date.now() - lastMsgAt : null,
     addon: hub?.addon,
@@ -844,10 +1054,13 @@ function statusSnapshot() {
     install: install ? { dir: install.dir, flavor: install.flavor, source: install.source, product: install.product, version: install.version, iface: install.iface } : null,
     installError: install ? undefined : installError,
     // One line: does the addon's Interface list cover the detected client?
-    wow: install ? interfaceCheck(install, tocInterfaces(path.join(REPO_ADDON, "Familiar.toc"))) : null,
+    wow: install ? interfaceCheck(install, addonInterfaces()) : null,
     wrongClient: wrongClient ? { exe: wrongClient.exe, dir: wrongClient.dir } : null,
     installNotes,
     threads: hub ? hub.threads.size : 0,
+    // The quest open in the game, for the panel's Mode control (cmd "questMode"; never set from the game).
+    // `id` goes back with the choice, so a quest opened since is never changed in its place.
+    quest: ((t) => (t && !t.kind && !hub.view.draft ? { id: t.id, title: t.title, mode: t.mode } : null))(hub?.selectedThread()),
     projects: projectsStatus(),
     configPath: path.join(appDataDir(), "config.json"),
     launchAtLogin: cfg.launchAtLogin,
@@ -859,8 +1072,6 @@ function statusSnapshot() {
     // Versions: the addon's (hello) against this app's, and the last "Check for updates" answer.
     update: { app: VERSION, addon: hub?.addon.addon, mismatch: !!hub?.versionMismatch(), last: lastUpdateCheck },
     providers: providersNow(),
-    providersChosen: cfg.providersChosen,
-    chat: { agent: cfg.chatAgent, model: cfg.chatModel, effort: cfg.chatEffort },
     logPath: logFile,
   };
 }
@@ -871,7 +1082,7 @@ function doctorNow() {
   const c = captureStats ?? {};
   const now = Date.now();
   return linkDoctor({ game: !!game, minimized, foreground: !!game && (fg === game.key || fg === overlayKey), captureMode,
-    stats: { fps: now - statsAt < 2500 ? c.fps ?? 0 : 0, crc: c.crc ?? 0, lock: c.lock, lastOk: c.lastOk ?? 0 },
+    stats: { fps: now - statsAt < 2500 ? c.fps ?? 0 : 0, crc: c.crc ?? 0, lock: c.lock, lastOk: c.lastOk ?? 0, rampAt: c.rampAt ?? 0 },
     startedAt: searchSince, now, refusedExe: lastCover && now - lastCover.at < 5000 ? lastCover.exe : undefined });
 }
 
@@ -931,7 +1142,7 @@ function suggestVersions(): SuggestVersions {
 /** "Copy diagnostics": versions, install/capture/provider state and the redacted log tail. No
  * paths (beyond what redact() leaves), no config values except booleans, no transcript. */
 function diagnosticsReport(): string {
-  const check = install ? interfaceCheck(install, tocInterfaces(path.join(REPO_ADDON, "Familiar.toc"))) : null;
+  const check = install ? interfaceCheck(install, addonInterfaces()) : null;
   const c = captureStats ?? {};
   return diagnosticsText({
     version: VERSION,
@@ -943,19 +1154,22 @@ function diagnosticsReport(): string {
       ? `${install.flavor} product ${install.product ?? "?"} version ${install.version ?? "?"} iface ${install.iface ?? "?"} (${install.source}); ${check?.text ?? ""}`
       : `no install (${installError ?? "unknown"})${wrongClient ? `; another client running: ${wrongClient.exe}` : ""}`,
     link: (({ step, text }) => `${step}: ${text}`)(doctorNow()),
-    capture: `mode ${captureMode}${captureMode === "screen" ? " (messages accepted only while WoW is in front and uncovered)" : ""}, fps ${c.fps ?? 0}, lock ${c.lock ? "yes" : "no"}, linked ${linked() ? "yes" : "no"}, game ${game ? (minimized ? "minimized" : fg === game.key ? "foreground" : "background") : "not found"}, overlay ${paused ? "paused" : overlayShown ? "shown" : "hidden"}${c.error ? `, error: ${c.error}` : ""}`,
+    capture: `mode ${captureMode}${captureMode === "screen" ? " (messages accepted only while WoW is in front and uncovered)" : ""}, fps ${c.fps ?? 0} (wanted ${captureFps}, cap ${c.fpsCap ?? "?"}), lock ${c.lock ? "yes" : "no"}, linked ${linked() ? "yes" : "no"}, game ${game ? (minimized ? "minimized" : fg === game.key ? "foreground" : "background") : "not found"}, overlay ${paused ? "paused" : overlayShown ? "shown" : "hidden"}${c.error ? `, error: ${c.error}` : ""}`,
     providers: providersNow().map((p) => `${p.id} ${p.installed ? "installed" : "not installed"}${p.signedIn === undefined ? "" : p.signedIn ? ", signed in" : ", not signed in"}${p.enabled ? ", on" : ", off"}`),
     configKeys: changedConfigKeys(cfg as unknown as Record<string, unknown>, DEFAULT_CONFIG as unknown as Record<string, unknown>),
     log: logRing.slice(-80),
   });
 }
 
+/** Status goes to the control panel only while it is on screen (not closed or minimized to the
+ * tray); it gets one the moment it shows again (createControl). */
+const panelShown = () => !!control && !control.isDestroyed() && control.isVisible() && !control.isMinimized();
 let statusTimer: NodeJS.Timeout | undefined;
 function sendStatus() {
-  if (!control || statusTimer) return;
+  if (!panelShown() || statusTimer) return;
   statusTimer = setTimeout(() => {
     statusTimer = undefined;
-    control?.webContents.send("status", statusSnapshot());
+    if (panelShown()) control!.webContents.send("status", statusSnapshot());
   }, 250);
 }
 
@@ -1014,7 +1228,8 @@ function doInstall(force: boolean) {
     log("[install] " + installNotes[0]);
     return;
   }
-  const check = interfaceCheck(install, tocInterfaces(path.join(REPO_ADDON, "Familiar.toc")));
+  tocCache = undefined; // (re)installing: read the addon's Interface list afresh
+  const check = interfaceCheck(install, addonInterfaces());
   log(`[wow] flavor ${install.flavor} product ${install.product ?? "?"} version ${install.version ?? "?"} iface ${install.iface ?? "?"} (${install.source}): ${check.text}`);
   // Installed: a marked copy (a junction into the install folder would dangle after uninstall and
   // let addon managers write through it). Source run: a junction to the live repo copy.
@@ -1123,13 +1338,11 @@ app.whenReady().then(async () => {
   hub.openIssue = (url) => {
     if (isIssueUrl(url)) shell.openExternal(url).catch((e) => log(`[open] ${e}`));
   };
-  hub.suggestVersions = suggestVersions;
   // The Glass plays every cue, panel-made approvals included; no overlay (WoW closed), no sound.
   hub.onSound = (k) => {
     const m = soundMessage(cfg, k);
     if (m) overlay?.webContents.send("sound", m);
   };
-  hub.onSpeak = (t) => overlay?.webContents.send("speak", t);
   hub.onCutRequest = surfaceRequests;
   hub.onToast = noticeFor;
   hub.onConfigChanged = (c) => {
@@ -1139,12 +1352,12 @@ app.whenReady().then(async () => {
   };
   snapshot = new SnapshotWriter(hub, () => (install ? path.join(install.addons, "FamiliarSync", "FamiliarSync.lua") : null), log);
   hub.on((why) => {
-    schedulePush();
+    schedulePush(why);
     if (why !== "delta") snapshot.schedule();
   });
 
   doInstall(false);
-  // Start with Windows is opt-in (control panel checkbox, /fam autostart on); this only syncs the
+  // Start with Windows is opt-in (the control panel's checkbox, never the game); this only syncs the
   // registry entry with the setting and removes the legacy one.
   applyLoginItem();
 
@@ -1155,9 +1368,9 @@ app.whenReady().then(async () => {
 
   ipcMain.on("msgs", (e, msgs) => {
     if (!from(e, capture) || !Array.isArray(msgs)) return;
-    const gate = screenGate();
-    if (!gate.ok) {
-      if (screenRefusals.shouldLog(Date.now())) log(`[capture] screen mode: dropped ${msgs.length} message(s): ${gate.why}`);
+    const verdict = screenGate();
+    if (!verdict.ok) {
+      if (screenRefusals.shouldLog(Date.now())) log(`[capture] screen mode: dropped ${msgs.length} message(s): ${verdict.why}`);
       return;
     }
     onAddonMessages(msgs);
@@ -1167,7 +1380,9 @@ app.whenReady().then(async () => {
     const wasLinked = linked();
     captureStats = s;
     statsAt = Date.now();
+    checkRate(s, statsAt);
     if (linked() !== wasLinked) {
+      gate.rearm(Date.now()); // reconnect: nothing shown before it approves anything
       log(`[link] ${linked() ? "linked" : "lost"} (fps ${s.fps}, decoded ${s.decoded}, crc ${s.crc}, missed ${s.missed})`);
       pushAll();
     }
@@ -1181,12 +1396,18 @@ app.whenReady().then(async () => {
   ipcMain.on("log", (e, s) => {
     if (from(e, capture) || from(e, overlay) || from(e, control)) log(String(s));
   });
+  // Where the Glass painted the buttons that grant something: the only rectangles approvals use.
+  ipcMain.on("painted", (e, list) => {
+    if (from(e, overlay)) gate.report(list, Date.now());
+  });
   ipcMain.on("action", (e, a) => {
     if (!from(e, overlay) || !a || typeof a !== "object") return;
     log(describeOverlayAction(a));
-    // Only the action a corroborated, just-forwarded click produced may approve; one click, one action.
-    const proof = clickProof && Date.now() - clickProof.at < 250 ? clickProof.proof : NO_PROOF;
-    clickProof = undefined;
+    if (a.type === "copyReply") return copyReply(a, Date.now());
+    // An action grants something only with a real release inside the Glass's own button for exactly
+    // this action, on a card that had settled (physical.ts); one release, one action.
+    const key = actKey(a);
+    const proof = gate.has(key) ? gate.proveClick(presses, key, client, Date.now()) : NO_PROOF;
     try {
       hub.action(a, proof);
     } catch (e) {
@@ -1235,40 +1456,10 @@ app.whenReady().then(async () => {
         if (p?.installUrl) await shell.openExternal(p.installUrl);
         return true;
       }
-      case "chatSettings": {
-        const { agent, model, effort } = args as { agent?: string; model?: string; effort?: string };
-        if (agent && agent !== cfg.chatAgent) {
-          cfg.chatAgent = agent;
-          cfg.chatModel = model ?? hub.backends[agent]?.status().models.find((m) => m.id !== "default")?.id ?? "";
-        } else if (model) cfg.chatModel = model;
-        if (effort) cfg.chatEffort = effort;
-        saveConfig(cfg);
-        hub.changed("config");
-        sendStatus();
-        return { agent: cfg.chatAgent, model: cfg.chatModel, effort: cfg.chatEffort };
-      }
-      case "providersChosen":
-        cfg.providersChosen = true;
-        saveConfig(cfg);
-        sendStatus();
-        return true;
-      case "uiSettings": {
-        const a = (args ?? {}) as { fontScale?: number; sound?: boolean; soundVolume?: number; raidWarnings?: boolean; quiet?: boolean; privateMode?: boolean; streamSafe?: boolean; defaultMode?: string; approveKey?: string; trayNotices?: boolean };
-        if (typeof a.fontScale === "number" && isFinite(a.fontScale)) cfg.fontScale = Math.min(FONT_MAX, Math.max(FONT_MIN, a.fontScale));
-        if (typeof a.sound === "boolean") cfg.sound = a.sound;
-        cfg.soundVolume = clampVolume(a.soundVolume) ?? cfg.soundVolume; // 0-100; a non-number is ignored
-        if (typeof a.raidWarnings === "boolean") cfg.raidWarnings = a.raidWarnings;
-        if (typeof a.trayNotices === "boolean") cfg.trayNotices = a.trayNotices;
-        if (typeof a.quiet === "boolean") hub.setQuiet(a.quiet);
-        if (typeof a.privateMode === "boolean") hub.setPrivate(a.privateMode);
-        if (typeof a.streamSafe === "boolean") hub.setStream(a.streamSafe);
-        if (MODES.includes(a.defaultMode as Mode)) cfg.defaultMode = a.defaultMode as Mode; // never a bypass mode: MODES has none
-        // Only keys Familiar can check on the keyboard; anything else clears it (keybind approvals refused).
-        if (typeof a.approveKey === "string") cfg.approveKey = bindingToVk(a.approveKey) ? a.approveKey.trim().toUpperCase() : "";
-        saveConfig(cfg);
-        hub.changed("config");
+      case "uiSettings":
+        // The hub's one settings write path checks and clamps each value and saves once.
+        hub.settings(args && typeof args === "object" ? args : {});
         return uiSettings();
-      }
       case "decide": {
         // A click in the focused control panel, which shows the whole request: physical input on the
         // PC, not a path from the game. The only caller of hub.decide(..., "panel"); `cmd` answers
@@ -1282,10 +1473,16 @@ app.whenReady().then(async () => {
         sendStatus();
         return r;
       }
+      case "questMode": {
+        // The mode of the quest open in the game. Only here: the game cannot change modes.
+        const { mode, thread } = (args ?? {}) as { mode?: unknown; thread?: unknown };
+        if (!MODES.includes(mode as Mode)) return { ok: false, why: "Unknown mode." };
+        const r = hub.setSelectedMode(mode as Mode, String(thread ?? ""));
+        sendStatus();
+        return r;
+      }
       case "launchAtLogin":
-        cfg.launchAtLogin = !!args;
-        saveConfig(cfg);
-        applyLoginItem();
+        hub.settings({ launchAtLogin: !!args }); // onConfigChanged saves and applies the startup entry
         return cfg.launchAtLogin;
       case "pause":
         paused = !!args;
@@ -1402,9 +1599,14 @@ function startDevServer() {
     47810,
     async (url, body) => {
       if (url === "/status") return { ...statusSnapshot(), view: { ...hub.view, collapsed: [...hub.view.collapsed], expanded: [...hub.view.expanded] } };
-      if (url === "/model") return lastModel;
+      if (url === "/model") return currentModel();
       if (url === "/simulate") return onAddonMessages([JSON.parse(body)]) ?? true;
-      if (url === "/action") return hub.action(JSON.parse(body), TRUSTED) ?? true; // token-gated dev hook stands in for a real click
+      if (url === "/action") {
+        // The token-gated dev hook stands in for a real click.
+        const a = JSON.parse(body);
+        if (a?.type === "copyReply") return copyReply(a, Date.now(), TRUSTED);
+        return hub.action(a, TRUSTED) ?? true;
+      }
       if (url === "/snap") return await snap(body || path.join(appDataDir(), "snap.png"));
       if (url === "/capture-snapshot") return await captureSnapshot(); // e2e: the panel's "Save what Familiar sees"
       if (url === "/inject") {
@@ -1426,8 +1628,7 @@ async function snap(file: string) {
   const size = { width: Math.round(disp.size.width * disp.scaleFactor), height: Math.round(disp.size.height * disp.scaleFactor) };
   const sources = await desktopCapturer.getSources({ types: ["screen"], thumbnailSize: size });
   const src = sources.find((s) => s.display_id === String(disp.id)) ?? sources[0];
-  const origin = { x: Math.round(disp.bounds.x * disp.scaleFactor), y: Math.round(disp.bounds.y * disp.scaleFactor) };
-  const img = src.thumbnail.crop({ x: client.x - origin.x, y: client.y - origin.y, width: client.width, height: client.height });
+  const img = src.thumbnail.crop(clientInFrame(client, displayOrigin(disp)));
   fs.writeFileSync(file, img.toPNG());
   return { file, size: img.getSize() };
 }

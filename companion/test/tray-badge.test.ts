@@ -9,8 +9,8 @@ describe("tray badge and tooltip", () => {
     expect(trayBadgeFor(null, false)).toEqual({ badge: "none", tooltip: "Familiar" });
     expect(trayBadgeFor(work(0, 0), false)).toEqual({ badge: "none", tooltip: "Familiar" });
     expect(trayBadgeFor(work(2, 0), false)).toEqual({ badge: "working", tooltip: "Familiar · 2 working" });
-    expect(trayBadgeFor(work(0, 1), false)).toEqual({ badge: "waiting", tooltip: "Familiar · 1 waiting on you" });
-    expect(trayBadgeFor(work(2, 1), false)).toEqual({ badge: "waiting", tooltip: "Familiar · 2 working · 1 waiting on you" });
+    expect(trayBadgeFor(work(0, 1), false)).toEqual({ badge: "waiting", tooltip: "Familiar · 1 needs you" });
+    expect(trayBadgeFor(work(2, 1), false)).toEqual({ badge: "waiting", tooltip: "Familiar · 2 working · 1 needs you" });
     // A request too long for the in-game card keeps its own words.
     expect(trayBadgeFor(work(1, 1), true)).toEqual({ badge: "waiting", tooltip: "Familiar: a request is waiting on your PC" });
     expect(trayBadgeFor(null, true)).toEqual({ badge: "waiting", tooltip: "Familiar: a request is waiting on your PC" });

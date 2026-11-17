@@ -69,7 +69,7 @@ async function open(scenario, narrow = false) {
     // Fresh model object makes the real renderer observe the font setting change.
     p.model.fontScale = 1.45;
     p.emit('model', { ...p.model });
-    p.emit('layout', { scr: [1280, 800], px: 1.25, panel: true, native: false, drag: false, combat: false, ui: true,
+    p.emit('layout', { scr: [1280, 800], px: 1.25, panel: true, drag: false, combat: false, ui: true,
       rowH: 24, list: [30, 100, 250, 620], detail: [300, 100, 380, 620], status: [30, 735, 940, 28] });
   });
   await settle();
@@ -90,155 +90,91 @@ async function sameAnchor(before, name, contentUnchanged = true) {
   if (!ok) console.log(`ANCHOR ${name}: before ${JSON.stringify(before && { text: before.text.slice(0, 40), offset: before.offset })} after ${JSON.stringify(after && { text: after.text.slice(0, 40), offset: after.offset })}`);
   check(name, ok);
 }
-// Everything but the three steps and the essentials lives in <details id="advanced">, collapsed by default;
-// Playwright refuses to act inside a closed <details>, so open it the way a person would.
-async function openAdvanced() {
-  if (!await page.locator('#advanced').evaluate(el => el.open)) await page.locator('#advanced > summary').click();
+// ---- The control panel: one fixed page that never moves between states (header · Requests waiting · the status line ·
+// Play · Safety · Familiars · Projects · Troubleshooting, collapsed · footer), through the built control.html and the
+// synthetic bridge. An action's answer is written beside the control that caused it (control.ts say()).
+async function openControl(scenario, width, height = 640) {
+  await page.setViewportSize({ width, height });
+  await page.goto(`${origin}/control.html?scenario=${scenario}`);
+  await page.waitForFunction(() => window.preview?.state && document.getElementById('journey-title')?.textContent);
 }
-async function controlChatJourney(width) {
-  const size = `control-${width}`;
-  await page.setViewportSize({ width, height: 640 });
-  await page.goto(`${origin}/control.html?scenario=linked`);
-  await page.waitForFunction(() => document.getElementById('chat-agent')?.value === 'claude');
-  await openAdvanced();
-  const values = () => page.evaluate(() => ({
-    agent: document.getElementById('chat-agent').value,
-    model: document.getElementById('chat-model').value,
-    effort: document.getElementById('chat-effort').value,
-    label: document.getElementById('chat-agent').selectedOptions[0]?.textContent,
-    status: document.getElementById('chat-status')?.textContent,
-    chat: { ...window.preview.state.chat },
-    updates: window.preview.calls.filter(c => c.cmd === 'chatSettings'),
+const uiWrites = () => page.evaluate(() => window.preview.calls.filter(c => c.cmd === 'uiSettings').map(c => c.args));
+// The feedback line of the settings row, button group or card that holds `selector`.
+const feedback = selector => page.locator(selector).evaluate(el => {
+  const fb = el.closest('.set, .btns, #familiars, #status')?.querySelector(':scope > .fb');
+  return { text: fb?.textContent ?? null, level: fb ? ['ok', 'warn', 'err'].find(c => fb.classList.contains(c)) ?? '' : null, role: fb?.getAttribute('role') ?? null };
+});
+const shown = selector => page.locator(selector).evaluate(el => !el.closest('[hidden]') && getComputedStyle(el).display !== 'none');
+const ONLY_HERE = 'No key set: requests can only be approved in this window until you set one.';
+
+async function controlLayoutJourney(width) {
+  const size = `control-${width}/layout`;
+  await openControl('linked', width);
+  const now = await page.evaluate(() => ({
+    order: [...document.querySelectorAll('main > *')].map(e => e.id), hidden: [...document.querySelectorAll('main > *')].filter(e => e.hidden).map(e => e.id),
+    stale: ['advanced', 'chat-agent', 'feedback', 'b-chosen', 'step-slot', 'essentials', 'journey', 'quests-card'].filter(id => document.getElementById(id)),
+    strip: document.getElementById('journey-steps').hidden, title: document.getElementById('journey-title').textContent, trouble: document.getElementById('troubleshooting').open,
   }));
-  const initial = await values();
-  check(`${size}: configured provider/model and live readiness agree`, initial.agent === 'claude' && initial.model === 'haiku'
-    && initial.effort === 'medium' && initial.status?.includes('Claude is ready for Chat'));
-  const copy = await page.evaluate(() => ({
-    mode: document.getElementById('ui-mode-hint')?.textContent, // round 7: the row's hint line (was #ui-mode + .hint)
-    privateLabel: document.getElementById('ui-private').closest('label')?.textContent,
-    approveKey: document.querySelector('#quests-card details.how #approve-key-how')?.textContent.trim(), // round 7: in How it works (was #ui-approve-key + .hint)
-    suggest: getComputedStyle(document.getElementById('suggest-text')).backgroundColor,
-  }));
-  check(`${size}: mode hint recommends Ask first`, copy.mode?.includes('Ask first is recommended'));
-  check(`${size}: private setting is named Hide names`, copy.privateLabel?.includes('Hide names'));
-  check(`${size}: Approve key hint starts with the WoW binding step`, copy.approveKey?.startsWith('1. In WoW'));
-  check(`${size}: suggestion box is not a white field`, !['rgb(255, 255, 255)', 'rgba(255, 255, 255, 1)'].includes(copy.suggest));
-  const claude = page.locator('[data-enable="claude"]');
-  const codex = page.locator('[data-enable="codex"]');
-  await claude.uncheck();
-  await page.waitForFunction(() => document.getElementById('chat-status')?.textContent.includes('switched off'));
-  let current = await values();
-  check(`${size}: disabling retains the configured choice despite stale backend-ready flag`, current.agent === initial.agent
-    && current.model === initial.model && current.effort === initial.effort && current.label.includes('switched off')
-    && JSON.stringify(current.chat) === JSON.stringify(initial.chat) && current.updates.length === 0);
-  await claude.focus();
-  await page.evaluate(() => {
-    window.preview.statusTicks = 0;
-    window.familiar.on('status', () => window.preview.statusTicks++);
-  });
-  await page.waitForFunction(() => window.preview.statusTicks > 0);
-  check(`${size}: unsolicited status tick keeps keyboard focus and does not change defaults`, await claude.evaluate(el => document.activeElement === el)
-    && (await values()).updates.length === 0 && (await values()).agent === 'claude');
-  await snapshot(`${size}-selected-provider-off`);
-  check(`${size}: Chat controls fit available width`, await page.locator('#chatset').evaluate(el => el.scrollWidth <= el.clientWidth + 1));
-  await codex.uncheck();
-  check(`${size}: disabling both never selects a replacement`, (await values()).agent === 'claude'
-    && await page.locator('#chat-agent option:not(:disabled)').count() === 0 && (await values()).updates.length === 0);
-  await claude.check();
-  await codex.check();
-  await page.waitForFunction(() => document.getElementById('chat-status')?.textContent.includes('Claude is ready for Chat'));
-  current = await values();
-  check(`${size}: restoring keeps provider/model/effort`, current.agent === initial.agent && current.model === initial.model
-    && current.effort === initial.effort && JSON.stringify(current.chat) === JSON.stringify(initial.chat) && current.updates.length === 0);
-  // Fault-injected status snapshots cover unavailable/unknown readiness without a real provider.
-  const provider = await page.evaluate(() => {
-    const p = window.preview, selected = p.state.providers.find(p => p.id === 'claude');
-    p.state.providers = p.state.providers.filter(p => p.id !== 'claude');
-    p.emit('status', p.state);
-    return selected;
-  });
-  current = await values();
-  check(`${size}: missing configured provider remains explicit`, current.agent === 'claude' && current.model === 'haiku'
-    && current.label.includes('unavailable') && current.status.includes('unavailable for Chat') && current.updates.length === 0);
-  await page.evaluate(provider => {
-    const p = window.preview;
-    p.state.providers.unshift(provider);
-    p.state.backends.claude.ready = false;
-    p.emit('status', p.state);
-  }, provider);
-  check(`${size}: saved sign-in is not live readiness`, (await values()).status.includes('sign-in found; live readiness is not yet confirmed'));
+  check(`${size}: one fixed order: Requests waiting, the status line, Play, Safety, Familiars, Projects, Troubleshooting`,
+    JSON.stringify(now.order) === JSON.stringify(['requests', 'status', 'play', 'safety', 'familiars', 'projects', 'troubleshooting']));
+  check(`${size}: healthy: no request card, no step strip, All set, Troubleshooting closed`, JSON.stringify(now.hidden) === '["requests"]' && now.strip
+    && now.title === 'All set — type /fam in WoW' && !now.trouble);
+  check(`${size}: the old layout's elements are gone`, now.stale.length === 0);
+  check(`${size}: with a key registered there is no how-to-bind line and no mode warning`, !await shown('#approve-key-how') && !await shown('#ui-mode-warn')
+    && !await shown('#quest-warn') && await page.locator('#approve-key-line').textContent() === 'Registered: F9 — Familiar checks the real keyboard for it');
+  await snapshot(`control-${width}-linked`);
+  // First run: nothing signed in yet. The step strip shows, step 1 is current, and the line offers Review familiars.
+  await openControl('setup', width);
   await page.evaluate(() => {
     const p = window.preview;
-    delete p.state.providers.find(p => p.id === 'claude').signedIn;
+    for (const x of p.state.providers) if (x.id !== 'hermes') { x.signedIn = false; x.detail = 'Not signed in'; }
+    p.state.backends = {};
     p.emit('status', p.state);
   });
-  check(`${size}: unknown readiness stays unverified`, (await values()).status.includes('readiness is not yet verified'));
-  await page.evaluate(() => {
-    const p = window.preview;
-    p.state.providers.find(p => p.id === 'claude').signedIn = false;
-    p.emit('status', p.state);
-  });
-  check(`${size}: selected Chat explains missing sign-in`, (await values()).status.includes('needs sign-in'));
-  await page.evaluate(() => {
-    const p = window.preview;
-    p.state.backends.claude.error = 'Synthetic backend unavailable';
-    p.emit('status', p.state);
-  });
-  check(`${size}: selected Chat exposes the backend error`, (await values()).status.includes('not ready: Synthetic backend unavailable'));
-  await page.locator('#chat-agent').selectOption('codex');
-  await page.waitForFunction(() => document.getElementById('chat-model').value === 'm2');
-  current = await values();
-  check(`${size}: only a deliberate provider choice updates the synthetic defaults`, current.agent === 'codex' && current.model === 'm2'
-    && current.effort === 'medium' && current.chat.agent === 'codex' && current.chat.model === 'm2'
-    && current.updates.length === 1 && JSON.stringify(current.updates[0].args) === JSON.stringify({ agent: 'codex' }));
-  await snapshot(`${size}-explicit-provider-choice`);
-  // The default-mode warning and header badge appear only for the modes that act without asking.
-  const modeWarn = () => page.evaluate(() => ({ warn: !document.getElementById('ui-mode-warn').hidden
-    && getComputedStyle(document.getElementById('ui-mode-warn')).display !== 'none',
-    badge: document.getElementById('modebadge').hidden ? null : document.getElementById('modebadge').textContent }));
-  await page.locator('#ui-mode').selectOption('auto');
-  const auto = await modeWarn();
-  check(`${size}: Auto default shows the warning and header badge`, auto.warn && auto.badge === 'Default: Auto');
-  await snapshot(`${size}-mode-auto-warning`);
-  await page.locator('#ui-mode').selectOption('ask');
-  const ask = await modeWarn();
-  check(`${size}: Ask first default hides the warning and badge`, !ask.warn && ask.badge === null);
-  await page.locator('#ui-mode').selectOption('plan');
-  const plan = await modeWarn();
-  check(`${size}: Plan only default hides the warning and badge`, !plan.warn && plan.badge === null);
+  await page.waitForFunction(() => !document.getElementById('journey-steps').hidden);
+  const setup = await page.evaluate(() => ({ current: document.querySelector('.steps li.cur b')?.textContent, done: document.querySelectorAll('.steps b.ok').length,
+    action: document.getElementById('journey-action').hidden ? null : document.getElementById('journey-action').textContent,
+    hints: [...document.querySelectorAll('.steps li .hint')].map(h => !!h.title && getComputedStyle(h).textOverflow === 'ellipsis') }));
+  check(`${size}/setup: step 1 is current, each step hint is one line with its sentence as the title, and the line offers Review familiars`,
+    setup.current?.startsWith('1 Agents') && setup.done === 0 && setup.action === 'Review familiars' && setup.hints.length === 3 && setup.hints.every(Boolean));
+  await snapshot(`control-${width}-first-run`);
+  await page.locator('#journey-action').click();
+  check(`${size}/setup: Review familiars moves focus into the Familiars card`, await page.evaluate(() => document.getElementById('familiars').contains(document.activeElement)));
+}
+// The default, healthy page at the window's own size stays within about one and a half window heights.
+async function controlHeightJourney() {
+  await openControl('linked', 730, 603);
+  const height = await page.evaluate(() => document.documentElement.scrollHeight);
+  report.interactions.push({ label: 'control-730x603-healthy-height', height });
+  // 962 px (1.6 heights) with Windows fonts; the bound leaves room for the CI runner's fallback fonts.
+  check(`control-730x603: the healthy page is about one and a half window heights (${height} px, at most 1.7)`, height <= 603 * 1.7);
+  check('control-730x603: nothing spills sideways', await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+  await snapshot('control-730x603-linked');
 }
 async function controlFailureJourney(width) {
-  await page.setViewportSize({ width, height: 640 });
-  await page.goto(`${origin}/control.html?scenario=action-error`);
-  await openAdvanced();
+  const size = `control-${width}/failure`;
+  await openControl('action-error', width);
+  await page.locator('#troubleshooting > summary').click();
   await page.locator('#b-config').click();
-  const local = page.locator('[data-action-feedback]');
-  await page.waitForFunction(() => document.querySelector('[data-action-feedback]')?.textContent.includes('Synthetic file-open failure'));
-  check(`control-${width}: failed action has immediate visible local feedback`, (await local.textContent()).includes('Open config')
-    && await local.evaluate(el => { const r = el.getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight; }));
-  check(`control-${width}: failure preserves the visible action control`, await page.locator('#b-config').evaluate(el => {
-    const r = el.getBoundingClientRect(); return document.activeElement === el && r.top >= 0 && r.bottom <= innerHeight;
-  }));
-  check(`control-${width}: local error does not duplicate the live announcement`, await local.getAttribute('role') === null
-    && await page.locator('#feedback').getAttribute('role') === 'status'
-    && (await page.locator('#feedback').textContent()).includes('Open config failed: Synthetic file-open failure')
+  await page.waitForFunction(() => document.querySelector('.btns:has(#b-config) > .fb')?.textContent.includes('Synthetic file-open failure'));
+  check(`${size}: a failed action says why beside its button, as an error, in a live region`, JSON.stringify(await feedback('#b-config'))
+    === JSON.stringify({ text: "Couldn't do that: Synthetic file-open failure", level: 'err', role: 'status' })
     && await page.evaluate(() => window.preview.calls.filter(c => c.cmd === 'openConfig').length) === 1);
+  check(`${size}: focus stays on the button that failed`, await page.locator('#b-config').evaluate(el => document.activeElement === el));
   await snapshot(`control-${width}-action-failure`);
   await page.evaluate(() => window.preview.emit('status', window.preview.state));
-  check(`control-${width}: status refresh retains the action failure`, (await local.textContent()).includes('Open config'));
+  check(`${size}: a status refresh keeps the error`, (await feedback('#b-config')).text === "Couldn't do that: Synthetic file-open failure");
   await page.locator('#b-refresh').click();
-  await page.waitForFunction(() => document.getElementById('feedback').textContent.includes('rescanned'));
-  check(`control-${width}: successful action in the group clears its old failure`, await local.textContent() === '');
+  await page.waitForFunction(() => document.querySelector('.btns:has(#b-config) > .fb')?.textContent === 'Desktop quests rescanned');
+  check(`${size}: the next action in the group replaces the error with its own answer`, (await feedback('#b-config')).level === 'ok');
 }
-const layoutFor = (width, focus) => ({ scr: [1280, 800], px: 1, fpx: 1, panel: true, native: false,
+const layoutFor = (width, focus) => ({ scr: [1280, 800], px: 1, fpx: 1, panel: true,
     drag: false, combat: false, ui: true, focus, rowH: 16,
     win: focus ? [336, 140, width - 236, 400] : [100, 100, width, 440],
     detail: [355, 159, width - 274, 260],
     ...(focus ? {} : { list: [119, 159, 220, 336], status: [250, 504, 100, 22] }) });
 async function controlStorageJourney(width) {
-  await page.setViewportSize({ width, height: 640 });
-  await page.goto(`${origin}/control.html?scenario=linked`);
-  await page.waitForFunction(() => window.preview?.state && document.getElementById('chat-agent')?.value === 'claude');
+  await openControl('linked', width);
   const calls = await page.evaluate(() => window.preview.calls.length);
   for (const [level, text] of [
     ['error', 'Saved quests could not be safely read or preserved. Saving is paused to protect the original file. Keep Familiar open and ask for recovery help.'],
@@ -246,79 +182,21 @@ async function controlStorageJourney(width) {
   ]) {
     await page.evaluate(storage => { const p = window.preview; p.state.storage = storage; p.emit('status', p.state); }, { level, text });
     await page.waitForFunction(text => document.getElementById('journey-text').textContent === text, text);
-    check(`control-${width}/storage-${level}: persistent guidance is visible without a selected quest`, await page.locator('#journey-text').evaluate(el => {
+    check(`control-${width}/storage-${level}: persistent guidance is visible on the status line`, await page.locator('#journey-text').evaluate(el => {
       const r = el.getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight;
-    }) && await page.locator('#journey-title').textContent() === 'Saved quests need attention');
+    }) && await page.locator('#journey-title').textContent() === 'Saved quests need attention'
+      && await page.locator('#journey-title').getAttribute('class') === (level === 'error' ? 'err' : 'warn'));
     await page.evaluate(() => window.preview.emit('status', window.preview.state));
     check(`control-${width}/storage-${level}: refresh retains guidance without action`, await page.locator('#journey-text').textContent() === text
       && await page.evaluate(() => window.preview.calls.length) === calls);
     await snapshot(`control-${width}-storage-${level}`);
   }
   await page.evaluate(() => { const p = window.preview; delete p.state.storage; p.emit('status', p.state); });
-  check(`control-${width}/storage: healthy status restores normal setup guidance`, await page.locator('#journey-title').textContent() !== 'Saved quests need attention');
-}
-// Three steps, the current step's content, essentials, and everything else under Advanced.
-async function controlLayoutJourney(width) {
-  const size = `control-${width}/layout`;
-  const layout = () => page.evaluate(() => {
-    const adv = document.getElementById('advanced'), fam = document.getElementById('familiars');
-    return { steps: [...document.querySelectorAll('.steps b')].map(b => b.textContent), done: document.querySelectorAll('.steps b.ok').length,
-      current: document.querySelector('.steps li.cur b')?.textContent ?? null, advancedOpen: adv.open, familiarsInAdvanced: adv.contains(fam),
-      familiarsBeforeAdvanced: !!(fam.compareDocumentPosition(adv) & Node.DOCUMENT_POSITION_FOLLOWING),
-      allSet: !document.getElementById('all-set').hidden && getComputedStyle(document.getElementById('all-set')).display !== 'none' };
-  });
-  await page.setViewportSize({ width, height: 640 });
-  // First run: nothing is signed in yet (the fixture's own setup scenario has one agent signed in).
-  await page.goto(`${origin}/control.html?scenario=setup`);
-  await page.waitForFunction(() => document.getElementById('journey-title')?.textContent);
-  await page.evaluate(() => {
-    const p = window.preview;
-    for (const x of p.state.providers) if (x.id !== 'hermes') { x.signedIn = false; x.detail = 'Not signed in'; }
-    p.state.backends = {};
-    p.emit('status', p.state);
-  });
-  let now = await layout();
-  check(`${size}/setup: step 1 is current and the Familiars card sits above a collapsed Advanced`, now.current?.startsWith('1 Agents')
-    && now.done === 0 && !now.advancedOpen && !now.familiarsInAdvanced && now.familiarsBeforeAdvanced && !now.allSet && await page.locator('#familiars').isVisible());
-  // Round 7: no bare key-value list in the step slot; each familiar's backend line is a Status row under its heading.
-  const setupStatus = await page.evaluate(() => ({ kv: document.querySelectorAll('#step-slot .kv, #agents').length, heading: document.querySelector('#providers .prov-h')?.textContent,
-    rows: [...document.querySelectorAll('#providers .prov.status')].map(r => r.querySelector('.n').textContent) }));
-  check(`${size}/setup: no key-value list under the steps; a Status heading and row per familiar in the Familiars card`, setupStatus.kv === 0 && setupStatus.heading === 'Status'
-    && JSON.stringify(setupStatus.rows) === JSON.stringify(['Claude', 'Codex', 'Quests']));
-  await snapshot(`control-${width}-first-run`);
-  // The shipped setup fixture: one agent is signed in, but the first-run choice is still open, so the card stays.
-  await page.goto(`${origin}/control.html?scenario=setup`);
-  await page.waitForFunction(() => document.getElementById('journey-title')?.textContent);
-  now = await layout();
-  check(`${size}/setup fixture: the Familiars card stays under the strip until the choice is kept`, !now.familiarsInAdvanced && now.familiarsBeforeAdvanced && !now.advancedOpen);
-  await page.goto(`${origin}/control.html?scenario=linked`);
-  await page.waitForFunction(() => document.getElementById('chat-agent')?.value === 'claude');
-  now = await layout();
-  check(`${size}/linked: Agents, WoW and Link are done; Familiars moved into a collapsed Advanced; one All set line`,
-    JSON.stringify(now.steps) === JSON.stringify(['1 Agents ✓', '2 WoW ✓', '3 Link ✓']) && now.done === 3 && now.current === null
-    && now.familiarsInAdvanced && !now.advancedOpen && now.allSet);
-  check(`${size}/linked: the essentials stay visible without opening Advanced`, await page.locator('#ui-font').isVisible()
-    && await page.locator('#ui-stream').isVisible() && await page.locator('#ui-sound').isVisible()
-    && !await page.locator('#advanced').evaluate(el => el.open));
-  await snapshot(`control-${width}-linked`);
-  // A default that acts without asking opens Advanced by itself, so the warning box is never hidden.
-  await page.evaluate(() => { const p = window.preview; p.state.ui.defaultMode = 'auto'; p.emit('status', p.state); });
-  check(`${size}/auto default: Advanced opens and the warning box is visible`, (await layout()).advancedOpen
-    && await page.locator('#ui-mode-warn').isVisible() && await page.locator('#modebadge').textContent() === 'Default: Auto');
-  await page.locator('#advanced > summary').click();
-  await page.evaluate(() => window.preview.emit('status', window.preview.state));
-  check(`${size}/auto default: closing Advanced sticks across status updates`, !(await layout()).advancedOpen);
-  // The journey link opens Advanced first when the Familiars card is inside it.
-  await page.evaluate(() => { const p = window.preview; p.state.ui.defaultMode = 'ask'; p.state.backends.claude.ready = false; p.state.backends.codex.ready = false; p.emit('status', p.state); });
-  await page.waitForFunction(() => !document.getElementById('journey-action').hidden);
-  await page.locator('#journey-action').click();
-  check(`${size}/journey link: opens Advanced and shows the Familiars card`, (await layout()).advancedOpen && await page.locator('#familiars').isVisible());
+  check(`control-${width}/storage: healthy status restores normal guidance`, await page.locator('#journey-title').textContent() === 'All set — type /fam in WoW');
 }
 async function controlRequestsJourney(width) {
   const size = `control-${width}/requests`;
-  await page.setViewportSize({ width, height: 640 });
-  await page.goto(`${origin}/control.html?scenario=linked`);
-  await page.waitForFunction(() => document.getElementById('chat-agent')?.value === 'claude');
+  await openControl('linked', width);
   check(`${size}: no card without a pending request`, !await page.locator('#requests').isVisible());
   const full = Array.from({ length: 90 }, (_, i) => `echo "step ${i}: far too long for the in-game card"`).join('\n') + '\nrm -rf D:\\vault\\private';
   await page.evaluate(full => {
@@ -327,43 +205,42 @@ async function controlRequestsJourney(width) {
     p.answer = { ok: true };
     // Preview infrastructure only: stand in for main's "decide" command and record what the panel sends.
     api.invoke = async (cmd, args) => cmd === 'decide' ? (p.decisions.push(args), p.answer) : real(cmd, args);
-    // Round 4: every pending request is listed (status.requests[], the hub's PendingRequest): a cut one carries its whole text in `full`,
-    // a short one only the card's own `detail`. A cut request that arrives without `full` is not listed: the panel never approves a preview.
+    // Every pending request is listed (status.requests[], the hub's PendingRequest: the agent's label and its id): a cut
+    // one carries its whole text in `full`, a short one only the card's own `detail`. A cut one without `full` is not listed.
     p.state.requests = [
-      { thread: 't1', questTitle: 'Tidy the logs', project: 'Preview project', agent: 'Claude', requestId: 'r1', title: 'Run a long shell command', detail: full.slice(0, 600) + '\n… (omitted)', full, cut: true, canAlways: true, at: Date.now() - 65000 },
-      { thread: 't2', questTitle: 'Chat about fonts', project: 'Other project', agent: 'Codex', requestId: 'r2', title: 'Edit 3 files', detail: 'diff --git a/x b/x\n+ small change', cut: false, canAlways: false, at: Date.now() - 20000 },
-      { thread: 't3', questTitle: 'No whole text', project: 'Other project', agent: 'Codex', requestId: 'r3', title: 'Cut, but without its full text', detail: 'only a preview', cut: true, canAlways: false, at: Date.now() - 10000 },
+      { thread: 't1', questTitle: 'Tidy the logs', project: 'Preview project', agent: 'Claude', agentId: 'claude', requestId: 'r1', title: 'Run a long shell command', detail: full.slice(0, 600) + '\n… (omitted)', full, cut: true, canAlways: true, at: Date.now() - 65000 },
+      { thread: 't2', questTitle: 'Chat about fonts', project: 'Other project', agent: 'Codex', agentId: 'codex', requestId: 'r2', title: 'Edit 3 files', detail: 'diff --git a/x b/x\n+ small change', cut: false, canAlways: false, at: Date.now() - 20000 },
+      { thread: 't3', questTitle: 'No whole text', project: 'Other project', agent: 'Codex', agentId: 'codex', requestId: 'r3', title: 'Cut, but without its full text', detail: 'only a preview', cut: true, canAlways: false, at: Date.now() - 10000 },
     ];
     p.emit('status', p.state);
   }, full);
   const card = await page.evaluate(() => {
     const rows = [...document.querySelectorAll('#requests .req')];
     return { rows: rows.length, textFirst: rows.every(r => !!(r.querySelector('pre').compareDocumentPosition(r.querySelector('button')) & Node.DOCUMENT_POSITION_FOLLOWING)),
-      above: !!(document.getElementById('requests').compareDocumentPosition(document.getElementById('journey')) & Node.DOCUMENT_POSITION_FOLLOWING),
+      above: !!(document.getElementById('requests').compareDocumentPosition(document.getElementById('status')) & Node.DOCUMENT_POSITION_FOLLOWING),
       text: rows[0].querySelector('pre').textContent, shortText: rows[1].querySelector('pre').textContent,
       badges: rows.map(r => { const b = r.querySelector('.badge'); return !b.hidden && getComputedStyle(b).display !== 'none' ? b.textContent : null; }),
       labels: rows.map(r => [...r.querySelectorAll('button')].filter(b => !b.hidden).map(b => b.textContent)),
       title: document.getElementById('requests-title').textContent, live: document.getElementById('requests-live').textContent,
-      hint: document.querySelector('#requests > .hint').textContent,
+      hint: document.getElementById('requests-hint').textContent,
       decide: rows.map(r => [...r.querySelectorAll('button[data-decide]')].map(b => `${b.dataset.decide}:${b.className}`)),
       greens: [...document.querySelectorAll('button.ok')].map(b => b.matches('#requests .req button[data-decide="allow"]')),
       colours: { approve: getComputedStyle(rows[0].querySelector('[data-decide="allow"]')).backgroundImage, deny: getComputedStyle(rows[0].querySelector('[data-decide="deny"]')).backgroundImage },
-      maxHeight: getComputedStyle(rows[0].querySelector('.req-full')).maxHeight };
+      maxHeight: getComputedStyle(rows[0].querySelector('.req-full')).maxHeight, statusTitle: document.getElementById('journey-title').textContent };
   });
-  const how = await page.evaluate(() => { const d = document.querySelector('#requests > details.how'); return { open: d.open, text: d.querySelector('p').textContent }; });
-  check(`${size}: the card sits above everything, shows each request whole and puts the text before its buttons`, card.rows === 2 && card.above && card.textFirst
+  check(`${size}: the card sits above the status line, shows each request whole and puts the text before its buttons`, card.rows === 2 && card.above && card.textFirst
     && card.text === full && card.shortText === 'diff --git a/x b/x\n+ small change' && card.title === 'Requests waiting' && card.live === '2 requests waiting');
   check(`${size}: a cut request carries the badge, a short one does not, and a cut one with no full text is not listed`,
     JSON.stringify(card.badges) === JSON.stringify(['Too long for the in-game card', null]));
-  check(`${size}: the hint is one line: approve here or in the game, nothing happens until a click`, card.hint === 'Approve here or in the game. Nothing happens until you click.');
-  check(`${size}: How it works, closed, says everything is listed here and only whole requests are approved in the game, word for word`, !how.open
-    && how.text === 'Everything your familiars are waiting on. Approve here or in the game — in the game only a request shown in full can be approved. Nothing happens until you click. Real names are shown even with Hide names or Stream-safe on: this window is on your PC, not on stream.');
-  check(`${size}: Approve is the one green button; Deny stays red, never quiet; Always is the dashed ghost`,
-    JSON.stringify(card.decide) === JSON.stringify([['allow:ok', 'deny:', 'allowAlways:always'], ['allow:ok', 'deny:', 'allowAlways:always']])
+  check(`${size}: the hint says where to decide, that Always is given here only, and that names show here`, card.hint
+    === 'Approve or Deny here or in the game; Always is given here only. Nothing happens until you click. Names show here even with privacy on: this window is on your PC.');
+  check(`${size}: Approve is the one green button; Deny is the red primary, never quiet; Always is the dashed ghost`,
+    JSON.stringify(card.decide) === JSON.stringify([['allow:ok', 'deny:primary', 'allowAlways:always'], ['allow:ok', 'deny:primary', 'allowAlways:always']])
     && card.greens.length === 2 && card.greens.every(Boolean) && card.colours.approve !== card.colours.deny && card.colours.deny.includes('linear-gradient'));
   check(`${size}: a long request scrolls inside 160 px, so the next one stays in view`, card.maxHeight === '160px');
-  check(`${size}: Approve and Deny always, Always (this quest) only when the request allows it`,
+  check(`${size}: Approve and Deny always, Always (this quest) for Claude only when the request allows it`,
     JSON.stringify(card.labels) === JSON.stringify([['Approve', 'Deny', 'Always (this quest)'], ['Approve', 'Deny']]));
+  check(`${size}: with an Approve key registered the status line stays as it was`, card.statusTitle === 'All set — type /fam in WoW');
   await snapshot(`control-${width}-requests`);
   await page.evaluate(() => { document.querySelector('.req-full').scrollTop = 300; });
   await new Promise(resolve => setTimeout(resolve, 1300)); // two synthetic status ticks
@@ -374,42 +251,144 @@ async function controlRequestsJourney(width) {
   await page.evaluate(() => document.querySelector('.req [data-decide="allow"]').click());
   check(`${size}: a click made by script sends nothing`, await page.evaluate(() => window.preview.decisions.length) === 0);
   await page.locator('.req[data-request="r1"] [data-decide="deny"]').click();
-  check(`${size}: a real click sends one decide for that request`, JSON.stringify(await page.evaluate(() => window.preview.decisions))
+  await page.waitForFunction(() => window.preview.decisions.length === 1);
+  check(`${size}: a real click sends one decide for that request and answers under its buttons`, JSON.stringify(await page.evaluate(() => window.preview.decisions))
     === JSON.stringify([{ thread: 't1', requestId: 'r1', decision: 'deny' }])
-    && (await page.locator('#feedback').textContent()).startsWith('Denied: Run a long shell command'));
+    && await page.locator('.req[data-request="r1"] .req-msg').textContent() === 'Denied.');
   await page.evaluate(() => { const p = window.preview; p.state.requests = p.state.requests.filter(r => r.requestId !== 'r1'); p.emit('status', p.state); });
   check(`${size}: an answered request leaves the card`, await page.locator('#requests .req').count() === 1);
   await page.evaluate(() => { window.preview.answer = { ok: false, why: 'no longer pending' }; });
   await page.locator('.req[data-request="r2"] [data-decide="allow"]').click();
-  check(`${size}: a late click says Already answered and leaves the buttons usable`, await page.locator('.req-msg').textContent() === 'Already answered.'
+  await page.waitForFunction(() => document.querySelector('.req[data-request="r2"] .req-msg').textContent);
+  check(`${size}: a late click says Already answered and leaves the buttons usable`, await page.locator('.req[data-request="r2"] .req-msg').textContent() === 'Already answered.'
     && await page.locator('.req[data-request="r2"] button:not([hidden])').evaluateAll(els => els.every(el => !el.disabled)));
   await page.evaluate(() => { window.preview.answer = { ok: true }; });
   await page.locator('.req[data-request="r2"] [data-decide="allow"]').click();
+  await page.waitForFunction(() => window.preview.decisions.length === 3);
   check(`${size}: Approve sends allow`, await page.evaluate(() => window.preview.decisions.at(-1).decision) === 'allow');
   await page.evaluate(() => { const p = window.preview; p.state.requests = []; p.emit('status', p.state); });
   check(`${size}: the card goes away with the last request`, !await page.locator('#requests').isVisible());
 }
+// Safety: the open quest's mode (set here only), the Approve key, and the two switches that are off by default.
+async function controlSafetyJourney(width) {
+  const size = `control-${width}/safety`;
+  await openControl('linked', width);
+  const quest = () => page.evaluate(() => ({ shown: !document.getElementById('quest-row').hidden, title: document.getElementById('quest-title').textContent,
+    bold: !!document.querySelector('#quest-title b'), mode: document.getElementById('quest-mode').value, warn: !document.getElementById('quest-warn').hidden,
+    warnText: document.getElementById('quest-warn').textContent }));
+  let q = await quest();
+  check(`${size}: the quest open in the game is named in Safety with its mode, Ask first, and no warning`, q.shown && q.title === 'Quest log' && q.mode === 'ask' && !q.warn);
+  await page.locator('#quest-mode').selectOption('auto');
+  await page.waitForFunction(() => window.preview.state.quest.mode === 'auto' && document.querySelector('#quest-row > .fb').textContent);
+  q = await quest();
+  check(`${size}: choosing Auto sends one questMode and shows the risk in the same words as for new quests`,
+    JSON.stringify(await page.evaluate(() => window.preview.calls.filter(c => c.cmd === 'questMode').map(c => c.args))) === '[{"mode":"auto","thread":"preview"}]'
+    && q.mode === 'auto' && q.warn && q.warnText === await page.locator('#ui-mode-warn').textContent());
+  check(`${size}: the answer is said beside the control`, JSON.stringify(await feedback('#quest-mode')) === JSON.stringify({ text: 'This quest is now in Auto', level: 'ok', role: 'status' }));
+  await snapshot(`control-${width}-quest-auto`);
+  // A refusal says why beside the control and puts the shown mode back.
+  await page.evaluate(() => {
+    const api = window.familiar, real = api.invoke;
+    api.invoke = async (cmd, args) => cmd === 'questMode' ? { ok: false, why: 'Chats have no permission modes: they can only search the web.' } : real(cmd, args);
+  });
+  await page.locator('#quest-mode').selectOption('plan');
+  await page.waitForFunction(() => document.querySelector('#quest-row > .fb').classList.contains('err'));
+  q = await quest();
+  check(`${size}: a refused mode says why and the select shows the quest's mode again`, (await feedback('#quest-mode')).text
+    === "Couldn't do that: Chats have no permission modes: they can only search the web." && q.mode === 'auto' && q.warn && await page.evaluate(() => window.preview.state.quest.mode) === 'auto');
+  await page.evaluate(() => { const p = window.preview; p.state.quest = { id: 'raid', title: '<b>Raid</b> notes', mode: 'plan' }; p.emit('status', p.state); });
+  q = await quest();
+  check(`${size}: a title is shown as text, never as markup`, q.title === '<b>Raid</b> notes' && !q.bold && q.mode === 'plan' && !q.warn);
+  await page.evaluate(() => { const p = window.preview; p.state.quest = null; p.emit('status', p.state); });
+  check(`${size}: with no quest open in the game the row is not shown`, !(await quest()).shown);
+  await openControl('quest-auto', width);
+  q = await quest();
+  check(`${size}/quest-auto: a quest opened in Auto shows its risk without a click`, q.shown && q.title === 'Tidy the raid macros' && q.mode === 'auto' && q.warn);
+  // The two switches: off by default, worded with their risk, written through uiSettings under the names main reads.
+  await openControl('linked', width);
+  const switches = () => page.evaluate(() => ['ui-click', 'ui-inherit'].map(id => { const b = document.getElementById(id); return `${b.checked ? 'on' : 'off'}${b.disabled ? ' disabled' : ''}`; }).join());
+  check(`${size}: both switches are off by default and can be changed`, await switches() === 'off,off');
+  check(`${size}: the switches say what they risk, word for word`, await page.locator('label[for="ui-click"]').textContent() === 'Approve by mouse click'
+    && await page.locator('#ui-click-sh').textContent() === 'Off by default: another addon could place a request where you are about to click. With this off, approve with your Approve key or here.'
+    && await page.locator('label[for="ui-inherit"]').textContent() === 'Use my existing agent configuration'
+    && await page.locator('#ui-inherit-sh').textContent() === 'Off by default: allow rules, hooks and MCP servers from your own Claude or Codex settings would apply to quests started in game. Project instructions (CLAUDE.md) are always read.');
+  await page.locator('#ui-click').check();
+  await page.waitForFunction(() => document.querySelector('.set:has(#ui-click) > .fb').textContent);
+  await page.locator('#ui-inherit').check();
+  await page.waitForFunction(() => document.querySelector('.set:has(#ui-inherit) > .fb').textContent);
+  check(`${size}: each switch sends one preference by the name main reads, and stays on and usable`,
+    JSON.stringify(await uiWrites()) === JSON.stringify([{ approveByClick: true }, { inheritAgentConfig: true }]) && await switches() === 'on,on'
+    && (await feedback('#ui-click')).text === 'Clicking Approve on the in-game card now counts');
+  await page.evaluate(() => { const p = window.preview; delete p.state.ui.approveByClick; p.emit('status', p.state); });
+  check(`${size}: a main that does not report a switch shows it off and fixed`, await switches() === 'off disabled,on');
+  await page.evaluate(() => { const p = window.preview; p.state.ui.approveByClick = false; p.emit('status', p.state); });
+  check(`${size}: once reported again the switch can be changed again`, await switches() === 'off,on');
+  await page.locator('#ui-inherit').uncheck();
+  await page.waitForFunction(() => window.preview.calls.filter(c => c.cmd === 'uiSettings').length === 3);
+  check(`${size}: switching off sends false`, JSON.stringify((await uiWrites()).at(-1)) === '{"inheritAgentConfig":false}' && await switches() === 'off,off');
+}
+// No Approve key and click approval off (the default until a key is set): requests can only be approved in this window.
+async function controlNoKeyJourney(width) {
+  const size = `control-${width}/no-key`;
+  await openControl('no-key', width);
+  check(`${size}: Safety says plainly that requests can only be approved here until a key is set, with Set key and how to bind it`,
+    await page.locator('#approve-key-line').textContent() === ONLY_HERE && await page.locator('#approve-key-line').getAttribute('class') === 'warn'
+    && await page.locator('#b-key-set').textContent() === 'Set key…' && await shown('#approve-key-how') && !await shown('#b-key-clear'));
+  check(`${size}: with nothing waiting the status line stays All set`, await page.locator('#journey-title').textContent() === 'All set — type /fam in WoW');
+  await snapshot(`control-${width}-no-key`);
+  await openControl('request-waiting', width);
+  const line = () => page.evaluate(() => ({ title: document.getElementById('journey-title').textContent, cls: document.getElementById('journey-title').className,
+    text: document.getElementById('journey-text').textContent, textWarn: document.getElementById('journey-text').classList.contains('warn'),
+    action: document.getElementById('journey-action').hidden ? null : document.getElementById('journey-action').textContent }));
+  let l = await line();
+  check(`${size}/waiting: the status line says the request can only be approved here, with Set key right there`, l.title === 'A request is waiting above' && l.cls === 'warn'
+    && l.text === ONLY_HERE && l.textWarn && l.action === 'Set key…' && await page.locator('#requests').isVisible());
+  await snapshot(`control-${width}-request-waiting-no-key`);
+  await page.locator('#journey-action').click();
+  check(`${size}/waiting: Set key goes straight to "Press a key…" on the Approve key row`, await page.locator('#b-key-set').evaluate(el => document.activeElement === el
+    && el.getAttribute('aria-pressed') === 'true' && el.textContent === 'Press a key…') && await page.locator('#approve-key-line').textContent() === 'Press the key you bound in WoW. Escape cancels.');
+  await page.keyboard.press('F9');
+  await page.waitForFunction(() => document.getElementById('journey-title').textContent === 'All set — type /fam in WoW'); // the next status tick
+  l = await line();
+  check(`${size}/waiting: pressing F9 registers it, and the status line goes back to All set`, JSON.stringify(await uiWrites()) === '[{"approveKey":"F9"}]'
+    && await page.locator('#approve-key-line').textContent() === 'Registered: F9 — Familiar checks the real keyboard for it' && !await shown('#approve-key-how') && l.action === null);
+  await page.waitForTimeout(700); // a click within 600 ms of a captured key is that key's Space/Enter, not a new click
+  await page.locator('#b-key-set').click();
+  await page.keyboard.press('Escape');
+  check(`${size}: Escape cancels without a write`, (await uiWrites()).length === 1 && await page.locator('#b-key-set').getAttribute('aria-pressed') === 'false');
+  await page.locator('#b-key-set').click();
+  await page.keyboard.press('w');
+  await page.waitForFunction(() => window.preview.calls.filter(c => c.cmd === 'uiSettings').length === 2);
+  check(`${size}: a bare letter is registered but warned about`, JSON.stringify((await uiWrites()).at(-1)) === '{"approveKey":"W"}'
+    && await page.locator('#approve-key-warn').textContent() === 'That key is used for playing; pick an F-key or a Ctrl/Shift combination.');
+  await page.evaluate(() => { const p = window.preview; p.state.ui.approveKey = ''; p.state.ui.approveByClick = true; p.emit('status', p.state); });
+  check(`${size}: with click approval on, no key is not a warning and the status line stays as it was`, (await page.locator('#approve-key-line').textContent()).startsWith('None set: approve by clicking')
+    && (await line()).title === 'All set — type /fam in WoW');
+}
 async function controlEssentialsJourney(width) {
   const size = `control-${width}/essentials`;
-  await page.setViewportSize({ width, height: 640 });
-  await page.goto(`${origin}/control.html?scenario=linked`);
-  await page.waitForFunction(() => document.getElementById('chat-agent')?.value === 'claude');
-  const updates = () => page.evaluate(() => window.preview.calls.filter(c => c.cmd === 'uiSettings').map(c => c.args));
-  check(`${size}: Text size explains when the quest list follows`, (await page.locator('#ui-font-hint').textContent()).includes('The quest list follows after /reload'));
-  await page.locator('#ui-stream').check();
-  check(`${size}: Stream-safe sends one preference, and approvals stay readable by its own hint`, JSON.stringify(await updates()) === JSON.stringify([{ streamSafe: true }])
-    && (await page.locator('#ui-stream-hint').textContent()).includes('Approval cards stay readable'));
-  await openAdvanced();
-  const line = () => page.locator('#approve-key-status').evaluate(el => el.textContent.replace(/\s+/g, ' ').trim());
-  const key = async value => { await page.locator('#ui-approve-key').fill(value); await page.locator('#ui-approve-key').press('Tab'); };
-  await key('F9');
-  check(`${size}: Approve key F9 is shown as registered, without a warning`, await line() === 'Registered: F9 — Familiar checks the real keyboard for it');
-  await key('W');
-  check(`${size}: a bare letter is registered but warned about`, await line() === 'Registered: W — Familiar checks the real keyboard for it That key is used for playing; pick an F-key or a Ctrl/Shift combination.');
-  await page.locator('#ui-approve-key').fill('CTRL-W');
-  check(`${size}: while typing, the line says it is not saved yet`, (await line()).startsWith('Not saved yet'));
-  await key('');
-  check(`${size}: no key registered says what to do instead`, await line() === 'None registered — click the card or Approve button instead');
+  await openControl('linked', width);
+  check(`${size}: Text size says when the quest list follows`, await page.locator('#ui-font-sh').textContent() === 'Replies change at once; the quest list after /reload.');
+  // Privacy: one control, one uiSettings { privacy } write per change (main moves both saved settings), its hint following the level.
+  await page.locator('#ui-privacy').selectOption('blur');
+  await page.waitForFunction(() => window.preview.state.ui.streamSafe === true);
+  check(`${size}: Hide names and blur replies sends one privacy write and keeps approval cards readable by its hint`, JSON.stringify(await uiWrites()) === '[{"privacy":"blur"}]'
+    && (await page.locator('#ui-privacy-sh').textContent()).includes('Approval cards are never blurred'));
+  await page.locator('#ui-privacy').selectOption('names');
+  await page.waitForFunction(() => window.preview.state.ui.privateMode === true && window.preview.state.ui.streamSafe === false);
+  await page.waitForFunction(() => document.querySelector('.set:has(#ui-privacy) > .fb')?.textContent);
+  check(`${size}: from blur to Hide names is one write too`, JSON.stringify((await uiWrites()).slice(1)) === '[{"privacy":"names"}]'
+    && (await feedback('#ui-privacy')).text === 'Names hidden on the Glass');
+  // The default mode: the warning and the header pill only for the modes that act without asking.
+  const mode = () => page.evaluate(() => ({ warn: !document.getElementById('ui-mode-warn').hidden, badge: document.getElementById('modebadge').hidden ? null : document.getElementById('modebadge').textContent }));
+  check(`${size}: the mode hint recommends Ask first and says modes are changed here`, await page.locator('#ui-mode-hint').textContent() === 'Ask first is recommended. Modes are changed here, not in the game.');
+  await page.locator('#ui-mode').selectOption('auto');
+  check(`${size}: an Auto default shows the warning and the header pill`, JSON.stringify(await mode()) === JSON.stringify({ warn: true, badge: 'New quests: Auto' }));
+  await snapshot(`control-${width}-mode-auto-warning`);
+  await page.locator('#ui-mode').selectOption('plan');
+  check(`${size}: a Plan only default shows no warning; the pill names it`, JSON.stringify(await mode()) === JSON.stringify({ warn: false, badge: 'New quests: Plan only' }));
+  await page.locator('#ui-mode').selectOption('ask');
+  check(`${size}: an Ask first default shows neither`, JSON.stringify(await mode()) === JSON.stringify({ warn: false, badge: null }));
 }
 async function overlayStorageJourney() {
   await page.setViewportSize({ width: 1280, height: 800 });
@@ -564,10 +543,10 @@ async function focusJourney() {
   await page.evaluate(l => window.preview.emit('layout', l), layoutFor(720, true));
   await settle();
   const beforeReview = await page.evaluate(() => ({ selected: window.preview.model.detail.id, attention: JSON.stringify(window.preview.model.attention), calls: window.preview.calls.length }));
-  check('focus review: other requests remain signalled', (await page.locator(review).textContent()).includes('Review'));
+  check('focus review: other requests remain signalled', (await page.locator(review).textContent()).startsWith('Other quests: '));
   await click(review);
   check('focus review: disclosure gives native restore guidance', (await page.locator('#focus-review').textContent()).includes('Use Full view below'));
-  check('focus review: expanded disclosure retains nonzero other-thread counts', (await page.locator(review).textContent()) === 'Other: 1 approval, 1 alert, 1 reply · Hide');
+  check('focus review: expanded disclosure retains nonzero other-thread counts', (await page.locator(review).textContent()) === 'Other quests: 2 need you · 1 reply ready · Hide');
   check('focus review: disclosure neither navigates nor acknowledges', await page.evaluate(before => window.preview.model.detail.id === before.selected
     && JSON.stringify(window.preview.model.attention) === before.attention && window.preview.calls.length === before.calls, beforeReview));
   await snapshot('focus-other-review');
@@ -575,7 +554,7 @@ async function focusJourney() {
   await page.evaluate(l => {
     const p = window.preview;
     p.model.fontScale = 1.6;
-    p.model.attention = [{ thread: 'other', entry: 'other-request', title: 'Other conversation', pending: true, label: 'Needs approval' }];
+    p.model.attention = [{ thread: 'other', entry: 'other-request', title: 'Other conversation', pending: true, label: 'Needs you' }];
     p.emit('model', { ...p.model });
     p.emit('layout', l);
   }, layoutFor(560, true));
@@ -583,7 +562,7 @@ async function focusJourney() {
   await wheel(12);
   const beforeLongReview = await anchor();
   await click(review);
-  check('focus long history: expanded review omits zero counts', (await page.locator(review).textContent()) === 'Other: 1 approval · Hide');
+  check('focus long history: expanded review omits zero counts', (await page.locator(review).textContent()) === 'Other quests: 1 needs you · Hide');
   await sameAnchor(beforeLongReview, 'focus long history: opened other-thread review keeps anchor');
   await click(review);
   await sameAnchor(beforeLongReview, 'focus long history: closing other-thread review keeps anchor');
@@ -600,11 +579,11 @@ async function focusJourney() {
     const footer = document.getElementById('focus-review').getBoundingClientRect();
     const scroll = document.getElementById('detail-scroll');
     const header = document.querySelector('.qhead');
-    return { latestBottom: latest.bottom, footerTop: footer.top, readableHeight: scroll.clientHeight - header.offsetHeight,
+    return { latestTop: latest.top, footerBottom: footer.bottom, readableHeight: scroll.clientHeight - header.offsetHeight,
       lineHeight: parseFloat(getComputedStyle(document.getElementById('content')).lineHeight) };
   });
   report.interactions.push({ label: 'focus-long-open-review', footerGeometry });
-  check('focus long history: Latest stays above the opened review footer', footerGeometry.latestBottom <= footerGeometry.footerTop + 1);
+  check('focus long history: Latest is docked under the opened review line, outside the transcript', footerGeometry.latestTop >= footerGeometry.footerBottom - 1);
   check('focus long history: opened review leaves at least two transcript lines beneath the header', footerGeometry.readableHeight >= footerGeometry.lineHeight * 2);
   await point('#latest');
   await snapshot('focus-long-open-review');
@@ -767,7 +746,7 @@ async function compactHeaderJourney(narrow) {
     check(`${size}/header-${scenario}: chip adds no header row`, children[0] === 'qtitle' && children[1] === 'qbar'
       && !children.some(c => /\b(qmode|qmeta|qstate)\b/.test(c)));
   }
-  for (const [scenario, label] of [['approval', 'Needs your approval'], ['interrupted', 'Interrupted'], ['history-error', 'History unavailable']]) {
+  for (const [scenario, label] of [['approval', 'Needs you'], ['interrupted', 'Interrupted'], ['history-error', 'History unavailable']]) {
     await open(scenario, narrow);
     check(`${size}/header-${scenario}: exceptional state stays visible without Details`, (await page.locator('.qstate').textContent()).includes(label)
       && await page.locator('.qstate').evaluate(el => {
@@ -795,10 +774,11 @@ try {
   page.setDefaultTimeout(10000);
   page.on('pageerror', error => report.errors.push(error.message));
   for (const width of [760, 520]) {
-    await controlChatJourney(width); await controlFailureJourney(width); await controlStorageJourney(width);
-    await controlLayoutJourney(width); await controlRequestsJourney(width); await controlEssentialsJourney(width);
+    await controlLayoutJourney(width); await controlFailureJourney(width); await controlStorageJourney(width);
+    await controlRequestsJourney(width); await controlSafetyJourney(width); await controlNoKeyJourney(width); await controlEssentialsJourney(width);
     for (const [name, passed] of Object.entries(await controlRound4Journey(page, origin, width, snapshot))) check(name, passed);
   }
+  await controlHeightJourney();
   await page.setViewportSize({ width: 1280, height: 800 });
   for (const narrow of [false, true]) await compactHeaderJourney(narrow);
   for (const narrow of [false, true]) {
@@ -847,32 +827,32 @@ try {
     await open('approval', narrow);
     check(`${size}/approval: uncut request has no cut warning`, await page.locator('.preview-cut').count() === 0
       && await page.locator('.approval-preview').textContent() === await page.evaluate(() => window.preview.model.detail.entries.find(e => e.kind === 'approval').text));
-    for (const [decision, selector] of [['allow', '.btn.ok'], ['deny', '.btn.no'], ['allowAlways', '.btn.always']]) {
+    // Always is given in the control panel only: a card that offers it still draws Approve and Deny alone in game.
+    for (const [decision, selector] of [['allow', '.btn.ok'], ['deny', '.btn.no']]) {
       await open('approval-always', narrow);
       const buttons = await page.locator(action('decide')).evaluateAll(els => els.map(el => ({ text: el.textContent, decision: JSON.parse(el.dataset.act).decision })));
-      check(`${size}/approval-always: Approve, Deny, then Always (this quest)`, JSON.stringify(buttons.map(b => b.text)) === JSON.stringify(['Approve', 'Deny', 'Always (this quest)'])
-        && JSON.stringify(buttons.map(b => b.decision)) === JSON.stringify(['allow', 'deny', 'allowAlways']));
-      check(`${size}/approval-always: three decision controls`, await page.locator(action('decide')).count() === 3);
-      await point('.btn.always');
+      check(`${size}/approval-always: Approve and Deny only, no Always in game`, JSON.stringify(buttons.map(b => b.text)) === JSON.stringify(['Approve', 'Deny'])
+        && JSON.stringify(buttons.map(b => b.decision)) === JSON.stringify(['allow', 'deny']) && await page.locator('.btn.always').count() === 0);
       if (decision === 'allow') await snapshot(`${size}-approval-always`);
       await click(selector);
       const calls = await page.evaluate(() => window.preview.calls);
       check(`${size}/approval-always: ${selector} sends exactly one ${decision}`, calls.length === 1 && calls[0].type === 'decide' && calls[0].decision === decision
         && calls[0].requestId === 'preview');
     }
-    // The pending card names the folder it acts in, and Always says how long it lasts per provider.
+    // Click approval off (the default): no Approve button; the card says which key approves, and Deny stays a click.
+    await open('approval-always&click=0', narrow);
+    check(`${size}/approval-always, key only: the card names the Approve key instead of an Approve button`, (await page.locator('.entry.approval .approve-pc.grant').textContent()) === 'Press F9 to approve'
+      && JSON.stringify(await page.locator(action('decide')).evaluateAll(els => els.map(el => JSON.parse(el.dataset.act).decision))) === '["deny"]');
+    await snapshot(`${size}-approval-key-only`);
+    // The pending card names the folder it acts in.
     await open('approval-always', narrow);
-    const card = () => page.evaluate(() => ({ where: [...document.querySelectorAll('.card-where')].map(e => e.textContent),
-      always: document.querySelector('.btn.always')?.textContent, cwd: window.preview.model.detail.cwd }));
+    const card = () => page.evaluate(() => ({ where: [...document.querySelectorAll('.card-where')].map(e => e.textContent), cwd: window.preview.model.detail.cwd }));
     let pendingCard = await card();
-    check(`${size}/approval-always: pending card names its folder`, pendingCard.cwd.length > 0 && pendingCard.where.length === 1
-      && pendingCard.where[0] === `in ${pendingCard.cwd}`);
-    check(`${size}/approval-always: Claude's Always lasts this quest`, pendingCard.always === 'Always (this quest)');
-    await page.evaluate(() => { const p = window.preview; p.model.detail.agent = 'hermes'; p.emit('model', { ...p.model }); });
-    check(`${size}/approval-always: an ACP agent's Always says the agent decides`, (await card()).always === 'Always (agent decides how long)');
+    check(`${size}/approval-always: pending card names its zone and folder`, pendingCard.cwd.length > 0 && pendingCard.where.length === 1
+      && pendingCard.where[0] === `In Preview project · ${pendingCard.cwd}`);
     await page.evaluate(() => { const p = window.preview; p.model.detail.cwd = ''; p.emit('model', { ...p.model }); });
     pendingCard = await card();
-    check(`${size}/approval-always: a hidden folder is not shown`, pendingCard.where.length === 0 && await page.locator(action('decide')).count() === 3);
+    check(`${size}/approval-always: a hidden folder is not shown`, JSON.stringify(pendingCard.where) === '["In Preview project"]' && await page.locator(action('decide')).count() === 2);
     check(`${size}/approval-always: no automatic action`, await page.evaluate(() => window.preview.calls.length) === 0);
     // Outcome unknown is a whole sentence on its own line, never clipped by the tool line.
     await open('interrupted', narrow);
@@ -965,6 +945,7 @@ try {
     }
   }
   await open('quiet');
+  await click(`[data-act*='"what":"notes"']`); // the waiting banner is one line until it is opened (local: no action)
   const quiet = await page.evaluate(() => {
     const warn = document.querySelector('.catch-title .warn');
     const row = [...document.querySelectorAll('.row')].find(r => r.querySelector('.t')?.textContent === 'Review a file edit');
@@ -972,7 +953,7 @@ try {
       meta: [...document.querySelectorAll('.catch-meta')].map(e => e.textContent).join('|'),
       rowText: row && getComputedStyle(row.querySelector('.t')).color, rowGlyph: row && getComputedStyle(row.querySelector('.st')).color };
   });
-  check('quiet: Needs approval stands out from body text', quiet.label === 'Needs approval' && !!quiet.warn && quiet.warn !== quiet.body);
+  check('quiet: Needs you stands out from body text', quiet.label === 'Needs you' && !!quiet.warn && quiet.warn !== quiet.body);
   check('quiet: only the approval glyph is coloured in the list row', !!quiet.rowGlyph && quiet.rowGlyph === quiet.warn && quiet.rowText !== quiet.warn);
   check('quiet: catch-up notes name agent, project, mode and folder', quiet.meta.length > 0
     && quiet.meta.split('|').every(m => m === 'Claude · Preview project · Ask first · C:\\preview'));

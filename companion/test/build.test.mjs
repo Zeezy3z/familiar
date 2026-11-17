@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildDefine, buildIdentity } from "../scripts/build-identity.mjs";
-import { PRELOADS, preloadBuilds } from "../scripts/bundles.mjs";
+import { BUNDLED, missingLicenses, PRELOADS, preloadBuilds, swapIn } from "../scripts/bundles.mjs";
 
 const fixtures = [];
 afterEach(() => { for (const dir of fixtures.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -348,7 +348,34 @@ describe("dist/claude-pins.json", () => {
     expect(written[1].exe).toBe("claude.exe");
     expect(JSON.stringify(written)).not.toMatch(/node_modules|[A-Z]:\\\\/); // no path from the build machine
     expect(pinsFrom(join(out, "claude-pins.json"))).toEqual(expected);
+    // Built beside the folder and swapped in: nothing of the staging folders is left.
+    expect([existsSync(`${out}.next`), existsSync(`${out}.old`)]).toEqual([false, false]);
+    // The bundled packages are devDependencies, never packaged: their licences ship in dist/licenses/<package>/.
+    const shipped = readdirSync(out, { recursive: true }).map((f) => String(f).split(/[\\/]/).join("/"));
+    expect(missingLicenses(shipped)).toEqual([]);
+    for (const pkg of BUNDLED) expect(readFileSync(join(out, "licenses", pkg, "LICENSE"), "utf8"), pkg).toMatch(/licen[cs]e|copyright/i);
+    expect(missingLicenses(shipped.filter((f) => !f.startsWith("licenses/marked/")))).toEqual(["marked"]);
   }, 120_000);
+});
+
+// A rebuild swaps the new dist in only when it is complete: a failure keeps the previous one (boot.cjs starts it).
+describe("swapIn", () => {
+  it("replaces the folder whole, and puts the previous one back when the swap fails", () => {
+    const dir = mkdtempSync(join(tmpdir(), "familiar-swap-"));
+    fixtures.push(dir);
+    const dist = join(dir, "dist"), next = join(dir, "dist.next");
+    mkdirSync(dist);
+    writeFileSync(join(dist, "main.js"), "old");
+    writeFileSync(join(dist, "stale.js"), "from an older build");
+    expect(() => swapIn(next, dist)).toThrow(); // no finished build to swap in
+    expect(readdirSync(dist).sort()).toEqual(["main.js", "stale.js"]);
+    mkdirSync(next);
+    writeFileSync(join(next, "main.js"), "new");
+    swapIn(next, dist);
+    expect(readdirSync(dist)).toEqual(["main.js"]);
+    expect(readFileSync(join(dist, "main.js"), "utf8")).toBe("new");
+    expect(readdirSync(dir)).toEqual(["dist"]);
+  });
 });
 
 // Width and height from a JPEG's first start-of-frame segment (baseline FFC0 or progressive FFC2).
@@ -393,7 +420,7 @@ describe("dist/assets", () => {
   }, 120_000);
 });
 
-// The shipped preload options (inline sourcemap included), bundled into a temp folder, never dist/.
+// The shipped preload options (a linked .map beside each bundle), bundled into a temp folder, never dist/.
 describe("per-window preloads", () => {
   it("bundle, and only the control panel's exposes invoke / the cmd channel", async () => {
     const out = mkdtempSync(join(tmpdir(), "familiar-preload-"));

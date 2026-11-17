@@ -6,6 +6,7 @@
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join, relative } from "node:path";
+import { missingLicenses } from "./bundles.mjs";
 
 /** Anthropic's proprietary packages: the Claude Agent SDK and its Claude Code binary packages
  * (as in prebuilt.mjs). @anthropic-ai/sdk, the MIT API client the SDK depends on, stays. */
@@ -32,9 +33,14 @@ try {
   if (found.length) throw new Error(`the package must not contain Anthropic's Claude packages:\n  ${found.slice(0, 20).join("\n  ")}${found.length > 20 ? `\n  ... ${found.length - 20} more` : ""}`);
   const missing = NEEDED.filter((f) => !inAsar.includes(f));
   if (missing.length) throw new Error(`missing from app.asar: ${missing.join(", ")}`);
+  const maps = inAsar.filter((f) => /^dist\/.*\.map$/i.test(f));
+  if (maps.length) throw new Error(`app.asar must not contain source maps: ${maps.join(", ")}`);
+  // Bundled packages are not packaged themselves: their licences must be in dist/licenses/.
+  const licences = missingLicenses(inAsar.filter((f) => f.startsWith("dist/")).map((f) => f.slice("dist/".length)));
+  if (licences.length) throw new Error(`app.asar is missing the licence of ${licences.join(", ")} (dist/licenses/<package>/)`);
   const mb = (n) => `${(n / 2 ** 20).toFixed(0)} MB`;
   const total = files.reduce((t, f) => t + (statSync(join(dir, f)).isFile() ? statSync(join(dir, f)).size : 0), 0);
-  console.log(`checked ${dir}: ${files.length} files (${mb(total)}), ${inAsar.length} entries in app.asar (${mb(statSync(asar).size)}); no Claude Agent SDK or Claude Code; ${NEEDED.join(", ")} present`);
+  console.log(`checked ${dir}: ${files.length} files (${mb(total)}), ${inAsar.length} entries in app.asar (${mb(statSync(asar).size)}); no Claude Agent SDK or Claude Code; ${NEEDED.join(", ")} present, with the bundled packages' licences`);
 } catch (e) {
   console.error(`installer-check: ${e.message}`);
   process.exit(1);

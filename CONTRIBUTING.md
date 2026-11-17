@@ -12,13 +12,13 @@ the test suite.
 cd companion
 npm ci --ignore-scripts --no-audit --no-fund
 npm run typecheck
-npm test                 # codec parity, decoder robustness, headless addon + API conformance, hub journeys
+npm test                 # codec parity, decoder, headless addon + API conformance, hub, approvals
 npm run build            # bundle to dist/
 scripts/dev-restart.sh --fake && node scripts/e2e.mjs [--agents]   # live pipeline over real pixels (FakeWoW)
 ```
 
-Dev hooks listen on 127.0.0.1 only, only with `FAMILIAR_DEV=1`, and only answer the per-run
-token; do not weaken that. Run typecheck and tests locally before pushing (`docs/ci.md`).
+Dev hooks listen on 127.0.0.1 only, only with `FAMILIAR_DEV=1` in a source checkout, and only
+answer the per-run token; do not weaken that. Run typecheck and tests locally before pushing (`docs/ci.md`).
 
 ## Hard boundaries (PRs that cross these are closed, whoever asks)
 
@@ -27,8 +27,9 @@ token; do not weaken that. Run typecheck and tests locally before pushing (`docs
   the companion only reads the game window's pixels and draws its own click-through window.
 * **Approvals stay with the player.** No PR that adds a bypass or auto-approve path from the game:
   nothing in the game UI or the control panel may reach bypass-permissions /
-  danger-full-access / yolo modes, the in-game Mode button stays limited to Ask first ↔ Plan only,
-  and a pending approval card is never shortened.
+  danger-full-access / yolo modes, the game can never change a quest's mode or grant Always,
+  approvals from the game need main's proof (`companion/src/main/physical.ts`), and a pending
+  approval card is never shortened.
 * **Codec parity.** `addon/Familiar/Link.lua` and `companion/src/link/codec.ts` implement the same
   protocol. Change both in the same PR and keep `companion/test/codec.test.ts` green.
 * **API conformance.** Every widget method and global the addon uses must exist in WoW: Forever
@@ -46,5 +47,5 @@ token; do not weaken that. Run typecheck and tests locally before pushing (`docs
 4. One home per rule: extend an existing helper or constant before adding one.
 5. Keep the PR body factual: what changed, why, how it was verified (local commands, in-game check).
 
-Commits are squash-merged. By submitting a PR you agree your contribution is licensed under the
-repository's MIT licence.
+Pull requests are merged with a merge commit, so keep each commit in a PR meaningful. By
+submitting a PR you agree your contribution is licensed under the repository's MIT licence.

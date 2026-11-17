@@ -3,7 +3,7 @@
 // Runestrip messages. Strip messages are accepted there only while the game (or our Glass) is the
 // foreground window and no other visible top-level window above the game overlaps the strip box.
 // Pure: main supplies the window facts (win32.ts windowsAbove / foregroundKey).
-import { MAX_COLS, MAX_ROWS } from "../link/decoder";
+import { lockBox } from "../link/decoder";
 
 export interface Box {
   x: number;
@@ -18,15 +18,14 @@ export interface Covering {
 }
 export type Verdict = { ok: true } | { ok: false; why: string };
 
-/** Same margin as the capture renderer's decode region around a lock. */
-const MARGIN = 6;
-
 export const intersects = (a: Box, b: Box) => a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
 
-/** The box the capture decodes from, in screen px: the lock (frame px) offset by the frame's screen origin. */
+/** The box the capture decodes from (the decoder's lockBox, frame px), in screen px: offset by the
+ * frame's screen origin and rounded outward. */
 export function stripScreenBox(lock: { x: number; y: number; pitch: number }, origin: { x: number; y: number }): Box {
-  const x = Math.floor(origin.x + lock.x - MARGIN), y = Math.floor(origin.y + lock.y - MARGIN);
-  const right = Math.ceil(origin.x + lock.x + MAX_COLS * lock.pitch + MARGIN), bottom = Math.ceil(origin.y + lock.y + MAX_ROWS * lock.pitch + MARGIN);
+  const b = lockBox(lock);
+  const x = Math.floor(origin.x + b.x), y = Math.floor(origin.y + b.y);
+  const right = Math.ceil(origin.x + b.x + b.w), bottom = Math.ceil(origin.y + b.y + b.h);
   return { x, y, width: right - x, height: bottom - y };
 }
 

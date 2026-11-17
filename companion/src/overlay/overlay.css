@@ -63,7 +63,8 @@ body.hidden { opacity: 0; }
 .catchup { flex-shrink: 0; padding: calc(var(--u-fixed) * 1.25) calc(var(--u-fixed) * 2); border-bottom: 1px solid var(--line); background: #201b13; font-size: var(--fs-sm); }
 .catch-head, .catch-pages { display: flex; align-items: center; gap: calc(var(--u-fixed) * 1.5); }
 .catch-head b { color: var(--gold); margin-right: auto; }
-.catch-promise { color: var(--text-dim); margin: calc(var(--u-fixed) * 0.75) 0; font-size: var(--fs-sm); }
+.catch-head b.warn { color: var(--warn); }
+.catch-head .btn { background: none; box-shadow: none; border-color: transparent; padding-left: 0; }
 .catch-note { display: flex; gap: calc(var(--u-fixed) * 2); padding: var(--u-fixed) 0; border-top: 1px solid var(--line-soft); }
 .catch-copy { flex: 1; min-width: 0; }
 .catch-title { display: flex; gap: calc(var(--u-fixed) * 2); }
@@ -126,11 +127,10 @@ body.hidden { opacity: 0; }
 .row.project { padding-left: calc(var(--u) * 3.25); }
 .row.agent { color: var(--gold-dim); }
 .row.agent.sel { color: var(--gold); }
-.hover { background: rgba(255, 255, 255, 0.10) !important; }
 .pressed { background: rgba(255, 209, 0, 0.35) !important; }
 
 /* ---- detail ---- */
-#content { padding: calc(var(--u-fixed) * 2) calc(var(--u-fixed) * 3) calc(var(--u) * 4); font-size: var(--fs-md); line-height: 1.45; user-select: text; }
+#content { padding: calc(var(--u-fixed) * 2) calc(var(--u-fixed) * 3); font-size: var(--fs-md); line-height: 1.45; user-select: text; }
 /* The negative top margin cancels #content's top padding so the sticky header sits flush. */
 .qhead { border-bottom: 1px solid rgba(201, 162, 39, 0.3); padding: calc(var(--u-fixed) * 2) 0 calc(var(--u-fixed) * 1.5); margin: calc(var(--u-fixed) * -2) 0 calc(var(--u-fixed) * 2); position: sticky; top: 0; z-index: 2; background: var(--bg); box-shadow: 0 6px 8px -6px #000; }
 .qhead::after { content: ""; position: absolute; left: 0; right: 0; bottom: calc(var(--fs-sm) * -1.4); height: calc(var(--fs-sm) * 1.4); background: linear-gradient(var(--bg), transparent); pointer-events: none; }
@@ -197,7 +197,7 @@ body.hidden { opacity: 0; }
 .bang { color: var(--gold); font-weight: 700; }
 .card-b { font-family: var(--mono); font-size: var(--fs-sm); white-space: pre-wrap; word-break: break-word; margin: var(--u) 0; color: var(--text); max-height: 14em; overflow: hidden; }
 .card-b.approval-preview { max-height: none; overflow: visible; }
-.preview-note { color: var(--text-dim); font-size: var(--fs-sm); margin: var(--u) 0; }
+.preview-note { color: var(--text-dim); }
 .preview-cut { color: var(--err); font-weight: 700; font-size: var(--fs-sm); margin: calc(var(--u) * 0.5) 0 var(--u); }
 /* A cut request: the muted line stands where Approve would be; Deny is the only control. */
 .approve-pc { align-self: center; color: var(--muted); font-family: var(--display); font-size: var(--fs-sm); font-style: italic; padding: calc(var(--u) * 0.5) calc(var(--u) * 1.5) calc(var(--u) * 0.5) 0; }
@@ -215,8 +215,11 @@ body.hidden { opacity: 0; }
   box-shadow: inset 0 1px 0 rgba(255, 209, 0, 0.25), inset 0 -1px 0 #000; }
 .btn.ok { background: linear-gradient(180deg, #1f4d14, #0c2207); }
 .btn.no { background: linear-gradient(180deg, #5e1612, #1d0404); border-color: #7a2a20; }
-/* Always is a ghost button pushed away from Approve/Deny: scope by shape and position. */
-.btn.always { margin-left: auto; background: none; box-shadow: none; border: 1px dashed rgba(143, 115, 64, 0.8); color: var(--gold-dim); }
+/* What approving does, in plain words, then the caution (live cards only). */
+.card-what { font-size: var(--fs-sm); color: var(--text); margin: var(--u) 0; }
+/* A finished reply's Copy: small and quiet, under the reply, right-aligned (main puts the text on the clipboard). */
+.reply-tools { display: flex; justify-content: flex-end; margin-top: calc(var(--u) * 0.5); }
+.btn.copy-reply { padding: 0 calc(var(--u-fixed) * 2); background: none; box-shadow: none; border-color: var(--line); color: var(--gold-dim); }
 .notice { color: var(--muted); font-size: var(--fs-sm); font-style: italic; }
 .entry.error .notice, .notice.error { color: var(--err); }
 
@@ -247,7 +250,6 @@ body.short-detail .welcome .portrait, .welcome.faceless .portrait, .welcome.tigh
    keeps its spacing tight so nothing waits below the fold (round 7 §2.1). */
 .welcome:has(> .offers) { padding: calc(var(--u) * 1.25) calc(var(--u) * 1.5) 0; }
 .welcome:has(> .offers) .whead { margin-bottom: calc(var(--u) * 1.5); }
-#content:has(> .welcome > .offers) { padding-bottom: calc(var(--u-fixed) * 2); } /* no Latest control here to clear */
 .welcome .offers { border-top: 1px solid var(--line-soft); line-height: 1.3; }
 .welcome .offer, .welcome .welcome-tutorial { display: flex; align-items: center; gap: calc(var(--u) * 2); padding: calc(var(--u) * 0.9) calc(var(--u) * 0.5); border-bottom: 1px solid var(--line-soft); }
 .welcome .welcome-tutorial { border-bottom: 0; padding-bottom: 0; }
@@ -270,9 +272,28 @@ body.short-detail .welcome .portrait, .welcome.faceless .portrait, .welcome.tigh
 .welcome .hint { margin-top: calc(var(--u) * 3.25); color: var(--text-dim); font-size: var(--fs-sm); line-height: 1.7; }
 .welcome .link { color: var(--info); font-family: var(--display); text-decoration: underline; text-underline-offset: 0.15em; text-shadow: var(--shadow); padding: 0 calc(var(--u) * 0.5); border-radius: var(--r); }
 
-#target { flex: none; font-size: var(--fs-sm); color: var(--muted); padding: calc(var(--u-fixed) * 0.75) calc(var(--u-fixed) * 2.5); border-top: 1px solid rgba(201, 162, 39, 0.3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; background: var(--bg); }
+/* The footer row under the transcript: "Messages go to" (only when it adds something) and the docked Latest chip.
+   Nothing floats over the reply. overlay.ts shows the row only while one of them is there. */
+#foot { flex: none; display: flex; align-items: center; gap: calc(var(--u-fixed) * 2); padding: calc(var(--u-fixed) * 0.75) calc(var(--u-fixed) * 2.5); border-top: 1px solid rgba(201, 162, 39, 0.3); background: var(--bg); }
+#target { flex: 1; min-width: 0; font-size: var(--fs-sm); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #target.warn { color: var(--warn); }
-.latest { position: absolute; right: calc(var(--u-fixed) * 3.5); bottom: calc(var(--fs-sm) * 2.4); font-family: var(--display); font-size: var(--fs-sm); color: var(--gold); background: #2a2210; border: 1px solid #8a6d1f; border-radius: 1em; padding: calc(var(--u-fixed) * 0.25) calc(var(--u-fixed) * 2.5); z-index: 3; }
+.latest { flex: none; margin-left: auto; font-family: var(--display); font-size: var(--fs-sm); color: var(--gold); background: #2a2210; border: 1px solid #8a6d1f; border-radius: 1em; padding: calc(var(--u-fixed) * 0.25) calc(var(--u-fixed) * 2.5); }
+/* The request the Approve key acts on, pinned under the transcript while it waits (overlay.ts pin()). It takes at most
+   this share of the pane; its request text scrolls inside it after the transcript, so the buttons never move. Until the
+   end of the request has been in view the way to approve stays hidden and the tail hint stands in (Deny is always there). */
+#pinned { flex: none; display: none; max-height: 60%; min-height: 0; padding: calc(var(--u-fixed) * 1.5) calc(var(--u-fixed) * 3); background: var(--bg); box-shadow: 0 -6px 8px -6px #000; font-size: var(--fs-md); line-height: 1.45; }
+#pinned.on { display: flex; flex-direction: column; }
+/* A refusal on the pinned card sits just above it, over the transcript's last line, so writing it never moves the card or
+   its buttons: the Approve key's wait for a settled card (main/physical.ts) does not start again. */
+#pinned.on { position: relative; }
+#pinned .card-refused { position: absolute; left: 0; right: 0; bottom: 100%; margin: 0; padding: calc(var(--u-fixed) * 0.75) calc(var(--u-fixed) * 3); background: rgb(9, 8, 11); box-shadow: 0 -6px 8px -6px #000; }
+#pinned > .entry, #pinned .card { display: flex; flex-direction: column; min-height: 0; flex: 0 1 auto; margin: 0; }
+#pinned .card > * { flex: none; }
+#pinned .card > .approval-preview { flex: 0 1 auto; min-height: 3em; overflow: hidden; }
+#pinned .approval-preview.more-below { border-bottom: 1px dashed var(--warn); }
+.tail-hint { display: none; }
+.card.tail-unseen .tail-hint { display: inline; color: var(--warn); font-style: normal; }
+.card.tail-unseen .grant { display: none; }
 .more { text-align: center; color: var(--gold-dim); font-family: var(--display); font-size: var(--fs-sm); padding: var(--u-fixed); margin: calc(var(--u-fixed) * 0.5) 0 calc(var(--u-fixed) * 1.5); border: 1px dashed var(--line); border-radius: var(--r-btn); }
 .confirm { margin-top: calc(var(--u) * 2.25); }
 
@@ -301,15 +322,9 @@ body.short-detail .welcome .portrait, .welcome.faceless .portrait, .welcome.tigh
 .tl.st-error .tl-a { color: var(--err); }
 .tl.st-running .tl-a::before { content: "◌ "; color: var(--info); }
 
-/* ---- key glows and the live Mode plate (painted over native buttons' rects) ---- */
+/* ---- the Stop glow (painted over the native button's rect) ---- */
 .glow { position: absolute; border-radius: 4px; box-shadow: 0 0 8px 2px rgba(255, 190, 40, 0.9), inset 0 0 6px rgba(255, 190, 40, 0.6); pointer-events: none; }
 .glow.red { box-shadow: 0 0 6px 1px rgba(255, 80, 60, 0.7); animation: none; }
-/* Drawn like the game's red panel button. Size comes from the rect; the label shrinks to fit. */
-#mode-label { position: absolute; box-sizing: border-box; display: flex; align-items: center; justify-content: center; overflow: hidden; pointer-events: none;
-  border: 1px solid #8a6d1f; border-radius: var(--r-btn); background: linear-gradient(180deg, #5a1010, #2a0505); box-shadow: inset 0 1px 0 rgba(255, 209, 0, 0.25), inset 0 -1px 0 #000;
-  font-family: var(--display); color: var(--gold); text-shadow: var(--shadow); }
-#mode-label > span { font-size: var(--fs-sm); white-space: nowrap; } /* overlay.ts fits it to the rect */
-#mode-label.hot { color: var(--warn); border-color: var(--warn); }
 
 /* ---- the familiar calls from the minimap (round 6 §2.2) ---- */
 /* The element is the addon's minimap button rect (overlay.ts places it; no rect, no badge) and paints nothing
@@ -415,4 +430,3 @@ body.blur .entry.approval::after { content: none; } /* nothing is drawn over a c
 .focus-review-toggle.warn { color: var(--warn); }
 .focus-review-copy { margin: calc(var(--u-fixed) * 0.5) 0; color: var(--muted); }
 
-#detail.focused > .latest { position: static; flex: none; align-self: flex-end; margin: calc(var(--u-fixed) * 0.5) calc(var(--u-fixed) * 3.5); }

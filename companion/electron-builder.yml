@@ -16,6 +16,8 @@ npmRebuild: false # koffi (N-API prebuilt) needs no native rebuild
 nodeGypRebuild: false
 asar: true
 # Production node_modules are added automatically; the patterns below only add our files and prune.
+# Packages esbuild bundles into dist/ are devDependencies, so they are not added; the only runtime
+# packages are koffi, the Claude Agent SDK (left out below) and the SDK's peers (zod and others).
 # No Anthropic code: the Claude Agent SDK and its Claude Code binary package are left out, and the
 # app downloads the versions dist/claude-pins.json names (written by scripts/build.mjs) from npm on
 # first run into %LOCALAPPDATA%\Familiar\claude (fetch-claude.cjs). The SDK's open-source
@@ -27,7 +29,7 @@ files:
   - dist/**/* # includes dist/claude-pins.json
   - "!dist/fakewow*" # FakeWoW test harness, never loaded by main
   - "!dist/build-info.json" # offline-inspection copy; main.js embeds the build identity
-  - "!node_modules/@fontsource/**" # build.mjs copies the one woff2 into dist/assets
+  - "!dist/**/*.map" # source maps (scripts/bundles.mjs) are for development only
   - "!node_modules/koffi/{vendor,doc}/**" # keep koffi/src: src/koffi/src/static.cjs is runtime code
   - "!node_modules/**/*.{md,markdown,map,d.ts,d.mts}"
   - "!node_modules/@anthropic-ai/claude-agent-sdk{,-*}{,/**}" # Anthropic's, not ours to redistribute (above)

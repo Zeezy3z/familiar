@@ -8,23 +8,20 @@ export const HEADER_BYTES = 13;
 export const CRC_BYTES = 2;
 export const FINDER_CELLS = 8;
 
-/** Channel levels for a 2-bit symbol component, per palette. The decoder never needs to know which
- * palette is in use: it calibrates from the grey ramp (finder cells 2..5), drawn in the same levels. */
-export const PALETTES = {
-  vivid: [0, 85, 170, 255],
-  dim: [0, 28, 56, 84],
-} as const;
-export type Palette = keyof typeof PALETTES;
-export const LEVELS = PALETTES.vivid;
+/** Channel levels of a 2-bit symbol component (must match addon/Familiar/Link.lua LEVELS). Kept low
+ * on purpose: some clients draw the strip brighter than asked, and a full-range ramp (0/85/170/255)
+ * then clips its top steps into one value that nothing can read back. The decoder calibrates from
+ * the grey ramp (finder cells 2..5), which is drawn in these same levels. */
+export const LEVELS = [0, 28, 56, 84] as const;
 
 /** Finder + calibration cells at the start of row 0, as RGB triples. */
 export const FINDER: ReadonlyArray<readonly [number, number, number]> = [
   [255, 0, 255], // magenta  — finder
   [0, 255, 0], //   green    — finder
   [0, 0, 0], //     level 0  — calibration
-  [85, 85, 85], //  level 1
-  [170, 170, 170], // level 2
-  [255, 255, 255], // level 3
+  [28, 28, 28], //  level 1
+  [56, 56, 56], //  level 2
+  [84, 84, 84], //  level 3
   [0, 255, 255], // cyan     — finder
   [255, 255, 0], // yellow   — finder
 ];
@@ -100,17 +97,12 @@ export function symbolsToBytes(symbols: ArrayLike<number>, byteCount: number): U
   return out;
 }
 
-export function symbolToRgb(sym: number, palette: Palette = "vivid"): [number, number, number] {
-  const L = PALETTES[palette];
-  return [L[(sym >> 4) & 3], L[(sym >> 2) & 3], L[sym & 3]];
+export function symbolToRgb(sym: number): [number, number, number] {
+  return [LEVELS[(sym >> 4) & 3], LEVELS[(sym >> 2) & 3], LEVELS[sym & 3]];
 }
 
-/** Colour of finder cell `i` (0..7) for a palette: detection cells stay vivid, the ramp follows it. */
-export function finderRgb(i: number, palette: Palette = "vivid"): readonly [number, number, number] {
-  if (i >= 2 && i <= 5) {
-    const v = PALETTES[palette][i - 2];
-    return [v, v, v];
-  }
+/** Colour of finder cell `i` (0..7): detection cells are full colour, the ramp uses LEVELS. */
+export function finderRgb(i: number): readonly [number, number, number] {
   return FINDER[i];
 }
 

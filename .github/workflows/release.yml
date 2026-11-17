@@ -3,13 +3,21 @@ on:
   push:
     tags: ['v*']
 permissions:
-  contents: write # the packager creates the GitHub release and uploads the addon zip + release.json; the app job adds the app zip + SHA256SUMS.txt
+  contents: read
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false # never cancel a half-uploaded release
 
 jobs:
+  # Typecheck, tests and build of the tagged commit: the same job pull requests run (windows.yml).
+  # Every job that publishes needs it, so a tag whose checks fail publishes nothing.
+  verify:
+    uses: ./.github/workflows/windows.yml
+
   addon:
+    needs: verify
+    permissions:
+      contents: write # the packager creates the GitHub release and uploads the addon zip + release.json
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
@@ -95,6 +103,8 @@ jobs:
   # files in place (--clobber).
   app:
     needs: addon
+    permissions:
+      contents: write # uploads the app zip + SHA256SUMS.txt
     runs-on: windows-latest
     timeout-minutes: 30
     env:
@@ -136,3 +146,15 @@ jobs:
           (cd "$out" && sha256sum "$app" "$(basename "${addon[0]}")" > SHA256SUMS.txt)
           cat "$out/SHA256SUMS.txt"
           gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber "$out/$app" "$out/SHA256SUMS.txt"
+
+  # The Windows installer (installer.yml): packaged and self-tested always; signed and added to this
+  # release only when SIGNING_READY is true, after the app job has written SHA256SUMS.txt.
+  installer:
+    needs: verify
+    uses: ./.github/workflows/installer.yml
+    permissions:
+      contents: write # gh release upload (signed job only)
+      id-token: write # GitHub OIDC token for azure/login (signed job only)
+    secrets:
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}

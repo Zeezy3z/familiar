@@ -158,7 +158,7 @@ const SCENES = {
     scenario: "running", top: 50, disabledKeys: ["approve"],
     patch: {
       list: { title: "Quest Log", rows: listRows("garden-water", { waterStatus: "running" }) }, target, status, toasts: [],
-      keys: { approve: false, stop: true, mode: "Ask first" },
+      keys: { approve: false, stop: true },
       tracker: [
         { id: "garden-water", agent: "claude", title: "Watering schedule", project: "Garden planner", status: "running", activity: "Editing src/plants.json", progress: "2/3", cost: "$0.12" },
         { id: "c1", agent: "codex", title: "Best route for herbs?", project: "Chats", status: "idle", activity: "Finished — reply ready", cost: "8.2k tokens" },
@@ -173,7 +173,7 @@ const SCENES = {
     scenario: "approval-always", top: 50,
     patch: {
       list: { title: "Quest Log", rows: listRows("garden-water", { waterStatus: "approval" }) }, target, status, toasts: [],
-      keys: { approve: true, stop: true, mode: "Ask first" },
+      keys: { approve: true, stop: true },
       tracker: [
         { id: "garden-water", agent: "claude", title: "Watering schedule", project: "Garden planner", status: "approval", activity: "Waiting: Edit src/plants.json", progress: "2/3", cost: "$0.14" },
         { id: "c1", agent: "codex", title: "Best route for herbs?", project: "Chats", status: "idle", activity: "Finished — reply ready", cost: "8.2k tokens" },
@@ -198,7 +198,7 @@ const SCENES = {
         { kind: "thread", key: "garden-water", text: "Quest #1", agent: "claude", status: "approval", selected: true, act: sel("garden-water") },
       ] },
       target: { text: "Claude · Quest #1 · Project 1" }, status, toasts: [],
-      keys: { approve: true, stop: true, mode: "Ask first" },
+      keys: { approve: true, stop: true },
       tracker: [
         { id: "garden-water", agent: "claude", title: "Quest #1", project: "Project 1", status: "approval", activity: "Needs your approval", progress: "2/3", cost: "$0.14" },
         { id: "c1", agent: "codex", title: "Quest #2", project: "Chats", status: "idle", activity: "Finished", cost: "8.2k tokens" },
@@ -215,7 +215,7 @@ const SCENES = {
     patch: {
       list: { title: "Quest Log", rows: listRows("garden-water", { waterStatus: "idle" }) }, target, status, raidWarnings: true,
       toasts: [{ kind: "done", text: "Quest Complete · Watering schedule", sub: "3/3 objectives · 2 edits · $0.21", at: 1 }], // what hub/rewards.ts says of the data below
-      keys: { approve: false, stop: false, mode: "Ask first" },
+      keys: { approve: false, stop: false },
       tracker: [
         { id: "garden-water", agent: "claude", title: "Watering schedule", project: "Garden planner", status: "idle", activity: "Finished — reply ready", progress: "3/3", cost: "$0.21" },
         { id: "c1", agent: "codex", title: "Best route for herbs?", project: "Chats", status: "idle", activity: "Finished — reply ready", cost: "8.2k tokens" },
@@ -320,7 +320,7 @@ async function recordGif(browser) {
       p.model.list.rows.forEach((r) => { r.selected = r.key === "garden-water"; if (r.key === "garden-dates") r.status = "idle"; });
       p.model.detail = { kind: "thread", id: "garden-water", external: false, title: "Watering schedule", agent: "claude", project: "Garden planner", cwd: "C:\\sample\\garden-planner", status: "idle", mode: "Ask first", model: "sonnet", todos: [], entries: [] };
       p.model.target = { text: "Claude · Watering schedule · Garden planner" };
-      p.model.keys = { approve: false, stop: false, mode: "Ask first" };
+      p.model.keys = { approve: false, stop: false };
     });
     const request = "Add a watering schedule: each plant needs days between waterings.";
     for (let i = 1; i <= request.length; i += 2) {
@@ -333,7 +333,7 @@ async function recordGif(browser) {
     await push((p, text) => {
       const w = p.model.list.rows.find((r) => r.key === "garden-water"); w.status = "running";
       p.model.detail.status = "running"; p.model.detail.entries = [{ id: "u1", kind: "user", text }];
-      p.model.keys = { approve: false, stop: true, mode: "Ask first" };
+      p.model.keys = { approve: false, stop: true };
       p.model.tracker = [{ id: "garden-water", agent: "claude", title: "Watering schedule", project: "Garden planner", status: "running", activity: "Reading src/plants.json", progress: "0/2" }];
     }, request);
     await wait(1100);
@@ -357,8 +357,8 @@ async function recordGif(browser) {
       p.model.detail.entries.push({ id: "p1", kind: "approval", title: "Edit src/plants.json", approval: "pending", requestId: "gif", canAlways: true,
         text: "  { \"name\": \"Basil\", \"lastWatered\": \"2026-10-30\",\n-   \"sun\": \"full\" }\n+   \"sun\": \"full\", \"wateringDays\": 2 }" });
       p.model.detail.status = "approval"; p.model.list.rows.find((r) => r.key === "garden-water").status = "approval";
-      p.model.keys = { approve: true, stop: true, mode: "Ask first" };
-      p.model.toasts = [{ kind: "approval", text: "Needs approval · Watering schedule", at: 2 }];
+      p.model.keys = { approve: true, stop: true };
+      p.model.toasts = [{ kind: "approval", text: "Needs you · Watering schedule", at: 2 }];
       p.model.tracker[0].status = "approval"; p.model.tracker[0].activity = "Waiting: Edit src/plants.json";
     });
     await wait(2700);
@@ -374,14 +374,14 @@ async function recordGif(browser) {
     await wait(1100);
     await push((p) => {
       p.model.list.rows.find((r) => r.key === "garden-water").status = "running"; p.model.detail.status = "running";
-      p.model.keys = { approve: false, stop: true, mode: "Ask first" };
+      p.model.keys = { approve: false, stop: true };
       p.model.tracker[0].status = "running"; p.model.tracker[0].activity = "Running the tests"; p.model.tracker[0].progress = "1/2";
     });
     await wait(1700);
     await keys(false, false);
     await push((p) => {
       p.model.list.rows.find((r) => r.key === "garden-water").status = "idle"; p.model.detail.status = "idle";
-      p.model.keys = { approve: false, stop: false, mode: "Ask first" };
+      p.model.keys = { approve: false, stop: false };
       p.model.detail.todos = p.model.detail.todos.map((t) => ({ ...t, status: "completed" }));
       p.model.detail.entries.push({ id: "a2", kind: "assistant", text: "Done. Every plant now has a `wateringDays` value, and the list shows a **Due today** badge." });
       p.model.toasts = [{ kind: "done", text: "Quest Complete · Watering schedule", sub: "1 edit · $0.21", at: 3 }];

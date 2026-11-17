@@ -1,5 +1,6 @@
 // Private (streamer) mode: the render model, notices and the FamiliarSync snapshot carry no real
-// project names, titles, desktop threads or (snapshot) transcript; approval previews stay complete.
+// project names, titles or desktop threads (FamiliarSync never holds titles or transcript); approval
+// previews stay complete.
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -39,7 +40,7 @@ class FakeBackend implements AgentBackend {
   emit(e: AgentEvent) { for (const h of this.handlers) h(e); }
 }
 
-const cfg = { ...DEFAULT_CONFIG, projectRoots: [projRoot], speak: true, exclude: DEFAULT_CONFIG.exclude.filter((e) => !e.includes("temp")) };
+const cfg = { ...DEFAULT_CONFIG, projectRoots: [projRoot], exclude: DEFAULT_CONFIG.exclude.filter((e) => !e.includes("temp")) };
 let claude: FakeBackend, hub: InstanceType<typeof Hub>;
 const SECRETS = /secret-alpha|secret-beta|Refactor billing|Hush desktop plan|Launch notes|desktop reply|The vault key moved/;
 const model = () => buildModel(hub, { linked: true, fps: 30 });
@@ -48,7 +49,6 @@ beforeEach(async () => {
   process.env.APPDATA = fs.mkdtempSync(path.join(tmp, "state-"));
   cfg.privateMode = false;
   cfg.blurTranscript = false;
-  cfg.speak = true;
   claude = new FakeBackend("claude");
   hub = new Hub(() => cfg, { claude }, () => {});
   hub.minCardAgeMs = 0;
@@ -69,9 +69,7 @@ async function scene() {
 
 describe("private mode", () => {
   it("masks names, hides desktop threads and transcripts, keeps approval previews, and restores on toggle off", async () => {
-    const spoken: string[] = [];
-    hub.onSpeak = (t) => spoken.push(t);
-    await hub.key("private", "on");
+    hub.setPrivate(true); // the control panel (/fam has no Hide names key)
     expect(cfg.privateMode).toBe(true);
     const { done, pending } = await scene();
 
@@ -94,9 +92,8 @@ describe("private mode", () => {
     expect(card.title).toBe("Run: rm -rf build");
     expect(card.text).toBe("rm -rf build && npm run deploy");
     expect(m.attention?.find((i) => i.pending)?.excerpt).toBe("Run: rm -rf build");
-    // Toasts: generic only; nothing spoken.
-    expect(m.toasts.map((t) => t.text)).toEqual(expect.arrayContaining(["Quest Complete", "Needs approval · Claude"]));
-    expect(spoken).toEqual([]);
+    // Toasts: generic only.
+    expect(m.toasts.map((t) => t.text)).toEqual(expect.arrayContaining(["Quest Complete", "Needs you · Claude"]));
     // The real (non-private) finish toast in the hub carries no reply text either.
     const finished = hub.toasts.find((t) => t.kind === "done");
     expect(finished?.text).toMatch(/^Quest Complete · /);
@@ -104,13 +101,13 @@ describe("private mode", () => {
     // Names stay stable across renders.
     expect(model().list.rows.map((r) => r.text)).toEqual(m.list.rows.map((r) => r.text));
 
-    // FamiliarSync: no titles, no transcript.
+    // FamiliarSync: no titles, not even the generic ones, and no transcript (owner decision 4).
     for (const id of [done, pending]) {
       hub.action({ type: "select", id });
       const snap = buildSnapshot(hub);
       expect(snap).not.toMatch(SECRETS);
       expect(snap).not.toMatch(/rm -rf|You:/);
-      expect(snap).toMatch(/Quest #\d/);
+      expect(snap).not.toMatch(/Quest #|Project d/);
     }
     // A desktop thread selected while private is not shown at all.
     hub.action({ type: "select", id: "ext:claude:ext-1" });
@@ -120,8 +117,8 @@ describe("private mode", () => {
     // Real data stays in the hub.
     expect([...hub.threads.values()].map((t) => t.title)).toEqual(expect.arrayContaining(["Launch notes", "Refactor billing"]));
 
-    // Off: everything back.
-    await hub.key("private", "off");
+    // Off (in the control panel; the game cannot): everything back.
+    hub.setPrivate(false);
     hub.action({ type: "select", id: done });
     const back = model();
     expect(back.private).toBeUndefined();
@@ -129,40 +126,54 @@ describe("private mode", () => {
     for (const s of ["secret-alpha", "secret-beta", "Launch notes", "Refactor billing", "Hush desktop plan"]) expect(text).toContain(s);
     claude.emit({ type: "approval", threadId: pending, requestId: "r2", kind: "command", title: "Run: npm test", detail: "npm test", canAlways: false });
     expect(model().toasts.some((t) => t.text.includes("secret-beta") && t.text.includes("Run: npm test"))).toBe(true);
-    expect(buildSnapshot(hub)).toContain("The vault key moved");
+    expect(buildSnapshot(hub)).not.toMatch(SECRETS); // with privacy off too
+  });
+
+  it("the game turns Hide names on but never off (anything in the game can send a key)", async () => {
+    expect(hub.settings({ privateMode: true }, "game")).toEqual([]);
+    expect(cfg.privateMode).toBe(true);
+    expect(hub.settings({ privateMode: false }, "game")).toEqual(["privateMode"]);
+    expect(cfg.privateMode).toBe(true);
+    expect(hub.toasts.at(-1)!.text).toBe("Hide names is turned off in Familiar on your PC, not from the game.");
+    await hub.key("private", "off"); // no such key any more: nothing happens
+    expect(cfg.privateMode).toBe(true);
+    hub.setPrivate(false); // the control panel
+    expect(cfg.privateMode).toBe(false);
   });
 
   it("the after-the-fight summary names nothing, so private mode shows it unchanged", async () => {
-    await hub.key("private", "on");
+    hub.setPrivate(true);
     hub.setCombat(true);
     await scene();
     hub.setCombat(false);
     const toasts = model().toasts;
-    expect(toasts.map((t) => t.text)).toContain("While you fought: 1 quest finished · 1 needs approval");
+    expect(toasts.map((t) => t.text)).toContain("While you fought: 1 quest finished · 1 needs you");
     expect(JSON.stringify(toasts)).not.toMatch(SECRETS);
   });
 
-  it("Stream-safe is one switch: names hidden, replies blurred, no speech; approval cards stay readable", async () => {
-    const spoken: string[] = [];
-    hub.onSpeak = (t) => spoken.push(t);
+  it("Stream-safe is one switch: names hidden, replies blurred; approval cards stay readable", async () => {
     await hub.key("stream", "on");
-    expect(cfg).toMatchObject({ privateMode: true, blurTranscript: true, speak: false });
+    expect(cfg).toMatchObject({ privateMode: true, blurTranscript: true });
     expect(hub.toasts.at(-1)!.text).toBe("Stream-safe on: names hidden, replies blurred. Click a blurred reply to read it for 8 seconds.");
     const { pending } = await scene();
     const m = model();
     expect(m).toMatchObject({ private: true, blur: true });
     if (m.detail.kind !== "thread" || m.detail.id !== pending) throw new Error("pending quest expected");
     expect(m.detail.entries.find((e) => e.kind === "approval")).toMatchObject({ title: "Run: rm -rf build", text: "rm -rf build && npm run deploy" });
-    expect(spoken).toEqual([]);
-    await hub.key("stream", "off");
-    expect(cfg).toMatchObject({ privateMode: false, blurTranscript: false, speak: false }); // speech stays the player's to turn on
+    for (const arg of ["off", ""]) {
+      await hub.key("stream", arg);
+      expect(cfg).toMatchObject({ privateMode: true, blurTranscript: true });
+      expect(hub.toasts.at(-1)!.text).toBe("Stream-safe is turned off in Familiar on your PC, not from the game.");
+    }
+    hub.setStream(false); // the control panel
+    expect(cfg).toMatchObject({ privateMode: false, blurTranscript: false });
     expect(hub.toasts.at(-1)!.text).toBe("Stream-safe off.");
     expect(model().blur).toBeUndefined();
     expect(JSON.stringify(model().list.rows)).toContain("Refactor billing");
-    // A bare /fam stream toggles; showing names again (Hide names off) ends Stream-safe too.
+    // A bare /fam stream turns it on; showing names again (Hide names off, in the panel) ends Stream-safe too.
     await hub.key("stream");
     expect(model().blur).toBe(true);
-    await hub.key("private", "off");
+    hub.setPrivate(false);
     expect(cfg.blurTranscript).toBe(false);
     expect(model().blur).toBeUndefined();
   });

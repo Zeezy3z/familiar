@@ -1,10 +1,9 @@
-// "Suggest a change": a pre-filled GitHub issue form the user reviews and submits in their own
-// browser. Only the text and versions go in; never paths, character names, transcripts or logs.
+// "Suggest a change" (the control panel): a pre-filled GitHub issue form the user reviews and
+// submits in their own browser. Only the text and versions go in; never paths, character names, transcripts or logs.
 
 export const ISSUE_URL_PREFIX = "https://github.com/Zeezy3z/familiar/issues/new";
 export const SUGGEST_MAX = 2000;
 export const SUGGEST_TITLE_MAX = 80;
-export const SUGGEST_TOAST = "Opened a pre-filled GitHub issue in your browser. Review it and submit there; nothing is sent until you do.";
 
 export interface SuggestVersions {
   familiar?: string;

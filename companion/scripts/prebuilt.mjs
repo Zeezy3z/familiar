@@ -18,6 +18,7 @@ import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { missingLicenses } from "./bundles.mjs";
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const system32 = join(process.env.SystemRoot || "C:\\Windows", "System32");
@@ -30,6 +31,8 @@ const REQUIRED = ["Run Familiar.cmd", "addon/Familiar/Familiar.toc", "companion/
  * SDK and its Claude Code binary packages. (@anthropic-ai/sdk, the MIT API client, stays.) */
 const CLAUDE = /^claude-agent-sdk(-|$)/;
 const claudeLeft = (app) => readdirSync(join(app, "companion", "node_modules", "@anthropic-ai")).filter((n) => CLAUDE.test(n));
+/** Bundled packages (devDependencies, not in the zip) whose licence is missing from companion/dist/licenses/. */
+const licencesMissing = (app) => missingLicenses(readdirSync(join(app, "companion", "dist"), { recursive: true }).map((f) => String(f).split(/[\\/]/).join("/")));
 
 function run(cmd, args, opts = {}) {
   console.log(`> ${[cmd, ...args].join(" ")}`);
@@ -90,11 +93,14 @@ function build(out, ref) {
     for (const f of readdirSync(locales)) if (f !== "en-US.pak") rmSync(join(locales, f));
     // Not ours to redistribute; the player's PC downloads it on first run (fetch-claude.cjs).
     for (const n of claudeLeft(app)) rmSync(join(nm, "@anthropic-ai", n), { recursive: true });
+    // The bundles' source maps (scripts/bundles.mjs) are for development only.
+    strip(join(companion, "dist"));
 
     const version = JSON.parse(readFileSync(join(companion, "package.json"), "utf8")).version;
     writeFileSync(join(companion, ".prebuilt"), `version=${version}\nlock=${sha256(lock)}\n`);
     const missing = REQUIRED.filter((f) => !existsSync(join(app, f)));
     if (missing.length) throw new Error(`missing from the staged app: ${missing.join(", ")}`);
+    if (licencesMissing(app).length) throw new Error(`no licence in companion/dist/licenses/ for ${licencesMissing(app).join(", ")}`);
 
     rmSync(out, { force: true });
     run(tar, ["-a", "-c", "-f", out, "-C", stage, "Familiar"]);
@@ -112,6 +118,9 @@ function check(zip) {
     const missing = REQUIRED.filter((f) => !existsSync(join(app, f)));
     if (missing.length) throw new Error(`missing from ${zip}: ${missing.join(", ")}`);
     if (claudeLeft(app).length) throw new Error(`${zip} must not contain Anthropic's Claude packages: ${claudeLeft(app).join(", ")}`);
+    if (licencesMissing(app).length) throw new Error(`${zip} has no licence in companion/dist/licenses/ for ${licencesMissing(app).join(", ")}`);
+    const maps = readdirSync(join(app, "companion", "dist"), { recursive: true }).filter((f) => /\.map$/i.test(f));
+    if (maps.length) throw new Error(`${zip} must not contain source maps: ${maps.join(", ")}`);
     const cmd = readFileSync(join(app, "Run Familiar.cmd"), "latin1");
     const lf = cmd.split("\n").length - 1;
     const crlf = cmd.split("\r\n").length - 1;

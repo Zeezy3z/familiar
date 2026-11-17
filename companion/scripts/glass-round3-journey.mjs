@@ -60,33 +60,15 @@ export async function glassRound3Journey(page, origin) {
   // ---- §3b refusal written on the card
   await open('approval-refused');
   const refused = await page.evaluate(() => {
-    const line = document.querySelector('.card-refused'), btns = document.querySelector('.entry.approval .btns');
-    return { text: line?.textContent ?? '', below: !!line && line.getBoundingClientRect().top >= btns.getBoundingClientRect().bottom,
+    // On the pinned card the line sits just above it, out of its flow, so writing it moves no button.
+    const line = document.querySelector('.card-refused'), pinned = document.getElementById('pinned');
+    return { text: line?.textContent ?? '', below: !!line && line.getBoundingClientRect().bottom <= pinned.getBoundingClientRect().top + 0.5,
       red: !!line && getComputedStyle(line).color !== getComputedStyle(document.querySelector('.preview-note')).color };
   });
-  check('refused: the card says why, under the buttons, in red', /Click Approve again/.test(refused.text) && refused.text.startsWith('✗ ') && refused.below && refused.red);
+  check('refused: the card says why, Approve key first, just above the pinned card, in red', /press your Approve key, or click Approve again/.test(refused.text) && refused.text.startsWith('✗ ') && refused.below && refused.red);
   check('refused: Approve and Deny are still offered', (await decisions()).map(b => b.decision).join() === 'allow,deny');
   await click(`${decide}.ok`);
   check('refused: the line goes once the request is decided', await page.locator('.card-refused').count() === 0);
-
-  // ---- §3c live mode over the native Mode button
-  await open('approval');
-  const plate = () => page.evaluate(() => {
-    const el = document.getElementById('mode-label'), r = el.getBoundingClientRect();
-    const keys = window.preview.model.keys, k = window.innerWidth / 1280, rect = [828, 74, 64, 22].map(v => v * k);
-    return { shown: getComputedStyle(el).display !== 'none', text: el.textContent, hot: el.classList.contains('hot'), color: getComputedStyle(el).color,
-      inside: r.left >= rect[0] - 0.5 && r.top >= rect[1] - 0.5 && r.right <= rect[0] + rect[2] + 0.5 && r.bottom <= rect[1] + rect[3] + 0.5 && r.width > rect[2] - 1,
-      fits: el.firstElementChild ? el.firstElementChild.scrollWidth <= el.clientWidth + 1 : true, inert: getComputedStyle(el).pointerEvents === 'none', mode: keys.mode };
-  });
-  const ask = await plate();
-  check('mode: the Mode button reads the quest mode, inside its rect', ask.shown && ask.text === 'Ask first' && ask.inside && ask.fits && !ask.hot && ask.inert);
-  await push(() => { const m = window.preview.model; m.keys = { ...m.keys, mode: 'Accept edits', modeHot: true }; });
-  const hot = await plate();
-  check('mode: Accept edits is orange and still fits', hot.shown && hot.text === 'Accept edits' && hot.hot && hot.color !== ask.color && hot.fits && hot.inside);
-  await push(() => { const m = window.preview.model; m.keys = { ...m.keys, mode: undefined, modeHot: undefined }; });
-  check('mode: nothing selected shows the native label', !(await plate()).shown);
-  await open('welcome');
-  check('mode: welcome has no mode plate', !(await plate()).shown);
 
   // ---- §6 Quest Complete / Quest Failed: the painted seal replaces the ◆ / ✗ ornament (round 5), with the hub's rewards line under the title
   await open('quest-complete');
@@ -165,7 +147,7 @@ export async function glassRound3Journey(page, origin) {
     return { text: c.textContent, border: cs.borderTopColor, color: cs.color, font: cs.fontFamily, size: parseFloat(cs.fontSize), radius: parseFloat(cs.borderTopLeftRadius) }; }));
   let hc = await chips();
   const small = await page.evaluate(() => parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--small-font')));
-  check('header: Ask first and ! Needs your approval are two chips in the display face at the small size', hc.length === 2 && hc[0].text === 'Ask first' && hc[1].text === '! Needs your approval'
+  check('header: Ask first and ! Needs you are two chips in the display face at the small size', hc.length === 2 && hc[0].text === 'Ask first' && hc[1].text === '! Needs you'
     && hc.every(c => c.font.includes('Familiar Display') && Math.abs(c.size - small) < 0.05 && c.radius > 0));
   check('header: the state chip takes the warn colour on its border and text', hc[1].border === 'rgb(255, 128, 64)' && hc[1].color === 'rgb(255, 128, 64)');
   check('header: the helper sentence is gone from the header', await page.locator('.qstate span').count() === 0
@@ -228,9 +210,9 @@ export async function glassRound3Journey(page, origin) {
   check('curtain: with Stream-safe off there is no veil and no Stream-safe chip (Hide names alone is a chip, not a curtain)', v.content === 'none' && (await veil('.objectives')).content === 'none'
     && !(await blur()).chips.includes('Stream-safe on'));
   await push(() => { window.preview.model.private = false; window.preview.model.quiet = true; });
-  check('chips: Alerts muted is a chip with its hint, and nothing else is', (await blur()).chips.join() === 'Alerts muted (/fam quiet off)');
+  check('chips: Alerts muted is a chip, and nothing else is', (await blur()).chips.join() === 'Alerts muted');
   await push(() => { window.preview.model.blur = true; window.preview.model.private = true; });
-  check('chips: Alerts muted and Stream-safe on side by side, in that order, and Hide names does not repeat itself', (await blur()).chips.join('|') === 'Alerts muted (/fam quiet off)|Stream-safe on');
+  check('chips: Alerts muted and Stream-safe on side by side, in that order, and Hide names does not repeat itself', (await blur()).chips.join('|') === 'Alerts muted|Stream-safe on');
   await push(() => { window.preview.model.quiet = false; window.preview.model.private = false; window.preview.model.blur = false; });
   check('chips: with everything off the status is the words alone', (await blur()).chips.length === 0 && (await blur()).words === 'Linked · Claude ready · Codex ready');
   // A reasoning block and an expanded tool output are blurred too, and their veils are crisp (outside what is filtered).
@@ -250,16 +232,18 @@ export async function glassRound3Journey(page, origin) {
   check('curtain: a reveal lifts the veil within 200 ms (motion on), and the text is clear', lifted && await page.evaluate(() => getComputedStyle(document.querySelector('.entry.assistant .body')).filter === 'none'));
   await page.emulateMedia({ reducedMotion: 'reduce' });
 
-  // ---- §8 Jump to latest (wheel d:-9999 on detail)
+  // ---- §8 the docked Latest chip: reading back shows it in the footer row under the transcript (never over it); a click jumps to the end
   await open('long');
   const emitWheel = async d => { await page.evaluate(d => window.preview.emit('input', { t: 'wheel', r: 'detail', d }), d); await settle(); };
-  const place = () => page.evaluate(() => { const s = document.getElementById('detail-scroll');
-    return { bottom: s.scrollTop + s.clientHeight >= s.scrollHeight - 2, top: s.scrollTop < 2, latest: getComputedStyle(document.getElementById('latest')).display !== 'none' }; });
+  const place = () => page.evaluate(() => { const s = document.getElementById('detail-scroll'), l = document.getElementById('latest');
+    return { bottom: s.scrollTop + s.clientHeight >= s.scrollHeight - 2, top: s.scrollTop < 2, latest: getComputedStyle(l).display !== 'none',
+      docked: l.parentElement?.id === 'foot' && l.getBoundingClientRect().top >= s.getBoundingClientRect().bottom - 1 }; });
   await emitWheel(12);
   const reading = await place();
-  await emitWheel(-9999);
+  const jumpCalls = await click('#latest');
   const jumped = await place();
-  check('latest: d -9999 jumps to the bottom and hides Latest', !reading.bottom && reading.latest && jumped.bottom && !jumped.latest);
+  check('latest: reading back shows Latest docked under the transcript; a click jumps to the bottom, hides it and sends nothing',
+    !reading.bottom && reading.latest && reading.docked && jumped.bottom && !jumped.latest && jumpCalls.length === 0);
   await push(() => { window.preview.model.detail.entries.push({ id: 'after-jump', kind: 'assistant', text: 'A new synthetic reply after the jump.' }); });
   check('latest: after the jump new replies are followed', (await place()).bottom);
   await emitWheel(10000);
@@ -372,7 +356,7 @@ export async function glassRound3Journey(page, origin) {
   w = await head();
   const askingShipped = await page.evaluate(() => fetch('assets/asking-192.png').then(r => r.ok, () => false));
   check('welcome: a request waiting on you shows the asking face and the count, ahead of working', !!w && w.cls === 'welcome asking' && w.big === 'Well met.'
-    && w.sub === 'Linked to Preview Rogue · 1 waiting on you.' && w.loaded && w.src === (askingShipped ? 'assets/asking-192.png' : 'assets/idle-192.png'));
+    && w.sub === 'Linked to Preview Rogue · 1 needs you.' && w.loaded && w.src === (askingShipped ? 'assets/asking-192.png' : 'assets/idle-192.png'));
   await push();
   w = await head();
   check('welcome: a missing asking face falls back once and stays on the fallback across model pushes', !!w && w.loaded && w.src === (askingShipped ? 'assets/asking-192.png' : 'assets/idle-192.png'));
@@ -383,7 +367,7 @@ export async function glassRound3Journey(page, origin) {
     return { w: r.width, h: r.height, display: cs.display, radius: cs.borderRadius, ring: cs.boxShadow, bg: cs.backgroundColor, act: !!img.closest('[data-act]'),
       inside: r.left >= d.left && r.right <= d.right && r.top >= d.top && r.bottom <= d.bottom, paneBg: pane.backgroundColor, short: document.body.classList.contains('short-detail'),
       offers: document.querySelectorAll('.welcome .offer').length, cx: r.left + r.width / 2, cy: r.top + r.height / 2 }; });
-  const layout = (detail, over = {}) => ({ scr: [1280, 800], px: 1.25, panel: true, native: false, drag: false, combat: false, ui: true, rowH: 24,
+  const layout = (detail, over = {}) => ({ scr: [1280, 800], px: 1.25, panel: true, drag: false, combat: false, ui: true, rowH: 24,
     list: [30, 100, 250, 620], detail, status: [30, 735, 940, 28], ...over });
   const relayout = async l => { await page.evaluate(l => window.preview.emit('layout', l), l); await settle(); };
   let f = await face();
@@ -480,7 +464,7 @@ export async function glassRound3Journey(page, origin) {
   // ---- round 6 §2.4 one motion vocabulary: the durations come from --m-fast / --m-arrive / --m-settle (motion on, as a player has it)
   await page.emulateMedia({ reducedMotion: 'no-preference' });
   await open('quest-complete');
-  await push(() => { window.preview.model.toasts.push({ kind: 'approval', text: 'Needs approval · Quest log', at: 2 }); });
+  await push(() => { window.preview.model.toasts.push({ kind: 'approval', text: 'Needs you · Quest log', at: 2 }); });
   const motion = await page.evaluate(() => { const cs = (sel, pseudo) => getComputedStyle(document.querySelector(sel), pseudo), root = getComputedStyle(document.documentElement);
     return { tokens: ['--m-fast', '--m-arrive', '--m-settle'].map(n => root.getPropertyValue(n).trim()), arrive: cs('.toast.approval').animationDuration, settle: cs('.toast.done').animationDuration,
       seal: cs('.toast.done .seal').animationDuration }; });
@@ -501,26 +485,26 @@ export async function glassRound3Journey(page, origin) {
   await open('approval');
   check('minimap: with no attention nothing is painted', !(await badge()).shown);
   await push(() => { window.preview.model.attention = [{ thread: 'preview', entry: 'p1', revision: 'fixture:p1', title: 'Quest log', project: 'Preview project', cwd: 'C:\\preview', agent: 'claude',
-    mode: 'Ask first', label: 'Needs approval', excerpt: '+ Clearer spacing for the preview', pending: true, at: 1 }]; });
+    mode: 'Ask first', label: 'Needs you', excerpt: '+ Clearer spacing for the preview', pending: true, at: 1 }]; });
   let mini = await badge();
   check('minimap: a waiting request paints "!" on the minimap button\'s rect, in the card\'s orange', mini.shown && mini.glyph === '!' && mini.content === '"!"' && near(mini.box, MINI) && mini.color === 'rgb(255, 128, 64)');
   check('minimap: the mark is sized from the button (42%, 12 px at least) and is a picture only: no hit rect, no action, no text', mini.pos === 'absolute' && mini.inert && !mini.act && mini.text === '' && mini.aria === 'true'
     && mini.mini === '31px' && mini.markW >= 12 && Math.abs(mini.markW - 31 * 0.42) < 1);
   await push(() => { window.preview.model.attention = [{ thread: 'preview', entry: 'a1', revision: 'fixture:a1', title: 'Quest log', project: 'Preview project', cwd: 'C:\\preview', agent: 'claude',
-    mode: 'Ask first', label: 'Reply waiting', excerpt: 'A reply', pending: false, at: 1 }]; });
+    mode: 'Ask first', label: 'Reply ready', excerpt: 'A reply', pending: false, at: 1 }]; });
   mini = await badge();
   check('minimap: only replies waiting paint "?" in gold', mini.shown && mini.glyph === '?' && mini.content === '"?"' && mini.color === 'rgb(255, 209, 0)');
   await push(() => { window.preview.model.attention.push({ thread: 'other', entry: 'p2', revision: 'fixture:p2', title: 'Another quest', project: 'Preview project', cwd: 'C:\\preview', agent: 'claude',
-    mode: 'Ask first', label: 'Needs approval', excerpt: 'Another request', pending: true, at: 2 }); });
+    mode: 'Ask first', label: 'Needs you', excerpt: 'Another request', pending: true, at: 2 }); });
   check('minimap: a request outranks a reply', (await badge()).glyph === '!');
   await push(() => { window.preview.model.attention = []; });
   check('minimap: nothing waiting, nothing painted', !(await badge()).shown && (await badge()).glyph === '');
-  await push(() => { window.preview.model.attention = [{ thread: 'preview', entry: 'p1', revision: 'fixture:p1', title: 'T', project: 'P', cwd: '', agent: 'claude', mode: 'Ask first', label: 'Needs approval', excerpt: 'x', pending: true, at: 1 }]; });
+  await push(() => { window.preview.model.attention = [{ thread: 'preview', entry: 'p1', revision: 'fixture:p1', title: 'T', project: 'P', cwd: '', agent: 'claude', mode: 'Ask first', label: 'Needs you', excerpt: 'x', pending: true, at: 1 }]; });
   await push(() => { window.preview.model.attention = undefined; });
   check('minimap: a model without attention (an older hub) paints nothing', !(await badge()).shown);
   await open('stream-safe');
   await push(() => { window.preview.model.attention = [{ thread: 'preview', entry: 'p-s', revision: 'fixture:p-s', title: 'Quest #1', project: 'Project 1', cwd: '', agent: 'claude', mode: 'Ask first',
-    label: 'Needs approval', excerpt: 'Edit Macros.lua', pending: true, at: 1 }]; });
+    label: 'Needs you', excerpt: 'Edit Macros.lua', pending: true, at: 1 }]; });
   mini = await badge();
   check('minimap: Stream-safe and Hide names keep the mark (a glyph, no names), unblurred', mini.shown && mini.glyph === '!' && mini.text === '' && mini.filter === 'none' && await page.evaluate(() => document.body.classList.contains('blur')));
   await open('waiting');
@@ -551,7 +535,7 @@ export async function glassRound3Journey(page, origin) {
   await page.emulateMedia({ reducedMotion: 'no-preference' });
   await open('approval');
   const pop = () => page.evaluate(() => { const el = document.getElementById('mini-badge'); return { pop: el.classList.contains('pop'), anim: getComputedStyle(el, '::after').animationName, dur: getComputedStyle(el, '::after').animationDuration }; });
-  await push(() => { window.preview.model.attention = [{ thread: 'preview', entry: 'p1', revision: 'fixture:p1', title: 'T', project: 'P', cwd: '', agent: 'claude', mode: 'Ask first', label: 'Needs approval', excerpt: 'x', pending: true, at: 1 }]; });
+  await push(() => { window.preview.model.attention = [{ thread: 'preview', entry: 'p1', revision: 'fixture:p1', title: 'T', project: 'P', cwd: '', agent: 'claude', mode: 'Ask first', label: 'Needs you', excerpt: 'x', pending: true, at: 1 }]; });
   const arriving = await pop();
   await page.waitForFunction(() => !document.getElementById('mini-badge').classList.contains('pop'), null, { timeout: 3000 }).catch(() => {});
   const settled = await pop();
@@ -563,7 +547,7 @@ export async function glassRound3Journey(page, origin) {
     && !settled.pop && settled.anim === 'none' && !same.pop && changed.pop && changed.anim === 'toastIn');
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await open('approval');
-  await push(() => { window.preview.model.attention = [{ thread: 'preview', entry: 'p1', revision: 'fixture:p1', title: 'T', project: 'P', cwd: '', agent: 'claude', mode: 'Ask first', label: 'Needs approval', excerpt: 'x', pending: true, at: 1 }]; });
+  await push(() => { window.preview.model.attention = [{ thread: 'preview', entry: 'p1', revision: 'fixture:p1', title: 'T', project: 'P', cwd: '', agent: 'claude', mode: 'Ask first', label: 'Needs you', excerpt: 'x', pending: true, at: 1 }]; });
   check('minimap: reduced motion makes no motion', (await pop()).anim === 'none');
   return results;
 }

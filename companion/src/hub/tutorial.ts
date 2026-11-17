@@ -2,7 +2,7 @@
 // backend, no files, no shell: nothing ever runs). It teaches the Quest Log's marks and the approval
 // path with one practice card that goes through the real corroboration checks. This module is the
 // script; the hub plays its events through the same path as an agent's (Hub.onAgent), so the
-// toasts, chimes, markers and the Approve glow are exactly those of a real request.
+// toasts, chimes and markers are exactly those of a real request.
 import type { AgentEvent, TodoItem } from "../agents/types";
 import type { Thread } from "./hub";
 
@@ -27,13 +27,13 @@ Marks to know in the Quest Log:
 
 Type anything in the box below and press Enter. (Shift+Enter adds a line. \`/fam\` opens and closes this window.)`;
 
-const HEARD = "Heard. Now the part that matters. Before I change a file or run a command, I stop and ask with a card like the one below. Nothing happens until you click **Approve** — and Familiar checks that it was your mouse that clicked, not an addon. **Deny** is always free. This one is practice: nothing runs.";
+const HEARD = "Heard. Now the part that matters. Before I change a file or run a command, I stop and ask with a card like the one below. Nothing happens until you press your **Approve** key (you choose it in Familiar on your PC) — and Familiar checks that the key was really pressed on your PC, not by an addon. If you switched on click approval there, clicking **Approve** works too. **Deny** is always free. This one is practice: nothing runs.";
 const WAITING = "The practice request is waiting below: **Approve** it or **Deny** it.";
 const AGAIN = "Here is the practice request again. Nothing runs, whatever you choose.";
-const ONWARD = "From here: **+ Claude** or **+ Codex** starts a quest in one of your project folders. **+ Chat** asks a game question with no files involved. **Mode** switches a quest between Ask first and Plan only. Your familiar awaits.";
+const ONWARD = "From here: **+ Quest** starts a quest in one of your project folders. **+ Chat** asks a game question with no files involved. Modes are set in Familiar on your PC (Safety). Your familiar awaits.";
 const APPROVED = `The hearth is lit — and you've just done every part of a real quest.\n\n${ONWARD}`;
-const DENIED = `Denied — also a fine answer, and the right one whenever you're unsure. Deny never needs a click check.\n\n${ONWARD}`;
-const DONE = "Nothing more to teach. Start a quest with + Claude or + Codex, or right-click this one to archive it.";
+const DENIED = `Denied — also a fine answer, and the right one whenever you're unsure. Deny never needs that check.\n\n${ONWARD}`;
+const DONE = "Nothing more to teach. Start a quest with + Quest, or right-click this one to archive it.";
 export const SET_OUT_NOTE = "Set out on a real quest ✓";
 
 /** The quest as seeded: the welcome, three open objectives, a gold `?` in the log. */

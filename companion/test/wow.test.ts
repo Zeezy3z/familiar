@@ -5,7 +5,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { DEFAULT_CONFIG } from "../src/hub/config";
-import { findWowInstall, ifaceOf, installAddon, interfaceCheck, readBuildInfo, readFlavorInfo, tocInterfaces, uninstallAddon, WowInstall } from "../src/main/wow";
+import { buildSnapshot, findWowInstall, ifaceOf, installAddon, interfaceCheck, readBuildInfo, readFlavorInfo, tocInterfaces, uninstallAddon, WowInstall } from "../src/main/wow";
 
 const REPO_ADDON = path.resolve(__dirname, "..", "..", "addon", "Familiar");
 const REPO_TOC = path.join(REPO_ADDON, "Familiar.toc");
@@ -152,6 +152,39 @@ describe("findWowInstall", () => {
     const p = probe(cfgAt(only), path.join(only, "_retail_", "Wow.exe"));
     expect(p.install).toBeNull();
     expect(p.error).toMatch(/No WoW: Forever client/);
+  });
+});
+
+describe("the saved in-game copy (FamiliarSync)", () => {
+  // A stand-in hub: a real one would save under %APPDATA%. The quest data is there so the test
+  // shows none of it reaches the file, whatever is selected.
+  const hubWith = (over: Record<string, unknown> = {}) =>
+    ({
+      acked: ["p1", "p2"],
+      cfg: () => ({ ...DEFAULT_CONFIG, fontScale: 1.2 }),
+      backends: { claude: {}, codex: {}, hermes: {} },
+      enabled: (id: string) => id !== "hermes",
+      storage: undefined,
+      view: { selected: "t1" },
+      threads: new Map([["t1", { id: "t1", title: "SECRET-TITLE", entries: [{ kind: "user", text: "SECRET-PROMPT" }, { kind: "assistant", text: "SECRET-REPLY" }] }]]),
+      ...over,
+    }) as any;
+
+  it("holds a timestamp and status only: no transcript and no quest titles", () => {
+    const snap = buildSnapshot(hubWith());
+    expect(snap).not.toMatch(/SECRET|title|text =|list =|selected =/);
+    expect(snap).toMatch(/^  generatedAt = \d+,$/m);
+    expect(snap).toContain('  acked = { "p1", "p2" },');
+    expect(snap).toContain("  fontScale = 1.2,");
+    expect(snap).toContain('  providers = { "claude", "codex" },');
+    expect(snap).not.toContain("stoppedAt");
+    expect(snap).not.toContain("notice");
+  });
+
+  it("marks a clean close, and carries saved-quests storage guidance as a notice", () => {
+    expect(buildSnapshot(hubWith(), { stopping: true })).toMatch(/^  stoppedAt = \d+,$/m);
+    const warn = buildSnapshot(hubWith({ storage: { level: "warn", text: 'Saved quests need attention: "copy" kept' } }));
+    expect(warn).toContain('  notice = "Saved quests need attention: \\"copy\\" kept",');
   });
 });
 

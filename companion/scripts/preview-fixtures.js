@@ -23,12 +23,13 @@
   const inwin = scenario.endsWith("-inwin");
   const handlers = {};
   const calls = [];
-  const linked = ["welcome", "welcome-noprojects", "welcome-empty", "welcome-working", "welcome-asking", "projects-empty", "projects-some", "update-available", "linked", "paused", "running", "approval", "finished", "interrupted", "desktop", "tutorial", "stream-safe", "quest-complete", "quest-failed", "quest-complete-inwin", "approval-always-inwin"].includes(scenario);
+  const linked = ["welcome", "welcome-noprojects", "welcome-empty", "welcome-working", "welcome-asking", "projects-empty", "projects-some", "update-available", "linked", "paused", "running", "approval", "finished", "interrupted", "desktop", "tutorial", "stream-safe", "quest-complete", "quest-failed", "quest-complete-inwin", "approval-always-inwin",
+    "no-key", "quest-auto", "request-waiting"].includes(scenario);
   const state = {
     build: scenario === "build-unavailable" ? { commit: null, dirty: null } : scenario === "build-dirty" ? { ...window.previewBuild, dirty: true } : window.previewBuild,
     work: { working: scenario === "running" || scenario === "build-running" ? 1 : 0,
-      approvals: scenario === "approval" || scenario === "build-approval" ? 2 : 0, confirmation: scenario === "build-handoff" },
-    version: updateAvailable ? "0.2.0 · synthetic preview" : "0.1.0 · synthetic preview", linked, providersChosen: scenario !== "setup",
+      approvals: scenario === "approval" || scenario === "build-approval" ? 2 : scenario === "request-waiting" ? 1 : 0, confirmation: scenario === "build-handoff" },
+    version: updateAvailable ? "0.2.0 · synthetic preview" : "0.1.0 · synthetic preview", linked,
     game: linked || doctorStrip || scenario === "searching" ? { exe: "Synthetic WoW", foreground: true, client: { width: 1280, height: 800, x: 0, y: 0 } } : null,
     install: scenario === "setup" ? null : { dir: "C:\\Games\\WoW", flavor: "_classic_beta_" }, installNotes: [],
     // doctor-strip: frames flow but no coloured strip is found (fps > 0, nothing decoded, no lock).
@@ -45,7 +46,16 @@
     update: updateAvailable ? { app: "0.2.0", addon: "0.3.0", mismatch: true } : { app: "0.2.0", addon: "0.2.0", mismatch: false },
     ...(doctorStrip ? { doctor: { step: "strip", level: "warn", text: "Familiar sees the game but no coloured strip in its top-left corner. In game: is Familiar ticked in AddOns? Type /fam strip — it should say TOPLEFT. If something covers that corner, /fam strip tr." } }
       : linked ? { doctor: { step: "ok", level: "ok", text: "Game link working." } } : {}),
-    ui: { fontScale: 1, sound: false, soundVolume: 70, raidWarnings: false, quiet: scenario === "quiet", trayNotices: true }, chat: { agent: "claude", model: "haiku", effort: "medium" },
+    // The two safety switches are off by default. no-key: no Approve key and click approval off (requests can only be
+    // approved in the control panel); request-waiting: the same, with a request waiting. Every other scenario has F9.
+    ui: { fontScale: 1, sound: false, soundVolume: 70, raidWarnings: false, quiet: scenario === "quiet", trayNotices: true, privateMode: streamSafe, streamSafe, privacy: streamSafe ? "blur" : "off",
+      defaultMode: "ask", approveKey: scenario === "no-key" || scenario === "request-waiting" ? "" : "F9", approveByClick: false, inheritAgentConfig: false },
+    // Requests waiting (status.requests, the hub's PendingRequest).
+    requests: scenario === "request-waiting" ? [{ thread: "preview", questTitle: "Quest log", project: "Preview project", agent: "Claude", agentId: "claude", requestId: "preview",
+      title: "Edit the synthetic quest log", detail: "+ Clearer spacing for the preview", cut: false, canAlways: true, at: Date.now() - 30000 }] : [],
+    chat: { agent: "claude", model: "haiku", effort: "medium" },
+    // The quest open in the game (main: { id, title, mode } | null); quest-auto: one open in Auto. Its mode is set only by "questMode".
+    quest: scenario === "quest-auto" ? { id: "preview-auto", title: "Tidy the raid macros", mode: "auto" } : linked ? { id: "preview", title: "Quest log", mode: "ask" } : null,
     providers: [
       { id: "claude", label: "Claude", glyph: "✦", installed: true, signedIn: scenario !== "setup", enabled: true, detail: scenario === "setup" ? "Not signed in" : "Sign-in found", canLogin: true },
       { id: "codex", label: "Codex", glyph: "◇", installed: true, signedIn: true, enabled: true, detail: "Sign-in found", canLogin: true },
@@ -66,7 +76,7 @@
   const always = scenario === "approval-always" || scenario === "approval-always-inwin";
   const shortApproval = scenario === "approval" || always || scenario === "approval-refused";
   if (approval) entries.push({ id: "p1", kind: "approval", title: "Edit the synthetic quest log", text: "+ Clearer spacing for the preview", approval: "pending", requestId: "preview", canAlways: always,
-    refused: scenario === "approval-refused" ? "That click wasn't confirmed as yours. Click Approve again." : undefined });
+    refused: scenario === "approval-refused" ? "Not confirmed as yours. With this request on screen, press your Approve key, or click Approve again." : undefined });
   if (scenario === "interrupted") entries.push({ id: "t1", kind: "tool", name: "+ 2 steps", text: "Read, Bash (1 outcome unknown)", status: "unknown" }, { id: "n1", kind: "notice", text: "Interrupted: Familiar was closed or restarted during this turn. Send a message to continue.", level: "error" });
   const model = {
     seq: 1, target: { text: "Claude · Quest log · Preview project" },
@@ -77,7 +87,7 @@
       { kind: "thread", key: "preview", text: "Quest log", agent: "claude", status: approval ? "approval" : scenario === "running" ? "running" : "idle", selected: true },
     ] },
     detail: { kind: "thread", id: "preview", external: scenario === "desktop", source: scenario === "desktop" ? "from desktop app · recent" : undefined, title: "Quest log", agent: "claude", project: "Preview project", cwd: "C:\\preview", status: approval ? "approval" : scenario === "running" ? "running" : "idle", mode: "Ask first", todos: [], entries },
-    status: { text: "Linked · Claude ready · Codex ready", level: "ok" }, keys: { approve: approval, stop: scenario === "running" || approval, mode: "Ask first" }, tracker: [], toasts: [], native: false, fontScale: 1, raidWarnings: false,
+    status: { text: "Linked · Claude ready · Codex ready", level: "ok" }, keys: { approve: approval, stop: scenario === "running" || approval }, tracker: [], toasts: [], fontScale: 1, raidWarnings: false,
     providers: { claude: { label: "Claude", glyph: "✦" }, codex: { label: "Codex", glyph: "◇" } },
   };
   if (scenario === "running") {
@@ -93,7 +103,7 @@
       ...model.list.rows];
     model.list.rows.find(r => r.key === "preview").selected = false;
     model.target = { text: "Familiar · A Familiar Face" };
-    model.keys = { approve: true, stop: false, mode: "Ask first" };
+    model.keys = { approve: true, stop: false };
     model.detail = { kind: "thread", id: "tutorial", external: false, title: "A Familiar Face", agent: "familiar", project: "Familiar", cwd: "", status: "approval", mode: "Ask first",
       todos: [{ text: "Speak to your familiar", status: "completed" }, { text: "Answer a practice request", status: "in_progress" }, { text: "Set out on a real quest", status: "pending" }],
       entries: [
@@ -109,7 +119,7 @@
     model.blur = true;
     model.list.rows = [{ kind: "zone", key: "p1", text: "Project 1", count: 1 }, { kind: "thread", key: "preview", text: "Quest #1", agent: "claude", status: "approval", selected: true }];
     model.target = { text: "Claude · Quest #1 · Project 1" };
-    model.keys = { approve: true, stop: true, mode: "Ask first" };
+    model.keys = { approve: true, stop: true };
     Object.assign(model.detail, { title: "Quest #1", project: "Project 1", cwd: "", status: "approval",
       todos: [{ text: "Read the raid notes", status: "completed" }, { text: "Draft the pull timer macro", status: "in_progress" }] });
     entries.push({ id: "tool-s", kind: "tool", name: "Read", text: "notes/raid-night.md", status: "ok" },
@@ -121,7 +131,7 @@
     // The hub's rewards line (hub/rewards.ts) rides on the done toast; a failure here has none.
     model.toasts = [scenario !== "quest-failed" ? { kind: "done", text: "Quest Complete · Quest log", sub: "3/3 objectives · 2 edits · $0.21", at: 1 } : { kind: "error", text: "Quest Failed · Quest log", at: 1 }];
   }
-  if (scenario === "approval-always-inwin") model.toasts = [{ kind: "approval", text: "Needs approval · Quest log", at: 1 }];
+  if (scenario === "approval-always-inwin") model.toasts = [{ kind: "approval", text: "Needs you · Quest log", at: 1 }];
   if (welcome) {
     const unready = scenario === "welcome-unready";
     state.chat = { agent: unready ? "claude" : "codex", model: unready ? "haiku" : "m2", effort: "medium" };
@@ -143,7 +153,6 @@
         approval: scenario === "welcome-asking" ? 1 : 0 },
       zones: scenario === "welcome-noprojects" ? 0 : 2 };
     model.target = { text: "Nothing selected · pick a quest, or start one above." };
-    model.keys.mode = undefined;
     model.list.rows = [{ kind: "zone", key: "chats", text: "Chats" },
       { kind: "hint", key: "chat-hint", text: "Ask anything: + Chat or /fam ask", act: { type: "newIn", key: "chats" } }];
     model.status = unready ? { text: "Searching for the Runestrip… · Claude off · Codex ✗ · Hermes ✓", level: "off" }
@@ -192,7 +201,7 @@
   const quietDetails = {};
   if (scenario === "quiet") {
     model.quiet = true;
-    model.attention = [["r1", "Quest log spacing", "Reply waiting", "A spacing suggestion is ready for you."], ["r2", "Returning to work", "Reply waiting", "The saved session is available to continue."], ["p", "Review a file edit", "Needs approval", "Edit a synthetic fixture file"], ["expired", "An earlier request", "Request expired", "This synthetic request has expired; it cannot be approved."]].map(([id, title, label, excerpt]) => {
+    model.attention = [["r1", "Quest log spacing", "Reply ready", "A spacing suggestion is ready for you."], ["r2", "Returning to work", "Reply ready", "The saved session is available to continue."], ["p", "Review a file edit", "Needs you", "Edit a synthetic fixture file"], ["expired", "An earlier request", "Request expired", "This synthetic request has expired; it cannot be approved."]].map(([id, title, label, excerpt]) => {
       const entry = id === "p" || id === "expired" ? { id: `a:${id}`, kind: "approval", title: excerpt, text: "Synthetic preview only", approval: id === "p" ? "pending" : "expired", requestId: id, canAlways: false } : { id: `reply:${id}`, kind: "assistant", text: excerpt };
       quietDetails[id] = { ...model.detail, id, title, entries: [entry], status: id === "p" ? "approval" : "idle" };
       return { thread: id, entry: entry.id, revision: `fixture:${entry.id}`, title, project: "Preview project", cwd: "C:\\preview", agent: "claude", mode: "Ask first", label, excerpt, pending: id === "p", at: 1 };
@@ -205,9 +214,10 @@
   }
   // waiting: the quest is idle and a reply waits for you (the Glass paints "?" on the minimap button, fixtureLayout.mini).
   if (scenario === "waiting") model.attention = [{ thread: "preview", entry: "a1", revision: "fixture:a1", title: "Quest log", project: "Preview project", cwd: "C:\\preview", agent: "claude",
-    mode: "Ask first", label: "Reply waiting", excerpt: "I checked the spacing and the message target.", pending: false, at: 1 }];
+    mode: "Ask first", label: "Reply ready", excerpt: "I checked the spacing and the message target.", pending: false, at: 1 }];
   window.familiar = {
-    on: (channel, cb) => { (handlers[channel] ||= []).push(cb); }, send: () => {}, action: a => {
+    // The Glass reports where it painted its granting buttons (preload-overlay.ts painted); nothing checks it here.
+    on: (channel, cb) => { (handlers[channel] ||= []).push(cb); }, painted: () => {}, action: a => {
       calls.push(a);
       if (welcome && a.type === "newIn" && a.key === "chats" && model.detail.kind === "welcome") {
         const chat = model.detail.chat;
@@ -251,7 +261,6 @@
         return;
       }
       if (scenario !== "quiet") { window.preview.emit("model", model); return; }
-      if (a.type === "quiet") model.quiet = state.ui.quiet = a.on;
       if (a.type === "caughtUp") model.attention = model.attention.filter(item => item.thread !== a.thread || item.entry !== a.entry || item.revision !== a.revision || item.pending);
       if (a.type === "select" && quietDetails[a.id]) {
         model.detail = quietDetails[a.id];
@@ -266,8 +275,25 @@
       if (scenario === "action-error" && cmd === "openConfig") return "Synthetic file-open failure";
       if (cmd === "openConfig" || cmd === "openLogs") return "";
       if (cmd === "pause") { state.overlay.paused = !!args; return state.overlay.paused; }
-      if (cmd === "providersChosen") state.providersChosen = true;
-      if (cmd === "uiSettings") Object.assign(state.ui, args);
+      if (cmd === "uiSettings") {
+        // Mirrors main: privacy is one level over the two saved flags; a key Familiar can't check is cleared.
+        const { privacy, ...rest } = args ?? {};
+        Object.assign(state.ui, rest);
+        if (["off", "names", "blur"].includes(privacy)) { state.ui.privateMode = privacy !== "off"; state.ui.streamSafe = privacy === "blur"; }
+        state.ui.privacy = state.ui.streamSafe ? "blur" : state.ui.privateMode ? "names" : "off";
+        if (typeof rest.approveKey === "string") state.ui.approveKey = rest.approveKey.trim().toUpperCase();
+        return { ...state.ui };
+      }
+      // The open quest's mode, as main's "questMode": { ok, why? }; no quest open, nothing to change.
+      if (cmd === "questMode") {
+        if (!state.quest) return { ok: false, why: "Open a quest in the game first." };
+        if (args?.thread !== state.quest.id) return { ok: false, why: "Another quest is open in the game now. Check the quest named here, then choose again." };
+        if (!["ask", "plan", "edits", "auto"].includes(args?.mode)) return { ok: false, why: "Unknown mode." };
+        state.quest.mode = args.mode;
+        window.preview.emit("status", state);
+        return { ok: true };
+      }
+      if (cmd === "decide") return { ok: true }; // the panel's own decision, as main answers it; tests replace invoke to record it
       // Round 4 commands, in memory only. Nothing here opens a dialog, a file, a browser or the network.
       if (cmd === "checkUpdate") return updateAvailable
         ? { current: "0.2.0", latest: "0.3.0", url: "https://github.com/Zeezy3z/familiar/releases/tag/v0.3.0", prerelease: false, newer: true }
@@ -290,17 +316,6 @@
         return { ok: true };
       }
       if (cmd === "providerEnable") state.providers.find(p => p.id === args.id).enabled = args.on;
-      // Preview infrastructure only: mirror main.ts's chatSettings contract in memory.
-      if (cmd === "chatSettings") {
-        const { agent, model, effort } = args;
-        if (agent && agent !== state.chat.agent) {
-          state.chat.agent = agent;
-          state.chat.model = model ?? state.backends[agent]?.models?.find(m => m.id !== "default")?.id ?? "";
-        } else if (model) state.chat.model = model;
-        if (effort) state.chat.effort = effort;
-        window.preview.emit("status", state);
-        return { ...state.chat };
-      }
       return state.ui;
     },
   };
@@ -308,7 +323,7 @@
   // Synthetic status ticks exercise keyboard focus during asynchronous updates.
   if (!glass) setInterval(() => { window.preview.emit("status", state); }, 1000);
   if (glass) window.addEventListener("DOMContentLoaded", () => {
-    const fixtureLayout = { scr: [1280, 800], px: 1.25, panel: true, native: false, drag: false, combat: false, ui: true, rowH: 24, list: [30, 100, 280, 500], detail: [320, 100, 650, 500], status: [30, 610, 940, 28],
+    const fixtureLayout = { scr: [1280, 800], px: 1.25, panel: true, drag: false, combat: false, ui: true, rowH: 24, list: [30, 100, 280, 500], detail: [320, 100, 650, 500], status: [30, 610, 940, 28],
       keys: { mode: [828, 74, 64, 22] }, tracker: [990, 100, 270, 140],
       mini: [1180, 40, 31, 31] }; // the familiar's minimap button (round 6): the Glass paints its "!" / "?" mark from this rect
     window.preview.layout = fixtureLayout;
@@ -376,6 +391,9 @@
       window.preview.emit("input", { t: "click", r: "detail", x: (l.left + l.width / 2 - r.left) / r.width, y: (l.top + l.height / 2 - r.top) / r.height, b: "L" });
     });
     window.preview.emit("layout", fixtureLayout);
+    // How a request is approved in game (main's "approve" message). The journeys exercise the opt-in click path
+    // (approveByClick on, Approve buttons on the cards); ?click=0 shows the default: the key alone ("Press F9 to approve").
+    window.preview.emit("approve", { byClick: new URLSearchParams(location.search).get("click") !== "0", key: "F9" });
     window.preview.emit("model", model);
     window.preview.emit("vis", { visible: true, devInput: true });
   });

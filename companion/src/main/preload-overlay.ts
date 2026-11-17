@@ -3,7 +3,11 @@
 import { contextBridge, ipcRenderer } from "electron";
 import type { OverlayBridge } from "../shared/bridge";
 
-const IN = new Set(["layout", "model", "input", "vis", "sound", "speak"]);
+const IN = new Set(["layout", "model", "input", "vis", "sound", "approve"]);
+
+/** What the Glass may send: its clicks, its log lines, and where it painted the buttons that grant
+ * something (physical.ts `Painted`), which is what approvals are checked against. */
+export type GlassBridge = OverlayBridge & { painted(list: unknown): void };
 
 contextBridge.exposeInMainWorld("familiar", {
   on(channel: string, cb: (data: any) => void) {
@@ -13,7 +17,10 @@ contextBridge.exposeInMainWorld("familiar", {
   action(a: unknown) {
     ipcRenderer.send("action", a);
   },
+  painted(list: unknown) {
+    ipcRenderer.send("painted", list);
+  },
   log(s: string) {
     ipcRenderer.send("log", s);
   },
-} satisfies OverlayBridge);
+} satisfies GlassBridge);

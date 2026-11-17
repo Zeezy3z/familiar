@@ -1,6 +1,8 @@
 # deps / build
 node_modules/
 companion/dist/
+companion/dist.next/
+companion/dist.old/
 companion/out/
 companion/release/
 *.log

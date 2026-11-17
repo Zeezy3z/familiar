@@ -2,6 +2,8 @@
 // thread; approvals arrive through canUseTool and wait for an in-game decision. Uses
 // ANTHROPIC_API_KEY or the user's existing Claude Code sign-in; Familiar never sees credentials.
 import { randomUUID } from "node:crypto";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { StderrFilter } from "./acp";
 import { claudeExecutable, claudeNotDownloaded, claudeSdkSpecifier } from "./claude-download";
 import { readDesktopSessions, readLiveSessions } from "./claude-desktop";
@@ -45,6 +47,73 @@ const PERMISSION_MODE: Record<Mode, "default" | "acceptEdits" | "plan" | "auto">
   plan: "plan",
   auto: "auto",
 };
+
+/** What a quest loads from the player's own Claude Code configuration. Inheriting: the user,
+ * project and local settings (allow rules, hooks, MCP servers, CLAUDE.md), as the CLI would. Not
+ * inheriting (the default): no settings files and no MCP servers but the ones Familiar passes. The
+ * SDK loads CLAUDE.md only together with the project's settings file, so startQuery passes the
+ * project's instructions itself (projectInstructions). */
+export function configOptions(inherit: boolean): { settingSources: ("user" | "project" | "local")[]; strictMcpConfig?: boolean } {
+  return inherit ? { settingSources: ["user", "project", "local"] } : { settingSources: [], strictMcpConfig: true };
+}
+
+/** Without the player's configuration, a quest still follows its project's own instructions:
+ * CLAUDE.md and .claude/CLAUDE.md in the quest's folder, read here as plain text (never a settings
+ * file, hook or MCP configuration), at most INSTRUCTIONS_MAX characters in all. Imports (@file)
+ * are not followed, and neither are links: a file or .claude folder that is a symbolic link or
+ * junction is skipped, and the file read must really be inside the quest's folder. Undefined when
+ * there are none. */
+export const INSTRUCTIONS_FILES = ["CLAUDE.md", path.join(".claude", "CLAUDE.md")];
+export const INSTRUCTIONS_MAX = 40_000;
+/** Is `p` the folder `root` or inside it (both real paths)? */
+export function insideFolder(root: string, p: string): boolean {
+  const rel = path.relative(root, p);
+  return rel !== ".." && !rel.startsWith(".." + path.sep) && !path.isAbsolute(rel);
+}
+export function projectInstructions(cwd: string): { text: string; files: string[]; chars: number; cut: boolean } | undefined {
+  const parts: string[] = [];
+  const files: string[] = [];
+  let room = INSTRUCTIONS_MAX;
+  let cut = false;
+  for (const name of INSTRUCTIONS_FILES) {
+    let body: string;
+    try {
+      const file = path.join(cwd, name);
+      // Every step below the quest's folder must be a real folder or file, not a link.
+      const steps = name.split(path.sep).map((_, i, all) => path.join(cwd, ...all.slice(0, i + 1)));
+      if (steps.some((p) => fs.lstatSync(p).isSymbolicLink()) || !fs.lstatSync(file).isFile()) continue;
+      if (!insideFolder(fs.realpathSync.native(cwd), fs.realpathSync.native(file))) continue;
+      const fd = fs.openSync(file, "r");
+      try {
+        // Bytes >= characters in UTF-8: room * 4 bytes always holds `room` characters.
+        const buf = Buffer.alloc(Math.min(fs.fstatSync(fd).size, room * 4 + 4));
+        body = buf.subarray(0, fs.readSync(fd, buf, 0, buf.length, 0)).toString("utf8").replace(/^﻿/, "");
+      } finally {
+        fs.closeSync(fd);
+      }
+    } catch {
+      continue; // missing or unreadable
+    }
+    if (!body.trim()) continue;
+    if (room <= 0) {
+      cut = true;
+      break;
+    }
+    if (body.length > room) {
+      body = body.slice(0, room);
+      cut = true;
+    }
+    room -= body.length;
+    files.push(name.replace(/\\/g, "/"));
+    parts.push(`Contents of ${name.replace(/\\/g, "/")} (project instructions):\n\n${body.trimEnd()}`);
+  }
+  if (!parts.length) return undefined;
+  const text =
+    "Instructions from this project's own files follow. Follow them as the project's conventions.\n\n" +
+    parts.join("\n\n") +
+    (cut ? `\n\n[Cut at ${INSTRUCTIONS_MAX} characters.]` : "");
+  return { text, files, chars: INSTRUCTIONS_MAX - room, cut };
+}
 
 const TODO_TOOLS = new Set(["TaskCreate", "TaskUpdate", "TodoWrite", "TaskList", "TaskGet"]);
 const IDLE_CLOSE_MS = 15 * 60_000;
@@ -90,6 +159,7 @@ interface Live {
   model?: string;
   persisted: boolean; // session exists on disk (resume instead of sessionId)
   fork: boolean;
+  inherit: boolean; // StartOptions.inheritConfig
   q?: any; // Query
   input?: AsyncQueue<any>;
   running: boolean;
@@ -228,6 +298,7 @@ export class ClaudeBackend implements AgentBackend {
       model: o.model,
       persisted: !!o.resumeNativeId,
       fork: !!o.fork,
+      inherit: !!o.inheritConfig && !o.chat,
       chat: o.chat,
       running: false,
       approvals: new Map(),
@@ -251,7 +322,7 @@ export class ClaudeBackend implements AgentBackend {
       cwd: l.cwd,
       permissionMode: PERMISSION_MODE[l.mode],
       includePartialMessages: true,
-      settingSources: ["user", "project", "local"],
+      ...configOptions(l.inherit),
       // Web search is on in every mode: it reads the web and returns results, nothing leaves but the
       // query. WebFetch (any URL, so it can carry data out) still follows the mode.
       allowedTools: ["WebSearch"],
@@ -272,12 +343,11 @@ export class ClaudeBackend implements AgentBackend {
       options.tools = ["WebSearch", "WebFetch"];
       options.mcpServers = { familiar: wowheadMcpServer(sdk) };
       options.allowedTools = ["WebSearch", "WebFetch", WOWHEAD_MAP_TOOL];
-      options.settingSources = [];
       options.systemPrompt = l.chat.instructions;
       options.permissionMode = "default";
       // Haiku 4.5 and older have no effort setting; Haiku 5.5 and the 5.x Sonnets/Opuses do.
       if (l.chat.effort && !/haiku-4|haiku-3|claude-3/i.test(model ?? "")) options.effort = l.chat.effort;
-    }
+    } else if (!l.inherit) this.addInstructions(l, options);
     if (!l.fork) {
       // The transcript on disk decides. The CLI refuses a session id that already exists, so one that
       // does is resumed, even when an earlier turn failed before init. Looked up without `dir`: the
@@ -303,6 +373,17 @@ export class ClaudeBackend implements AgentBackend {
     }
     l.q = sdk.query({ prompt: l.input, options });
     this.consume(l, l.q);
+  }
+
+  /** Without the player's configuration: the project's CLAUDE.md text as the system prompt. With
+   * no systemPrompt the SDK sends an empty custom prompt (sdk.mjs: undefined -> ""), so a custom
+   * prompt of this text keeps the same base and adds the instructions; the preset form
+   * ({ preset: "claude_code", append }) would also swap the base for Claude Code's full prompt. */
+  private addInstructions(l: Live, options: any) {
+    const ins = projectInstructions(l.cwd);
+    if (!ins) return;
+    options.systemPrompt = ins.text;
+    this.opts.log(`[claude] project instructions: ${ins.files.join(", ")} (${ins.chars} characters${ins.cut ? `, cut at ${INSTRUCTIONS_MAX}` : ""}); settings, hooks and MCP servers not loaded`);
   }
 
   private async consume(l: Live, q: any) {
@@ -556,10 +637,6 @@ export class ClaudeBackend implements AgentBackend {
     else if (d === "allowAlways") {
       const perms = (a.suggestions ?? []).map((s: any) => ({ ...s, destination: "session" }));
       a.resolve({ behavior: "allow", updatedInput: a.input, updatedPermissions: perms });
-      if (a.toolName === "ExitPlanMode") {
-        this.setMode(threadId, "edits");
-        this.ev.emit({ type: "mode", threadId, mode: "edits" });
-      }
     } else a.resolve({ behavior: "deny", message: "Denied by the user (from World of Warcraft).", interrupt: d === "denyAndStop" });
     this.ev.emit({ type: "approvalResolved", threadId, requestId });
   }

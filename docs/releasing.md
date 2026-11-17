@@ -1,14 +1,18 @@
 # Releasing
 
-A `v*` tag push runs [`release.yml`](../.github/workflows/release.yml), which packages the addon
-with the [BigWigs packager](https://github.com/BigWigsMods/packager) (pinned by commit) and
-publishes a GitHub release, then builds the prebuilt app zip on Windows and attaches it.
-Configuration: [`.pkgmeta`](../.pkgmeta).
+A `v*` tag push runs [`release.yml`](../.github/workflows/release.yml). It first runs the verify
+job ([`windows.yml`](../.github/workflows/windows.yml): typecheck, tests, build, the same job pull
+requests run); every publishing job needs it, so a tag that fails it publishes nothing. Then it
+packages the addon with the [BigWigs packager](https://github.com/BigWigsMods/packager) (pinned by
+commit) and publishes a GitHub release, builds the prebuilt app zip on Windows and attaches it, and
+calls [`installer.yml`](../.github/workflows/installer.yml) (below). Configuration:
+[`.pkgmeta`](../.pkgmeta).
 
 ## Cut a release
 
 1. Set the same version in `addon/Familiar/Familiar.toc` (`## Version: X.Y.Z`) and
    `companion/package.json` (`"version": "X.Y.Z"`). Plain numbers; no `beta` suffix.
+   `scripts/build.mjs` builds the package.json version into `main.js` (`__FAMILIAR_VERSION__`).
 2. Run the checks in [ci.md](ci.md), then commit and get it onto `main`. The pull request's
    Windows verify run uploads the app zip as an artifact (kept 3 days): try it on a PC without
    Node before tagging.
@@ -19,9 +23,9 @@ Configuration: [`.pkgmeta`](../.pkgmeta).
    git push origin vX.Y.Z
    ```
 
-The workflow fails before publishing anything if the tag, the TOC and `package.json` disagree.
-A tag push also runs the Windows verify workflow. A rerun of the same tag updates the existing
-release in place. Open the release afterwards and check that all four files are there.
+The workflow fails before publishing anything if the verify job fails or the tag, the TOC and
+`package.json` disagree. A rerun of the same tag updates the existing release in place. Open the
+release afterwards and check that all four files are there.
 
 ## What the release contains
 
@@ -33,7 +37,10 @@ release in place. Open the release afterwards and check that all four files are 
   npm (about 150 MB, 355 MB unpacked). Root folder `Familiar/` with the repository layout, as
   `git archive` exports the tag, plus `companion/dist/`, the production `companion/node_modules/`
   and the stock Electron binary in `companion/node_modules/electron/dist/`. Dev tooling, source
-  maps, type declarations, docs and Electron locales other than en-US are pruned. Anthropic's
+  maps (the bundles' `dist/*.map` too), type declarations, docs and Electron locales other than
+  en-US are pruned. Packages esbuild bundles into `dist/` (marked, DOMPurify, highlight.js, the ACP
+  SDK, the Marcellus font) are devDependencies, so the production `node_modules` holds only koffi,
+  zod and the Claude Agent SDK's other open-source dependencies. Anthropic's
   proprietary packages are left out: the Claude Agent SDK (`@anthropic-ai/claude-agent-sdk`) and
   its Claude Code binary (`@anthropic-ai/claude-agent-sdk-win32-x64`); the SDK's open-source
   dependencies stay. `Run Familiar.cmd` runs `companion/fetch-claude.cjs` with the bundled
@@ -68,7 +75,9 @@ release in place. Open the release afterwards and check that all four files are 
   since the previous tag. The workflow fills in the tag, version and repository and keeps the
   block between `<!-- release-body -->` markers, so a rerun replaces it. Edit the notes by hand
   afterwards as usual. While Familiar is in beta the workflow marks the release as a prerelease
-  titled `Familiar X.Y.Z beta`.
+  titled `Familiar X.Y.Z beta`. GitHub's `/releases/latest` (page and API) skips prereleases, so
+  the in-app "Check for updates" (`companion/src/main/update.ts`) reads the releases list and
+  takes the highest non-draft version.
 
 ## Addon managers
 
@@ -102,8 +111,8 @@ and has no published digest.
 
 ## Signed installer
 
-[`installer.yml`](../.github/workflows/installer.yml) runs on every `v*` tag and on manual dispatch.
-It always packages the companion (`companion/electron-builder.yml`), checks the result with
+[`installer.yml`](../.github/workflows/installer.yml) runs for every `v*` tag (called by
+`release.yml` once the verify job passed) and on manual dispatch. It always packages the companion (`companion/electron-builder.yml`), checks the result with
 [`companion/scripts/installer-check.mjs`](../companion/scripts/installer-check.mjs) and runs
 `Familiar.exe --self-test` on it, but publishes nothing unsigned. It builds, signs and uploads the
 per-user NSIS installer only when the repository variable `SIGNING_READY` is `true`. Signing uses
@@ -155,9 +164,9 @@ To turn it on:
    set `SIGNING_READY` to `true`. A manual run signs and verifies but uploads nothing; the next
    tag adds `Familiar-Setup-X.Y.Z.exe`, its `.blockmap`, `latest.yml` and a `SHA256SUMS.txt` line.
 
-The installer job waits for `release.yml` to create the release first. If you re-run
-`release.yml` for a tag, it rewrites `SHA256SUMS.txt` without the installer line, so re-run the
-installer job afterwards.
+The signed job waits for the app job to write `SHA256SUMS.txt`, then adds its line. If you re-run
+only the app job for a tag, it rewrites `SHA256SUMS.txt` without the installer line, so re-run the
+installer's signed job afterwards (re-running all jobs does both).
 
 Local unsigned build, for testing only (never publish its output): from `companion/`, run
 `npm run build`, then `npx electron-builder --win --dir`, then

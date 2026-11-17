@@ -13,6 +13,7 @@ local dirty, lastSent = false, 0
 local OCCLUDERS = {
   "GameTooltip", "ItemRefTooltip", "GameMenuFrame", "StaticPopup1", "StaticPopup2", "StaticPopup3",
   "WorldMapFrame", "SettingsPanel", "DropDownList1", "DropDownList2", "AddonList",
+  "FamiliarQuestMenu", -- our own "+ Quest" menu opens over the quest list
 }
 
 -- A frame we may touch: exists, isn't forbidden. Any failure (forbidden object, secret geometry)
@@ -47,6 +48,27 @@ local function overlaps(a, b)
   return a and b and a[1] < b[1] + b[3] and b[1] < a[1] + a[3] and a[2] < b[2] + b[4] and b[2] < a[2] + a[4]
 end
 
+-- The visible frames that cover any of `guards` (rects), and their signature.
+local function occluders(guards)
+  local occ, parts = {}, {}
+  if #guards == 0 then return occ, "" end
+  for _, name in ipairs(OCCLUDERS) do
+    local f = usable(name)
+    local ok, r = pcall(function() return f and f:IsVisible() and prect(f) or nil end)
+    if ok and r then
+      for _, g in ipairs(guards) do
+        if overlaps(r, g) then
+          occ[#occ + 1] = r
+          parts[#parts + 1] = table.concat(r, ",")
+          break
+        end
+      end
+    end
+  end
+  return occ, table.concat(parts, ";")
+end
+local lastOccSig, builtSig = "", "" -- occluders in the last layout sent / built
+
 function Layout.Build()
   local physW, physH = GetPhysicalScreenSize()
   local ui = ns.UI
@@ -57,8 +79,7 @@ function Layout.Build()
     px = floor(physScale(UIParent) * 1000 + 0.5) / 1000,
     fpx = ui.frame and floor(physScale(ui.frame) * 1000 + 0.5) / 1000 or nil,
     panel = shown,
-    native = ui.native and true or false,
-    focus = ui.focusMode and true or false,
+    focus = ui.focusMode and true or false, -- compact view
     combat = ns.inCombat and true or false,
     ui = UIParent:IsShown() and true or false,
     op = ns.db.opacity ~= 100 and ns.db.opacity or nil, -- window background opacity, percent
@@ -69,46 +90,53 @@ function Layout.Build()
     msg.rowH = floor(ui.ROW_H * physScale(ui.listPane.content) * 100 + 0.5) / 100
     msg.detail = prect(ui.detailPane.content)
     msg.status = prect(ui.status)
-    local keys = {}
-    -- The buttons the overlay glows (approve, stop) and the ones whose clicks the companion matches
-    -- to the real mouse before acting (approve, always, mode); kept short to cross the strip fast.
-    for _, k in ipairs({ "approve", "stop", "always", "mode" }) do keys[k] = ui.keys[k] and prect(ui.keys[k]) end
-    msg.keys = keys
+    -- The button the Glass glows while a turn runs (Stop); kept short to cross the strip fast.
+    msg.keys = { stop = ui.keys.stop and prect(ui.keys.stop) }
   end
   msg.tracker = ns.Tracker.IsShown() and prect(ns.Tracker.content) or nil
-  -- The minimap button's rect, window open or not; absent when the button was never created
-  -- (db.minimap.hide) or is not visible. The overlay paints a mark on it only when it has a rect.
+  -- The minimap button's rect, window open or not; absent while the button is not visible. The
+  -- Glass paints a mark on it only when it has a rect.
   msg.mini = prect(ns.Minimap.button)
-  local occ = {}
-  local guard = msg.win or msg.tracker or msg.mini
-  for _, name in ipairs(OCCLUDERS) do
-    local f = usable(name)
-    local ok, r = pcall(function() return f and f:IsVisible() and prect(f) or nil end)
-    if ok and r and (overlaps(r, msg.win) or overlaps(r, msg.tracker) or overlaps(r, msg.mini)) then occ[#occ + 1] = r end
+  local guards = {}
+  for _, r in ipairs({ msg.win or false, msg.tracker or false, msg.mini or false }) do
+    if r then guards[#guards + 1] = r end
   end
-  if guard and #occ > 0 then msg.occ = occ end
+  local occ
+  occ, builtSig = occluders(guards)
+  if #occ > 0 then msg.occ = occ end
   return msg
 end
 
--- Tooltips show and hide constantly while you mouse over the world; only resend the layout when
--- the set of frames actually covering our window/tracker/minimap button changes.
-local lastOccSig = ""
+-- Tooltips show and hide constantly while you mouse over the world (in combat too). Each show or
+-- hide only schedules one check a moment later; the check looks at the occluders alone (not the
+-- whole layout), does nothing while none of our frames is visible, and sends the layout only when
+-- the set of frames covering our window / tracker / minimap button actually changed.
+local checkPending = false
 function Layout.CheckOccluders()
-  if not (ns.UI.IsShown() or ns.Tracker.IsShown() or ns.Minimap.button) then return end
-  local m = Layout.Build()
-  local parts = {}
-  for i, r in ipairs(m.occ or {}) do parts[i] = table.concat(r, ",") end
-  local sig = table.concat(parts, ";")
+  checkPending = false
+  local guards = {}
+  if ns.UI.IsShown() then guards[#guards + 1] = prect(ns.UI.frame) end
+  if ns.Tracker.IsShown() then guards[#guards + 1] = prect(ns.Tracker.content) end
+  guards[#guards + 1] = prect(ns.Minimap.button)
+  local _, sig = occluders(guards)
   if sig ~= lastOccSig then
     lastOccSig = sig
-    Layout.Dirty()
+    Layout.Send()
   end
+end
+local check = ns.Guard("occluders", Layout.CheckOccluders, true)
+local function scheduleCheck()
+  if checkPending then return end
+  checkPending = true
+  C_Timer.After(0.05, check)
 end
 
 local function send()
   dirty = false
   lastSent = GetTime()
-  ns.Send(Layout.Build(), false, "layout")
+  local m = Layout.Build()
+  lastOccSig = builtSig
+  ns.Send(m, false, "layout")
 end
 Layout.Send = ns.Guard("layout", send, true)
 
@@ -158,19 +186,19 @@ function Layout.Init()
   f:SetScript("OnEvent", function()
     C_Timer.After(0.2, Layout.Dirty)
   end)
-  local check = ns.Guard("occluders", Layout.CheckOccluders)
   for _, name in ipairs(OCCLUDERS) do
     local occ = usable(name)
     if occ then
-      pcall(occ.HookScript, occ, "OnShow", check)
-      pcall(occ.HookScript, occ, "OnHide", check)
+      pcall(occ.HookScript, occ, "OnShow", scheduleCheck)
+      pcall(occ.HookScript, occ, "OnHide", scheduleCheck)
     end
   end
   UIParent:HookScript("OnShow", function() Layout.Send() end)
   UIParent:HookScript("OnHide", function() Layout.Send() end)
-  -- Periodic refresh so a companion started after login still learns the layout.
+  -- Periodic refresh so Familiar started after login still learns the layout: every few seconds
+  -- while the window is open, less often while it is closed (only the tracker and minimap mark).
   C_Timer.NewTicker(4, function()
-    if GetTime() - lastSent > 3.5 then Layout.Send() end
+    if GetTime() - lastSent > (ns.UI.IsShown() and 3.5 or 15) then Layout.Send() end
   end)
   Layout.Send()
 end

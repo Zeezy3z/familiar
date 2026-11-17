@@ -1,11 +1,10 @@
 // WoW install discovery, addon installation (junction to this repo, or a marked copy from the
-// installed app) and the native snapshot (FamiliarSync) the addon loads at login / reload.
+// installed app) and the saved status (FamiliarSync) the addon loads at login / reload.
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { Config, writeFileAtomic } from "../hub/config";
 import { FONT_MAX, FONT_MIN, Hub } from "../hub/hub";
-import { buildModel } from "../hub/viewmodel";
 
 export const DEFAULT_WOW_ROOT = "C:\\Program Files (x86)\\World of Warcraft";
 const CONFIG_HINT = "Set wowRoot/wowFlavor in %APPDATA%\\Familiar\\config.json";
@@ -388,54 +387,27 @@ export function luaString(s: string): string {
   return out + '"';
 }
 
+/**
+ * The saved in-game copy: a timestamp and status only. No transcript and no quest titles: the file
+ * sits in the WoW folder, outside Familiar's control, and the conversation lives on the Glass.
+ * Every write replaces the whole file, so a copy written by an older version is gone after the first.
+ */
 export function buildSnapshot(hub: Hub, opts: { stopping?: boolean } = {}): string {
-  const m = buildModel(hub, { linked: true, fps: 0 });
-  const list = m.list.rows.slice(0, 80).map((r) => {
-    const prefix = (r.kind === "thread" || r.kind === "ext") && r.agent ? `[${m.providers[r.agent]?.label ?? r.agent}] ` : "";
-    return `{ kind = ${luaString(r.kind === "ext" ? "thread" : r.kind)}, text = ${luaString(prefix + r.text)} }`;
-  });
-  let selected = "nil";
-  const d = m.detail;
-  if (d.kind === "thread" && m.private) {
-    // Private mode: generic header only and no transcript, so the native layer and screenshots don't leak.
-    const text = `${d.project} - ${m.providers[d.agent]?.label ?? d.agent} - ${d.mode}\n\nHide names is on: the conversation shows on the Glass only.`;
-    selected = `{ title = ${luaString(d.title)}, text = ${luaString(m.storage ? m.storage.text + "\n\n" + text : text)} }`;
-  } else if (d.kind === "thread") {
-    const lines: string[] = [];
-    lines.push(`${d.project} - ${m.providers[d.agent]?.label ?? d.agent} - ${d.mode}`);
-    if (d.todos.length) {
-      lines.push("", "|cffffd100Objectives|r");
-      for (const t of d.todos) lines.push(`  ${t.status === "completed" ? "[x]" : t.status === "in_progress" ? "[>]" : "[ ]"} ${t.text}`);
-    }
-    for (const e of d.entries) {
-      if (e.kind === "user") lines.push("", `|cffb9a3ffYou:|r ${e.text}`);
-      else if (e.kind === "assistant") lines.push("", e.text);
-      else if (e.kind === "tool") lines.push(`  |cff9d9384> ${e.name}: ${e.text} [${e.status}]|r`);
-      else if (e.kind === "approval") lines.push(`  |cffff9d2e! ${e.title} (${e.approval})|r`);
-      else if (e.kind === "notice") lines.push(`  |cff9d9384${e.text}|r`);
-    }
-    let text = lines.join("\n");
-    if (text.length > 16000) text = "…" + text.slice(-16000);
-    // Keep exceptional storage guidance visible even when the native transcript is tail-capped.
-    if (m.storage) text = m.storage.text + "\n\n" + text.slice(-Math.max(0, 16000 - m.storage.text.length - 2));
-    // Colour codes above are intentional; escape only pipes that came from agent text.
-    selected = `{ title = ${luaString(d.title)}, text = ${luaStringKeepColors(text)} }`;
-  } else if (m.storage) {
-    selected = `{ title = "Saved quests need attention", text = ${luaString(m.storage.text)} }`;
-  }
+  const now = Math.floor(Date.now() / 1000);
   return [
     "-- Written by the Familiar companion. Do not edit; it is replaced continuously.",
     "FamiliarSyncData = {",
-    `  generatedAt = ${Math.floor(Date.now() / 1000)},`,
+    `  generatedAt = ${now},`,
     // Companion clock (epoch seconds). The addon compares it with its own outbox timestamps.
-    ...(opts.stopping ? [`  stoppedAt = ${Math.floor(Date.now() / 1000)},`] : []),
+    ...(opts.stopping ? [`  stoppedAt = ${now},`] : []),
+    // Prompt ids the companion handled: the addon drops them from its outbox at login / reload.
     `  acked = { ${hub.acked.slice(-60).map(luaString).join(", ")} },`,
     // The control panel's Text size: the addon sizes its quest-list rows by it at login / reload.
     `  fontScale = ${luaScale(hub.cfg().fontScale)},`,
     // Provider ids the addon accepts in /fam <provider> <text> and /fam show <provider>.
     `  providers = { ${Object.keys(hub.backends).filter((id) => hub.enabled(id)).map(luaString).join(", ")} },`,
-    `  list = {\n    ${list.join(",\n    ")}\n  },`,
-    `  selected = ${selected},`,
+    // Saved-quests storage guidance (already free of names and message text), shown in the window.
+    ...(hub.storage ? [`  notice = ${luaString(hub.storage.text)},`] : []),
     "}",
     "",
   ].join("\n");
@@ -444,15 +416,6 @@ export function buildSnapshot(hub: Hub, opts: { stopping?: boolean } = {}): stri
 /** A Lua number literal for the font scale, within the range the hub allows. */
 function luaScale(s: number): string {
   return String(Number.isFinite(s) ? Math.round(Math.min(FONT_MAX, Math.max(FONT_MIN, s)) * 100) / 100 : 1);
-}
-
-/** Like luaString, but keeps |cff......| / |r colour codes we inserted. */
-function luaStringKeepColors(s: string): string {
-  const parts = s.split(/(\|cff[0-9a-f]{6}|\|r)/i);
-  return parts
-    .map((p, i) => (i % 2 === 1 ? luaString(p).slice(1, -1).replace(/\|\|/g, "|") : luaString(p).slice(1, -1)))
-    .reduce((acc, p) => acc + p, '"')
-    .concat('"');
 }
 
 export class SnapshotWriter {

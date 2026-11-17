@@ -1,5 +1,5 @@
 // Glass: the transparent, click-through overlay that paints live content inside the addon's
-// touch surfaces. Input arrives from the addon as region-relative clicks/wheel/hover, and is
+// touch surfaces. Input arrives from the addon as region-relative clicks and wheel ticks, and is
 // hit-tested here against what we drew.
 import DOMPurify from "dompurify";
 import hljs from "highlight.js/lib/common";
@@ -7,16 +7,16 @@ import { Marked } from "marked";
 import type { DetailModel, EntryView, RenderModel, Row, TrackerLine } from "../hub/viewmodel";
 import { threadState } from "./thread-state";
 import { approvalPreview } from "./approval-preview";
-import type { OverlayBridge } from "../shared/bridge";
+import type { GlassBridge } from "../main/preload-overlay";
 import { CUES, type Cue, DEFAULT_CUE_VOLUME, playCue } from "../shared/cues";
-const bridge = window.familiar as OverlayBridge;
+import { REPLY_READY, needYou, repliesReady } from "../shared/words";
+import { alwaysLabel } from "../control/journey"; // one "Always" wording, the control panel's
+const bridge = window.familiar as GlassBridge;
 
 // Round-3 model fields (docs: UX round 3 §9). Read as optional so the Glass renders models from
 // before and after the hub adds them; every one is absent-safe.
 type EntryR3 = EntryView & { cut?: boolean; refused?: string };
-type KeysR3 = RenderModel["keys"] & { mode?: string; modeHot?: boolean };
 type TrackerR3 = TrackerLine & { cost?: string };
-const keysOf = (m: RenderModel | null) => m?.keys as KeysR3 | undefined;
 
 type Rect = [number, number, number, number];
 interface Layout {
@@ -24,7 +24,6 @@ interface Layout {
   px: number;
   fpx?: number;
   panel: boolean;
-  native: boolean;
   focus?: boolean;
   drag: boolean;
   combat: boolean;
@@ -42,18 +41,28 @@ interface Layout {
 }
 
 const marked = new Marked({ gfm: true, breaks: true });
-// Agent output may contain raw HTML: keep only the highlighter's own classes so it can't borrow
+let guessLanguage = true; // md() turns it off for a streaming entry
+// Agent output may contain raw HTML: a class survives only where the renderer itself puts one (the
+// code renderer below: "code" on <pre>, then highlight.js's "hljs…" spans), so a reply can't borrow
 // Glass classes (positioned panes, glows, buttons) to spoof UI.
-DOMPurify.addHook("uponSanitizeAttribute", (_node, data) => {
-  if (data.attrName === "class" && !/^(?:(?:hljs[\w-]*|code|language-[\w-]+)\s*)+$/.test(data.attrValue)) data.keepAttr = false;
+DOMPurify.addHook("uponSanitizeAttribute", (node, data) => {
+  if (data.attrName !== "class") return;
+  const ok = /^(?:hljs[\w-]*\s*)+$/.test(data.attrValue) || (node.nodeName === "PRE" && data.attrValue === "code");
+  if (!ok) data.keepAttr = false;
 });
 marked.use({
   renderer: {
+    // A task list item's mark as text: the sanitiser allows no <input> (md()).
+    checkbox({ checked }) {
+      return checked ? "☑ " : "☐ ";
+    },
     code({ text, lang }) {
       const l = (lang ?? "").split(/\s/)[0];
       let html: string;
       try {
-        html = l && hljs.getLanguage(l) ? hljs.highlight(text, { language: l }).value : hljs.highlightAuto(text).value;
+        // Guessing an unlabelled fence's language is the slow part (71 ms per push on a 12k reply):
+        // while the reply streams it stays plain, and is highlighted once when it completes.
+        html = l && hljs.getLanguage(l) ? hljs.highlight(text, { language: l }).value : guessLanguage ? hljs.highlightAuto(text).value : escapeHtml(text);
       } catch {
         html = escapeHtml(text);
       }
@@ -77,21 +86,24 @@ const els = {
   tracker: $("tracker"),
   lines: $("lines"),
   toasts: $("toasts"),
-  glowApprove: $("glow-approve"),
   glowStop: $("glow-stop"),
-  modeLabel: $("mode-label"),
   miniBadge: $("mini-badge"),
   target: $("target"),
   latest: $("latest"),
+  foot: $("foot"),
+  pinned: $("pinned"),
 };
 
 let layout: Layout | null = null;
 let model: RenderModel | null = null;
 let visible = false;
 let devInput = false; // dev/test harness only: hit-test even while the Glass is hidden
+// How a request is approved in game (main's "approve" message): the Approve key, and the card's
+// Approve button only when click approval is switched on in the control panel.
+let approve = { byClick: false, key: "" };
 let k = 1; // CSS px per physical px
 let follow = true;
-let notesOpen = true;
+let notesOpen = false; // the waiting banner is one line until the player opens it
 let notesPage = 0;
 let detailsOpen = false;
 let focusReviewOpen = false;
@@ -107,6 +119,7 @@ function currentReadingPlace(): ReadingPlace {
   let anchor: string | undefined;
   let anchorTop = Infinity;
   if (!follow) for (const [id, { el }] of entryCache) {
+    if (el.parentElement !== els.content) continue; // the pinned request is not part of the scroll
     if (el.offsetTop + el.offsetHeight > viewTop && el.offsetTop < anchorTop) {
       anchor = id;
       anchorTop = el.offsetTop;
@@ -124,11 +137,20 @@ function rememberReadingPlace() {
   if (readingPlaces.size > 100) readingPlaces.delete(readingPlaces.keys().next().value!);
 }
 
+// The footer row under the transcript: "Messages go to" (only when it says something the quest header
+// does not) and the docked Latest chip. The row is there only while one of them is.
+function showFoot(target: boolean | undefined, latest: boolean | undefined) {
+  if (target !== undefined) els.target.style.display = target ? "" : "none";
+  if (latest !== undefined) els.latest.style.display = latest ? "" : "none";
+  els.foot.style.display = els.target.style.display === "none" && els.latest.style.display === "none" ? "none" : "";
+}
+const atBottom = (s: HTMLElement) => s.scrollTop + s.clientHeight >= s.scrollHeight - 8;
+
 function syncDetailScroll() {
   const scroll = els.detailScroll;
   if (!scroll.clientHeight) return; // Restore after the pane is laid out or shown again.
   if (model?.detail.kind === "thread" && model.detail.loading && !model.detail.entries.length) {
-    els.latest.style.display = "none";
+    showFoot(undefined, false);
     return; // Keep a restored place pending until the history actually arrives.
   }
   if (follow) scroll.scrollTop = scroll.scrollHeight;
@@ -137,14 +159,16 @@ function syncDetailScroll() {
     if (lastDetailKey.startsWith("thread:ext:") && restorePlace.identity) {
       // Desktop history IDs describe slice positions, so prepending can reuse them for a
       // different message. Match unique content instead; ambiguous repeats use pixel fallback.
-      const matches = [...entryCache.values()].filter(e => e.identity === restorePlace!.identity);
+      const matches = [...entryCache.values()].filter(e => e.identity === restorePlace!.identity && e.el.parentElement === els.content);
       anchor = matches.length === 1 ? matches[0].el : undefined;
     }
     const headerHeight = els.content.querySelector<HTMLElement>(".qhead")?.offsetHeight ?? 0;
     scroll.scrollTop = anchor ? anchor.offsetTop - headerHeight - (restorePlace.offset ?? 0) : restorePlace.top;
   }
   restorePlace = undefined;
-  els.latest.style.display = model?.detail.kind !== "thread" || scroll.scrollTop + scroll.clientHeight >= scroll.scrollHeight - 8 ? "none" : "";
+  showFoot(undefined, model?.detail.kind === "thread" && !atBottom(scroll));
+  // The footer row may have just come or gone and resized the transcript: settle once more.
+  if (follow) scroll.scrollTop = scroll.scrollHeight;
 }
 
 // ---- geometry -----------------------------------------------------------------------------------
@@ -211,9 +235,9 @@ let settleTimer: ReturnType<typeof setTimeout> | undefined;
 function layoutShape(): string {
   if (!layout) return "";
   const size = (r?: Rect) => (r ? `${r[2]}x${r[3]}` : "-");
-  return [window.innerWidth / layout.scr[0], layout.panel, layout.drag, layout.ui, layout.native, layout.focus, layout.rowH, layout.fpx, layout.px, layout.op,
-    size(layout.list), size(layout.detail), size(layout.status), size(layout.tracker), size(layout.mini), size(layout.keys?.approve), size(layout.keys?.stop), size(layout.keys?.mode),
-    JSON.stringify(layout.occ ?? []), model?.fontScale, model?.raidWarnings, model?.tracker.length, !!model?.keys.approve, !!model?.keys.stop, !!keysOf(model)?.mode].join("|");
+  return [window.innerWidth / layout.scr[0], layout.panel, layout.drag, layout.ui, layout.focus, layout.rowH, layout.fpx, layout.px, layout.op,
+    size(layout.list), size(layout.detail), size(layout.status), size(layout.tracker), size(layout.mini), size(layout.keys?.stop),
+    JSON.stringify(layout.occ ?? []), model?.fontScale, model?.raidWarnings, model?.tracker.length, !!model?.keys.stop].join("|");
 }
 
 function applyLayout(moveOnly = false) {
@@ -223,15 +247,14 @@ function applyLayout(moveOnly = false) {
   if (moveOnly && shape === lastShape && laidOut.size) {
     const panelOn = layout.panel && !layout.drag && layout.ui !== false;
     place(els.list, layout.list, panelOn);
-    place(els.detail, layout.detail, panelOn && !layout.native);
+    place(els.detail, layout.detail, panelOn);
     place(els.status, layout.status, panelOn);
     place(els.tracker, layout.tracker, !layout.drag && layout.ui !== false && !!model?.tracker.length);
-    place(els.glowApprove, layout.keys?.approve, panelOn && !!model?.keys.approve);
     place(els.glowStop, layout.keys?.stop, panelOn && !!model?.keys.stop);
-    place(els.modeLabel, layout.keys?.mode, panelOn && !!keysOf(model)?.mode);
     placeMiniBadge(false); // a move only: the clip path waits for the settled pass, like the panes'
     if (settleTimer) clearTimeout(settleTimer);
     settleTimer = setTimeout(() => { settleTimer = undefined; lastShape = ""; applyLayout(); }, 120);
+    schedulePainted();
     return;
   }
   lastShape = shape;
@@ -250,7 +273,7 @@ function applyLayout(moveOnly = false) {
   // The addon fades its own backgrounds by the same amount (Options -> AddOns -> Familiar).
   setVar("--bg", `rgba(9, 8, 11, ${Math.max(0, Math.min(100, layout.op ?? 100)) / 100})`);
   place(els.list, layout.list, panelOn);
-  place(els.detail, layout.detail, panelOn && !layout.native);
+  place(els.detail, layout.detail, panelOn);
   renderAttention();
   renderFocusReview();
   place(els.status, layout.status, panelOn);
@@ -258,13 +281,7 @@ function applyLayout(moveOnly = false) {
   clipFor(els.list, layout.list);
   clipFor(els.detail, layout.detail);
   clipFor(els.tracker, layout.tracker);
-  place(els.glowApprove, layout.keys?.approve, panelOn && !!model?.keys.approve);
   place(els.glowStop, layout.keys?.stop, panelOn && !!model?.keys.stop);
-  // The addon cannot learn the live mode, so its Mode button says "Mode"; the Glass paints the
-  // selected quest's mode over that button's rect. Hidden Glass = the native label shows again.
-  place(els.modeLabel, layout.keys?.mode, panelOn && !!keysOf(model)?.mode);
-  clipFor(els.modeLabel, layout.keys?.mode);
-  fitModeLabel();
   placeMiniBadge();
   // Toasts: centred near the top of the game, like raid warnings; or (raid warnings off) a strip that
   // takes a row at the top of the detail pane (its first child), so it never paints over the quest
@@ -281,8 +298,73 @@ function applyLayout(moveOnly = false) {
   if (layout.drag) els.toasts.style.opacity = "0.4";
   else els.toasts.style.opacity = "1";
   fitWelcome();
+  syncPinned();
   syncDetailScroll();
+  schedulePainted();
 }
+
+// ---- what the Glass painted that grants something ------------------------------------------------
+// Main approves nothing from the game unless the button for exactly that action is in this report,
+// at an unchanged place for long enough (main/physical.ts ApprovalGate). Contract: `painted` carries
+// a list of { act, rect, card, sig }: `act` is the button's own action, `rect` the button and `card`
+// its card as [x, y, w, h] fractions of this window, `sig` a hash of the card's text. Only buttons
+// that are wholly inside the transcript's visible area (the scrolling transcript, or the request pinned
+// under it) and are the topmost thing painted there. With click approval off a card has no Approve
+// button: its "Press <key> to approve" line stands in (data-grant, which no click can trigger), so the
+// Approve key still has a painted card to act on. A reply's Copy is reported the same way, after the
+// cards (main keeps the first 16), as { type: "copyReply", thread, label: <entry id> }, so a click on
+// it ({ type: "copyReply", thread, entry }) can be proved like any other.
+const GRANTS = new Set(["decide", "answer", "adoptConfirm", "adoptNew", "adoptRetry", "heldRetry", "heldCopy"]);
+const PAINTED = ".card.pending .btns [data-act], .card.pending .btns [data-grant], .reply-tools [data-act]";
+let paintedSent = "[]";
+let paintedTimer: ReturnType<typeof setTimeout> | undefined;
+function schedulePainted() {
+  paintedTimer ??= setTimeout(() => {
+    paintedTimer = undefined;
+    const list = visible ? paintedButtons() : [];
+    const sig = JSON.stringify(list);
+    if (sig === paintedSent) return;
+    paintedSent = sig;
+    bridge.painted(list);
+  }, 0);
+}
+function paintedButtons() {
+  const W = window.innerWidth, H = window.innerHeight;
+  const frac = (b: DOMRect): Rect => [b.left / W, b.top / H, b.width / W, b.height / H];
+  const out: { act: { type: string }; rect: Rect; card: Rect; sig: string }[] = [];
+  for (const el of els.detail.querySelectorAll<HTMLElement>(PAINTED)) {
+    const act = JSON.parse(el.dataset.grant ?? el.dataset.act!);
+    if (!(GRANTS.has(act.type) || act.type === "copyReply") || act.decision === "deny") continue;
+    const card = el.closest<HTMLElement>(".card, .entry")!;
+    const area = el.closest<HTMLElement>("#pinned, #detail-scroll");
+    if (!area || area.style.display === "none") continue;
+    const view = area.getBoundingClientRect();
+    const b = el.getBoundingClientRect();
+    if (!b.width || !b.height || b.left < view.left || b.right > view.right || b.top < view.top || b.bottom > view.bottom) continue;
+    const onTop = [[0.5, 0.5], [0.1, 0.2], [0.9, 0.2], [0.1, 0.8], [0.9, 0.8]].every(([fx, fy]) => el.contains(document.elementFromPoint(b.left + b.width * fx, b.top + b.height * fy)));
+    if (!onTop) continue;
+    // The card's own text: a refusal line is not part of it, so writing one never restarts the wait
+    // (the pinned card's line sits outside its box, overlay.css, so nothing moves either).
+    let h = 5381;
+    const refused = card.querySelector(".card-refused");
+    const texts = document.createTreeWalker(card, NodeFilter.SHOW_TEXT);
+    for (let n = texts.nextNode(); n; n = texts.nextNode()) {
+      if (refused?.contains(n)) continue;
+      for (const ch of n.nodeValue ?? "") h = ((h * 33) ^ ch.charCodeAt(0)) >>> 0;
+    }
+    // The card as far as it shows: a long reply (or card) runs past the pane, and past the window.
+    const c = card.getBoundingClientRect();
+    const seen = new DOMRect(Math.max(c.left, view.left), Math.max(c.top, view.top), 0, 0);
+    seen.width = Math.min(c.right, view.right) - seen.x;
+    seen.height = Math.min(c.bottom, view.bottom) - seen.y;
+    // Main keys a proof on type + quest + request + decision or label: a Copy names its reply as the label.
+    const reported = act.type === "copyReply" ? { type: act.type, thread: act.thread, label: act.entry } : act;
+    out.push({ act: reported, rect: frac(b), card: frac(seen), sig: h.toString(36) });
+  }
+  return out.sort((a, b) => Number(a.act.type === "copyReply") - Number(b.act.type === "copyReply"));
+}
+// Anything that moves a button without a layout pass (fonts, images, a late reflow) is caught here.
+setInterval(schedulePainted, 250);
 
 // The familiar calls from the minimap (round 6 §2.2): a quest giver's mark at the top-right of the
 // addon's minimap button, painted from the rect the addon reports (layout.mini; no rect, no badge).
@@ -315,16 +397,6 @@ function placeMiniBadge(clip = true) {
 }
 els.miniBadge.addEventListener("animationend", () => els.miniBadge.classList.remove("pop"));
 
-// The native Mode button is small (64x22 in UI.lua): the label takes the body small size, capped by
-// the rect's height, and shrinks further only when a long mode ("Accept edits") would not fit.
-function fitModeLabel() {
-  const el = els.modeLabel, span = el.firstElementChild as HTMLElement | null;
-  if (!span || el.style.display === "none") return;
-  span.style.fontSize = `${Math.min(Math.max(10, (layout?.fpx ?? layout?.px ?? 1) * k * 10.5 * (model?.fontScale ?? 1)), el.clientHeight * 0.6)}px`;
-  const room = el.clientWidth - 6 * k;
-  if (span.scrollWidth > room) span.style.fontSize = `${parseFloat(span.style.fontSize) * room / span.scrollWidth}px`;
-}
-
 // ---- rendering ----------------------------------------------------------------------------------
 // Provider glyphs/labels come with every model (built-ins first so the very first paint works).
 let PROVIDERS: Record<string, { label: string; glyph: string }> = { claude: { label: "Claude", glyph: "✦" }, codex: { label: "Codex", glyph: "◈" } };
@@ -337,24 +409,36 @@ function attr(o: unknown) {
   return escapeAttr(JSON.stringify(o));
 }
 
+// What a pane last got, compared before writing: reading innerHTML back serialises the DOM, and its
+// spelling of escapes differs from ours, so that comparison rewrote the pane on every push.
+const lastHtml = new WeakMap<HTMLElement, string>();
+function setHtml(el: HTMLElement, html: string) {
+  if (lastHtml.get(el) === html) return false;
+  lastHtml.set(el, html);
+  el.innerHTML = html;
+  return true;
+}
+
 function renderRows(rows: Row[], title: string) {
   els.listTitle.textContent = title;
+  // A status mark (on a zone: its most urgent quest's) and the "?" of an unread reply, never position.
+  const mark = (r: Row) => (r.status && STATUS_ICON[r.status] ? `<span class="st">${STATUS_ICON[r.status]}</span>` : "");
   const html = rows
     .map((r) => {
       const cls = ["row", r.kind, r.selected ? "sel" : "", r.unread ? "unread" : "", r.status ? `st-${r.status}` : "", r.agent ? `ag-${r.agent}` : ""].join(" ");
       const act = r.act ? ` data-act="${attr(r.act)}"` : "";
       const act2 = r.act2 ? ` data-act2="${attr(r.act2)}"` : "";
       let inner = "";
-      if (r.kind === "zone") inner = `<span class="tw">${r.collapsed ? "▸" : "▾"}</span><span class="t">${esc(r.text)}</span><span class="s">${r.count ?? ""}</span>`;
+      if (r.kind === "zone") inner = `<span class="tw">${r.collapsed ? "▸" : "▾"}</span><span class="t">${esc(r.text)}</span>${mark(r)}<span class="s">${r.count ?? ""}</span>`;
       else if (r.kind === "agent") inner = `<span class="ag">${AGENT_ICON[r.agent ?? ""]}</span><span class="t">${esc(r.text)}</span>`;
       else if (r.kind === "thread" || r.kind === "ext")
-        inner = `<span class="ag">${AGENT_ICON[r.agent ?? "claude"]}</span><span class="t">${esc(r.text)}</span>${r.status && STATUS_ICON[r.status] ? `<span class="st">${STATUS_ICON[r.status]}</span>` : ""}${r.sub ? `<span class="s">${esc(r.sub)}</span>` : ""}`;
+        inner = `<span class="ag">${AGENT_ICON[r.agent ?? "claude"]}</span><span class="t">${esc(r.text)}</span>${mark(r)}${r.sub ? `<span class="s">${esc(r.sub)}</span>` : ""}`;
       else if (r.kind === "project") inner = `<span class="t">${esc(r.text)}</span>${r.sub ? `<span class="s">${esc(r.sub)}</span>` : ""}`;
       else inner = `<span class="t">${esc(r.text)}</span>`;
       return `<div class="${cls}"${act}${act2}>${inner}</div>`;
     })
     .join("");
-  if (els.rows.innerHTML !== html) els.rows.innerHTML = html;
+  setHtml(els.rows, html);
 }
 
 const entryCache = new Map<string, { sig: string; identity: string; text?: string; output?: string; el: HTMLElement }>();
@@ -367,6 +451,7 @@ function renderDetail(d: DetailModel) {
   if (key !== lastDetailKey) {
     rememberReadingPlace();
     els.content.innerHTML = "";
+    pin(undefined);
     entryCache.clear();
     lastDetailKey = key;
     detailsOpen = false;
@@ -390,7 +475,7 @@ function renderDetail(d: DetailModel) {
     els.content.appendChild(head);
   }
   const state = threadState(d);
-  const routine = state.label === "Reply ready" || state.label === "Ready for your message";
+  const routine = state.label === REPLY_READY || state.label === "Ready for your message";
   const focused = !!layout?.focus;
   const selectedPending = model?.attention?.find(item => item.thread === d.id && item.pending);
   const detailControl = `<span class="btn qdetails-toggle" aria-expanded="${detailsOpen}" data-act="${attr({ type: "local", what: "details" })}">Details${focused ? "" : ` ${detailsOpen ? "▴" : "▾"}`}</span>`;
@@ -435,12 +520,20 @@ function renderDetail(d: DetailModel) {
     if (head.nextSibling !== storageDetail) head.after(storageDetail);
     prev = storageDetail;
   } else storageDetail?.remove();
+  // The request the Approve key acts on (the hub's: the quest's first pending one) is pinned under the
+  // transcript while it waits, so it cannot scroll away unnoticed; any later one waits in the transcript.
+  const pinId = d.external ? undefined : d.entries.find((e) => e.kind === "approval" && e.approval === "pending")?.id;
+  let pinned: HTMLElement | undefined;
   for (const e of d.entries) {
     seen.add(e.id);
     // Slice IDs can be reused for different desktop messages, including equal-length text.
     const { text, output, ...metadata } = e;
-    // Agent and folder shape approval cards; Hide names blanks the folder, so a card must re-render.
-    const sig = JSON.stringify([d.agent, d.cwd, blurOn(), metadata]);
+    // What else shapes an entry's HTML: cards show the agent, zone and folder (Hide names blanks
+    // them) and how to approve; replies and your messages carry Stream-safe's reveal. Nothing else
+    // does, so a change to those leaves every other entry as it is.
+    const card = e.kind === "approval";
+    const sig = JSON.stringify([metadata, card && [d.agent, d.project, d.cwd, approve, e.id === pinId],
+      (e.kind === "user" || e.kind === "assistant" || e.kind === "reasoning") && blurOn(), e.kind === "assistant" && d.external]);
     let c = entryCache.get(e.id);
     if (!c) {
       const el = document.createElement("div");
@@ -451,24 +544,32 @@ function renderDetail(d: DetailModel) {
     if (c.sig !== sig || c.text !== text || c.output !== output) {
       c.identity = JSON.stringify([e.kind, e.name, text]);
       c.el.className = `entry ${e.kind}${e.streaming ? " streaming" : ""}${e.level ? " " + e.level : ""}`;
-      c.el.innerHTML = entryHtml(e, d.id, d.agent, d.cwd);
+      c.el.innerHTML = entryHtml(e, d, e.id === pinId);
       c.sig = sig;
     }
     c.el.classList.toggle("revealed", revealed.has(e.id));
     // Retain this push's strings without allocating escaped copies on every update.
     c.text = text;
     c.output = output;
+    if (e.id === pinId) {
+      pinned = c.el;
+      continue;
+    }
     if (prev.nextSibling !== c.el) prev.after(c.el);
     prev = c.el;
   }
+  pin(pinned);
   for (const [id, c] of entryCache) {
     if (!seen.has(id)) {
       c.el.remove();
       entryCache.delete(id);
     }
   }
+  // A message card's grant names this conversation and the hash of the text it shows: a proof for it
+  // covers exactly that text (hub textCardAct).
+  const about = (type: string, hash: string) => ({ type, thread: d.id, hash });
   // Confirmation before continuing a desktop-app conversation (always last).
-  let conf = els.content.querySelector<HTMLElement>(".confirm");
+  let conf =els.content.querySelector<HTMLElement>(".confirm");
   if (d.confirm) {
     if (!conf) {
       conf = document.createElement("div");
@@ -483,7 +584,7 @@ function renderDetail(d: DetailModel) {
     conf.innerHTML = `<div class="card-h">Continue this desktop conversation?</div>
       <div class="card-b">${esc(d.project)} - ${esc(d.title)}<br><i>${why} You're only asked once per conversation.</i></div>
       <pre class="card-b">${esc(d.confirm.text)}</pre>
-      <div class="btns">${d.confirm.retry ? `<span class="btn ok" data-act="${attr({ type: "adoptRetry" })}">Retry</span>` : ""}<span class="btn${d.confirm.retry ? "" : " ok"}" data-act="${attr({ type: "adoptConfirm" })}">${d.confirm.fork ? "Continue as a copy" : "Continue here"}</span><span class="btn" data-act="${attr({ type: "adoptNew" })}">New quest in ${esc(d.project)}</span><span class="btn no" data-act="${attr({ type: "adoptCancel" })}">Cancel</span></div>`;
+      <div class="btns">${d.confirm.retry ? `<span class="btn ok" data-act="${attr(about("adoptRetry", d.confirm.hash))}">Retry</span>` : ""}<span class="btn${d.confirm.retry ? "" : " ok"}" data-act="${attr(about("adoptConfirm", d.confirm.hash))}">${d.confirm.fork ? "Continue as a copy" : "Continue here"}</span><span class="btn" data-act="${attr(about("adoptNew", d.confirm.hash))}">New quest in ${esc(d.project)}</span><span class="btn no" data-act="${attr({ type: "adoptCancel" })}">Cancel</span></div>`;
     els.content.appendChild(conf);
     follow = true;
   } else conf?.remove();
@@ -498,7 +599,7 @@ function renderDetail(d: DetailModel) {
     held.innerHTML = `<div class="card-h">Open in the ${esc(app)} app</div>
       <div class="card-b"><i>This conversation is open in the ${esc(app)} app or a terminal, which owns writing to it. Quit it there (${esc(app)} app: tray → Quit) and press Retry to send this to the same conversation, or continue as a copy (fork), which that app won't show.</i></div>
       <pre class="card-b">${esc(d.held.text)}</pre>
-      <div class="btns"><span class="btn ok" data-act="${attr({ type: "heldRetry" })}">Retry</span><span class="btn" data-act="${attr({ type: "heldCopy" })}">Continue as a copy</span><span class="btn no" data-act="${attr({ type: "heldCancel" })}">Cancel</span></div>`;
+      <div class="btns"><span class="btn ok" data-act="${attr(about("heldRetry", d.held.hash))}">Retry</span><span class="btn" data-act="${attr(about("heldCopy", d.held.hash))}">Continue as a copy</span><span class="btn no" data-act="${attr({ type: "heldCancel" })}">Cancel</span></div>`;
     els.content.appendChild(held);
     follow = true;
   } else held?.remove();
@@ -519,46 +620,94 @@ function reveal(id: string) {
   entryCache.get(id)?.el.classList.add("revealed");
 }
 
-function entryHtml(e: EntryView, threadId: string, agent: string, cwd: string): string {
+type ThreadDetail = Extract<DetailModel, { kind: "thread" }>;
+function entryHtml(e: EntryView, d: ThreadDetail, pinned: boolean): string {
   const revealAct = blurOn() ? ` data-act="${REVEAL}"` : "";
   switch (e.kind) {
     case "user":
       return `<div class="who">You</div><div class="body"${revealAct}>${esc(e.text).replace(/\n/g, "<br>")}</div>`;
     case "assistant":
-    case "reasoning":
-      return `<div class="body md"${revealAct}>${md(e.text)}${e.streaming ? '<span class="caret">▍</span>' : ""}</div>`;
+    case "reasoning": {
+      // A finished reply of your own quest can be copied to the Windows clipboard (main does it and
+      // says so). Not on desktop threads: their entry ids are slice positions that history can move.
+      const copy = e.kind === "assistant" && !e.streaming && !d.external && e.text.trim()
+        ? `<div class="reply-tools"><span class="btn copy-reply" data-act="${attr({ type: "copyReply", thread: d.id, entry: e.id })}">Copy</span></div>` : "";
+      return `<div class="body md"${revealAct}>${md(e.text, !!e.streaming)}${e.streaming ? '<span class="caret">▍</span>' : ""}</div>${copy}`;
+    }
     case "tool": {
       const icon = e.status === "running" ? "◌" : e.status === "error" ? "✗" : "✓";
       return `<div class="tool-line" data-act="${attr({ type: "tool", id: e.id })}"><span class="ti ${e.status}">${e.status === "unknown" ? "?" : icon}</span> <b>${esc(e.name ?? "tool")}</b> <span class="tsum">${esc(e.text)}</span>${e.status === "unknown" ? '<span class="outcome-unknown">Outcome unknown — check the folder before resending</span>' : ""}</div>${e.expanded && e.output ? `<div class="tout-veil"><pre class="tout">${diffHtml(e.output)}</pre></div>` : ""}`;
     }
-    case "approval": {
-      const pending = e.approval === "pending";
-      const { cut, refused } = e as EntryR3;
-      const preview = approvalPreview(e.text, e.expanded, pending);
-      const btn = (label: string, decision: string, cls = "") =>
-        `<span class="btn ${cls}" data-act="${attr({ type: "decide", thread: threadId, requestId: e.requestId, decision })}">${label}</span>`;
-      const alwaysLabel = agent === "claude" || agent === "codex" ? "Always (this quest)" : "Always (agent decides how long)";
-      // A cut request is approved only on the PC, where the whole text is shown: Deny is the
-      // only decision drawn here (the hub refuses a grant from the game regardless).
-      const opts = cut
-        ? `<span class="approve-pc">Approve on your PC</span>${btn("Deny", "deny", "no")}`
-        : e.options?.length
-          ? e.options.map((o) => `<span class="btn" data-act="${attr({ type: "answer", thread: threadId, requestId: e.requestId, label: o })}">${esc(o)}</span>`).join("")
-          : btn("Approve", "allow", "ok") + btn("Deny", "deny", "no") + (e.canAlways ? btn(alwaysLabel, "allowAlways", "always") : "");
-      return `<div class="card ${pending ? "pending" : e.approval}">
-        <div class="card-h">${pending ? '<span class="bang">!</span> ' : ""}${esc(e.title ?? "Approval")}</div>
-        ${pending && cwd ? `<div class="card-where">in ${esc(cwd)}</div>` : ""}
-        <div class="preview-note">The agent's own summary. If unsure, Deny — nothing happens until you approve.</div>
-        ${pending && cut ? `<div class="preview-cut" role="alert">! Part of this request is not shown here. To approve it, read it in full in Familiar's control panel on your PC — or Deny.</div>` : ""}
-        ${preview.shortened ? `<span class="btn preview-toggle" aria-expanded="${!!e.expanded}" data-act="${attr({ type: "approvalPreview", thread: threadId, id: e.id })}"><span aria-hidden="${!!e.expanded}">Show more of preview</span><span aria-hidden="${!e.expanded}">Collapse preview</span></span>` : ""}
-        <pre class="card-b approval-preview">${diffHtml(preview.text)}${preview.shortened && !e.expanded ? "\n… [More preview text hidden]" : ""}</pre>
-        ${pending ? `<div class="btns">${opts}</div>` : `<div class="card-s">${approvalText(e.approval, agent)}</div>`}
-        ${pending && refused ? `<div class="card-refused" role="alert">✗ ${esc(refused)}</div>` : ""}
-      </div>`;
-    }
+    case "approval":
+      return approvalCard(e as EntryR3, d, pinned);
     case "notice":
       return `<div class="notice">${esc(e.text)}</div>`;
   }
+}
+
+// An approval card says where (the zone), what (the agent's title and request) and what approving does,
+// with Deny always beside it. Only the pinned card, the one the Approve key acts on, offers a way to
+// approve, and only once its whole request has been in view. "Always" is given only in the control panel.
+function approvalCard(e: EntryR3, d: ThreadDetail, pinned: boolean): string {
+  const pending = e.approval === "pending";
+  const preview = approvalPreview(e.text, e.expanded, pending);
+  const agent = agentLabel(d.agent);
+  const decide = (decision: string) => ({ type: "decide", thread: d.id, requestId: e.requestId, decision });
+  const deny = `<span class="btn no" data-act="${attr(decide("deny"))}">Deny</span>`;
+  let ask = "";
+  if (pending) {
+    // How this card is approved: the Approve key (its "Press <key>" line is what the key acts on), or a
+    // click when click approval is on. A cut request is approved only on the PC, where it is shown whole.
+    const grant = e.cut ? `<span class="approve-pc">Approve on your PC</span>`
+      : !pinned ? `<span class="approve-pc">Decide the request below first</span>`
+      : e.options?.length ? e.options.map((o) => `<span class="btn grant" data-act="${attr({ type: "answer", thread: d.id, requestId: e.requestId, label: o })}">${esc(o)}</span>`).join("")
+      : approve.byClick ? `<span class="btn ok grant" data-act="${attr(decide("allow"))}">Approve</span>`
+      : approve.key ? `<span class="approve-pc grant" data-grant="${attr(decide("allow"))}">Press ${esc(approve.key)} to approve</span>`
+      : `<span class="approve-pc">Approve it in Requests waiting in Familiar on your PC</span>`;
+    const tail = pinned && !e.cut ? `<span class="approve-pc tail-hint">▼ Read to the end to approve</span>` : "";
+    ask = `<div class="btns">${grant}${tail}${deny}</div>`;
+  }
+  const where = [d.project, d.cwd && pathTail(d.cwd)].filter(Boolean).join(" · ");
+  const effect = e.options?.length ? `Your answer goes to ${esc(agent)}.`
+    : `Approving lets ${esc(agent)} do this${d.project ? ` in ${esc(d.project)}` : ""}, with your access on this PC.`;
+  const unseen = pinned && !e.cut && !tailSeen.has(`${d.id}:${e.requestId}`);
+  return `<div class="card ${pending ? "pending" : e.approval}${unseen ? " tail-unseen" : ""}" data-request="${esc(`${d.id}:${e.requestId}`)}">
+    <div class="card-h">${pending ? '<span class="bang">!</span> ' : ""}${esc(e.title ?? "Approval")}</div>
+    ${pending && where ? `<div class="card-where">In ${esc(where)}</div>` : ""}
+    ${pending && e.cut ? `<div class="preview-cut" role="alert">! Part of this request is not shown here. To approve it, read it in full in Familiar's control panel on your PC — or Deny.</div>` : ""}
+    ${preview.shortened ? `<span class="btn preview-toggle" aria-expanded="${!!e.expanded}" data-act="${attr({ type: "approvalPreview", thread: d.id, id: e.id })}"><span aria-hidden="${!!e.expanded}">Show more of preview</span><span aria-hidden="${!e.expanded}">Collapse preview</span></span>` : ""}
+    <pre class="card-b approval-preview">${diffHtml(preview.text)}${preview.shortened && !e.expanded ? "\n… [More preview text hidden]" : ""}</pre>
+    ${pending ? `<div class="card-what">${effect} <span class="preview-note">The agent wrote this itself. Unsure? Deny: nothing has happened yet.</span></div>${ask}` : `<div class="card-s">${approvalText(e.approval, d.agent)}</div>`}
+    ${pending && e.refused ? `<div class="card-refused" role="alert">✗ ${esc(e.refused)}</div>` : ""}
+  </div>`;
+}
+
+// ---- the pinned request ---------------------------------------------------------------------------
+// Pinned under the transcript while it waits. Its request scrolls inside the card, after the transcript
+// (wheel down: transcript, then request; up: request, then transcript), so the card never grows past
+// its share of the pane and its buttons never move. A pending card is never shortened, and approving
+// must not skip its tail: the grant (key line, Approve, answers) shows once the end has been in view.
+const tailSeen = new Set<string>(); // "<thread>:<requestId>"
+function pin(el: HTMLElement | undefined) {
+  const box = els.pinned;
+  if (!el) {
+    if (box.firstChild) box.replaceChildren();
+    box.classList.remove("on");
+    return;
+  }
+  if (box.firstChild !== el || box.childNodes.length !== 1) box.replaceChildren(el);
+  box.classList.add("on");
+  syncPinned();
+}
+const pinnedPreview = () => els.pinned.querySelector<HTMLElement>(".card.pending .approval-preview");
+function syncPinned() {
+  const pre = pinnedPreview();
+  const card = pre?.closest<HTMLElement>(".card");
+  if (!pre || !card || !pre.clientHeight) return; // not laid out yet (hidden pane): nothing is seen
+  const below = pre.scrollTop + pre.clientHeight < pre.scrollHeight - 2;
+  if (!below) tailSeen.add(card.dataset.request ?? "");
+  pre.classList.toggle("more-below", below);
+  card.classList.toggle("tail-unseen", !tailSeen.has(card.dataset.request ?? "") && !!card.querySelector(".tail-hint"));
 }
 
 // The welcome page is the quest giver: its face and first lines follow what the model already says
@@ -571,7 +720,7 @@ function welcomeHead(d: WelcomeModel): { expr: Expr; big: string; sub: string } 
   if (!d.linked) return { expr: "puzzled", big: "I can't see the game yet.", sub: "Waiting for the game link. Familiar on your PC says what it sees (tray → Open Familiar)." };
   if (!d.backends.some((b) => b.ready)) return { expr: "puzzled", big: "Well met.", sub: "No familiar is ready yet. Open Familiar from the tray icon on your PC to sign in." };
   if (d.counts.total === 0) return { expr: "asleep", big: "No quests yet.", sub: "Wake me with + Claude or + Codex, or ask a question with + Chat." };
-  if (d.counts.approval > 0) return { expr: "asking", big: "Well met.", sub: `Linked to ${link} · ${d.counts.approval} waiting on you.` };
+  if (d.counts.approval > 0) return { expr: "asking", big: "Well met.", sub: `Linked to ${link} · ${needYou(d.counts.approval)}.` };
   if (d.counts.running > 0) return { expr: "working", big: "Well met.", sub: `Linked to ${link} · ${d.counts.running} working.` };
   return { expr: "idle", big: "Well met.", sub: `Linked to ${link}.` };
 }
@@ -644,7 +793,7 @@ function staticDetail(d: DetailModel): string {
   if (d.kind === "pick")
     return `<div class="welcome"><div class="big">New ${agentLabel(d.agent)} quest</div>
       <div class="sub">Choose a zone (project folder) on the left.</div>
-      <div class="hint">Not listed? Type a full folder path in the box below and press Enter.<br>Type <b>mkdir &lt;your WoW folder&gt;\\_forever_\\Interface\\AddOns\\MyAddon</b> to start a new addon folder.<br>
+      <div class="hint">Not listed? Add the folder in Familiar on your PC (tray → Open Familiar → Projects). A folder inside one you added can be typed below.<br>
       Switch familiar: ${Object.keys(PROVIDERS).filter((id) => id !== "familiar").map((id) => `<span class="btn" data-act="${attr({ type: "agent", agent: id })}">${AGENT_ICON[id]} ${esc(agentLabel(id))}</span>`).join(" ")}</div></div>`;
   if (d.kind === "draft" && d.chat)
     return `<div class="welcome"><div class="big">${AGENT_ICON[d.agent]} New chat</div>
@@ -655,20 +804,20 @@ function staticDetail(d: DetailModel): string {
   if (d.kind === "draft")
     return `<div class="welcome"><div class="big">${AGENT_ICON[d.agent]} ${agentLabel(d.agent)} · ${esc(d.project)}</div>
       <div class="sub">${esc(d.cwd)}</div>
-      <div class="kv"><span>Mode</span> ${esc(d.mode)} <i>(Mode button cycles)</i></div>
+      <div class="kv"><span>Mode</span> ${esc(d.mode)} <i>(set in Familiar on your PC)</i></div>
       <div class="kv"><span>Model</span> ${esc(d.model ?? "default")} <i>(Model button lists them)</i></div>
       <div class="hint">Describe the quest below and press Enter. Your familiar will start working in this folder.</div></div>`;
   return "";
 }
 
 function renderTracker(lines: TrackerLine[]) {
-  els.lines.innerHTML = lines
+  setHtml(els.lines, lines
     .map(
       (l) => `<div class="tl st-${l.status}" data-act="${attr({ type: "select", id: l.id })}">
         <div class="tl-h"><span class="ag ag-${l.agent}">${AGENT_ICON[l.agent]}</span> ${esc(l.title)} <span class="s">${esc([l.project, l.progress, (l as TrackerR3).cost].filter(Boolean).join(" · "))}</span></div>
         <div class="tl-a">${esc(l.activity)}</div></div>`,
     )
-    .join("");
+    .join(""));
 }
 
 function renderToasts(m: RenderModel) {
@@ -682,7 +831,7 @@ function renderToasts(m: RenderModel) {
       return `<div class="toast ${t.kind}"><img class="seal" src="assets/${t.kind === "done" ? "seal-128" : "seal-cracked-128"}.png" alt=""><div class="t">${esc(t.text)}</div>${sub ? `<div class="sub">${esc(sub)}</div>` : ""}</div>`;
     })
     .join("");
-  if (els.toasts.innerHTML !== html) els.toasts.innerHTML = html;
+  setHtml(els.toasts, html);
 }
 
 function render() {
@@ -697,27 +846,27 @@ function render() {
     } else if (!follow) restorePlace = readingPlaces.get(key);
   }
   renderDetail(model.detail);
-  els.target.textContent = "Messages go to: " + model.target.text;
+  // "Messages go to" only says something the quest header does not: no quest open, or a warning.
+  const target = "Messages go to: " + model.target.text;
+  if (els.target.textContent !== target) els.target.textContent = target;
   els.target.classList.toggle("warn", !!model.target.warn);
+  showFoot(model.detail.kind !== "thread" || !!model.target.warn, undefined);
   renderTracker(model.tracker);
   renderToasts(model);
   document.body.classList.toggle("blur", blurOn());
   // The status words, then what is switched on as chips (Stream-safe wins over Hide names: it hides names too).
-  const chips = [model.quiet ? "Alerts muted (/fam quiet off)" : "", blurOn() ? "Stream-safe on" : model.private ? "Hide names on" : ""].filter(Boolean);
+  const chips = [model.quiet ? "Alerts muted" : "", blurOn() ? "Stream-safe on" : model.private ? "Hide names on" : ""].filter(Boolean);
   const statusHtml = `<span class="st-text">${esc(model.status.text)}</span>` + chips.map((chip) => `<span class="chip">${esc(chip)}</span>`).join("");
   if (els.status.dataset.sig !== statusHtml) {
     els.status.innerHTML = statusHtml;
     els.status.dataset.sig = statusHtml;
   }
-  const keys = keysOf(model);
-  const modeHtml = keys?.mode ? `<span>${esc(keys.mode)}</span>` : "";
-  if (els.modeLabel.innerHTML !== modeHtml) els.modeLabel.innerHTML = modeHtml;
-  els.modeLabel.classList.toggle("hot", !!keys?.modeHot);
   els.status.className = `lvl-${model.status.level}`;
   applyLayout();
   if (pendingJump && model.detail.kind === "thread" && pendingJump.thread === model.detail.id && els.detailScroll.clientHeight) {
     const entry = entryCache.get(pendingJump.entry)?.el;
-    if (entry) {
+    if (entry?.parentElement === els.pinned) pendingJump = undefined; // already in view, pinned
+    else if (entry) {
       follow = false;
       els.detailScroll.scrollTop = Math.max(0, entry.offsetTop - (els.content.querySelector<HTMLElement>(".qhead")?.offsetHeight ?? 0));
       syncDetailScroll();
@@ -730,9 +879,16 @@ function render() {
 // Long folders keep only their last two parts; a blank folder (Hide names) is left out.
 const pathTail = (p: string) => { const s = p.split(/[\\/]/).filter(Boolean); return s.length > 2 ? "…\\" + s.slice(-2).join("\\") : p; };
 
+// What is waiting elsewhere: one line ("1 needs you · 2 replies ready"), the open quest left out (its
+// own card or reply is in front of you). The notes open on demand.
+function waitingLine(items: { label: string }[]) {
+  const replies = items.filter((i) => i.label === REPLY_READY).length;
+  return [items.length - replies && needYou(items.length - replies), replies && repliesReady(replies)].filter(Boolean).join(" · ");
+}
 function renderAttention() {
   if (!model) return;
-  const items = model.attention ?? [];
+  const open = model.detail.kind === "thread" ? model.detail.id : undefined;
+  const items = (model.attention ?? []).filter((i) => i.thread !== open);
   if (layout?.focus || !items.length) { els.attention.style.display = "none"; return; }
   els.attention.style.display = "";
   const paneHeight = (layout?.detail?.[3] ?? 500) * k;
@@ -740,10 +896,11 @@ function renderAttention() {
   const pageSize = Math.max(1, Math.min(4, Math.floor((paneHeight * 0.65 - 60) / Math.max(45, smallFont * 4.6))));
   notesPage = Math.min(notesPage, Math.max(0, Math.ceil(items.length / pageSize) - 1));
   const control = (label: string, action: unknown) => `<span class="btn" data-act="${attr(action)}">${label}</span>`;
-  const html = `<div class="catch-head">${control(`<b>${notesOpen ? "▾" : "▸"} ${items.length} waiting</b>`, { type: "local", what: "notes" })}</div>` +
-    (notesOpen ? `<div class="catch-promise">Replies wait here until you choose Caught up or reply in that quest. Opening a quest alone doesn't count.</div>` + items.slice(notesPage * pageSize, notesPage * pageSize + pageSize).map(item => `<div class="catch-note"><div class="catch-copy"><div class="catch-title"><b>${esc(item.title)}</b><span class="${item.pending ? "warn" : ""}">${esc(item.label)}</span></div><div class="catch-meta">${esc(agentLabel(item.agent))} · ${esc(item.project)} · ${esc(item.mode)}${item.cwd ? ` · ${esc(pathTail(item.cwd))}` : ""}</div><div class="catch-excerpt">${esc(item.excerpt)}</div></div><div class="catch-actions">${control("Open quest", { type: "local", what: "openUpdate", thread: item.thread, entry: item.entry })}${item.pending ? "" : control("Caught up", { type: "caughtUp", thread: item.thread, entry: item.entry, revision: item.revision })}</div></div>`).join("") +
-      (items.length > pageSize ? `<div class="catch-pages">${notesPage ? control("Previous notes", { type: "local", what: "notesPage", page: notesPage - 1 }) : ""}<span>${notesPage * pageSize + 1}–${Math.min(items.length, notesPage * pageSize + pageSize)} of ${items.length}</span>${(notesPage + 1) * pageSize < items.length ? control("Next notes", { type: "local", what: "notesPage", page: notesPage + 1 }) : ""}</div>` : "") : "");
-  if (els.attention.innerHTML !== html) els.attention.innerHTML = html;
+  const note = (item: (typeof items)[number]) => `<div class="catch-note"><div class="catch-copy"><div class="catch-title"><b>${esc(item.title)}</b><span class="${item.label === REPLY_READY ? "" : "warn"}">${esc(item.label)}</span></div><div class="catch-meta">${esc(agentLabel(item.agent))} · ${esc(item.project)} · ${esc(item.mode)}${item.cwd ? ` · ${esc(pathTail(item.cwd))}` : ""}</div><div class="catch-excerpt">${esc(item.excerpt)}</div></div><div class="catch-actions">${control("Open quest", { type: "local", what: "openUpdate", thread: item.thread, entry: item.entry })}${item.pending ? "" : control("Caught up", { type: "caughtUp", thread: item.thread, entry: item.entry, revision: item.revision })}</div></div>`;
+  const pages = items.length > pageSize ? `<div class="catch-pages">${notesPage ? control("Previous", { type: "local", what: "notesPage", page: notesPage - 1 }) : ""}<span>${notesPage * pageSize + 1}–${Math.min(items.length, notesPage * pageSize + pageSize)} of ${items.length}</span>${(notesPage + 1) * pageSize < items.length ? control("Next", { type: "local", what: "notesPage", page: notesPage + 1 }) : ""}</div>` : "";
+  const urgent = items.some((i) => i.label !== REPLY_READY);
+  setHtml(els.attention, `<div class="catch-head">${control(`<b class="${urgent ? "warn" : ""}">${notesOpen ? "▾" : "▸"} ${waitingLine(items)}</b>`, { type: "local", what: "notes" })}</div>` +
+    (notesOpen ? items.slice(notesPage * pageSize, notesPage * pageSize + pageSize).map(note).join("") + pages : ""));
 }
 
 // Focus hides cross-thread cards without acknowledging or navigating them. This disclosure is
@@ -753,17 +910,11 @@ function renderFocusReview() {
   const others = model?.attention?.filter(item => item.thread !== selected) ?? [];
   if (!layout?.focus || !others.length) { els.focusReview.style.display = "none"; return; }
   els.focusReview.style.display = "";
-  const urgent = others.some(item => item.pending || item.label !== "Reply waiting");
-  const counts = [
-    [others.filter(item => item.pending).length, "approval", "approvals"],
-    [others.filter(item => !item.pending && item.label !== "Reply waiting").length, "alert", "alerts"],
-    [others.filter(item => !item.pending && item.label === "Reply waiting").length, "reply", "replies"],
-  ].filter(([count]) => count).map(([count, singular, plural]) => `${count} ${count === 1 ? singular : plural}`).join(", ");
-  const label = focusReviewOpen ? `Other: ${counts} · Hide`
-    : `${others.length} other update${others.length === 1 ? "" : "s"}${urgent ? " · Review" : ""}`;
+  const urgent = others.some(item => item.label !== REPLY_READY);
+  const label = `Other quests: ${waitingLine(others)}${focusReviewOpen ? " · Hide" : ""}`;
   const html = `<span class="btn focus-review-toggle ${urgent ? "warn" : ""}" aria-expanded="${focusReviewOpen}" data-act="${attr({ type: "local", what: "focusReview" })}">${label}</span>` +
     (focusReviewOpen ? `<div class="focus-review-copy">Use Full view below.</div>` : "");
-  if (els.focusReview.innerHTML !== html) els.focusReview.innerHTML = html;
+  setHtml(els.focusReview, html);
 }
 
 // ---- input from the addon -----------------------------------------------------------------------
@@ -778,13 +929,18 @@ function pointIn(r: string, x: number, y: number): Element | null {
   return document.elementFromPoint(b.left + x * b.width, b.top + y * b.height);
 }
 
-let hovered: Element | null = null;
-
 function toLatest() {
   follow = model?.detail.kind === "thread";
   els.detailScroll.scrollTop = els.detailScroll.scrollHeight;
-  els.latest.style.display = "none";
+  showFoot(undefined, false);
   rememberReadingPlace();
+}
+
+/** Scroll `el` by `px` (down is positive); returns what it could not take. */
+function scrollBy(el: HTMLElement, px: number) {
+  const before = el.scrollTop;
+  el.scrollTop = before + px;
+  return px - (el.scrollTop - before);
 }
 
 function onInput(ev: any) {
@@ -795,25 +951,27 @@ function onInput(ev: any) {
   }
   if (ev.t === "wheel") {
     if (ev.r === "detail" && model?.detail.kind === "thread" && model.detail.loading && !model.detail.entries.length) return;
-    // The "Jump to the latest reply" binding: the same as clicking Latest.
-    if (ev.r === "detail" && ev.d <= -9999) return toLatest();
     const target = ev.r === "list" ? els.listScroll : ev.r === "detail" ? els.detailScroll : ev.r === "tracker" ? els.tracker : null;
     if (!target) return;
-    target.scrollTop -= ev.d * 4 * parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--row-h") || "16");
+    const px = -ev.d * 4 * parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--row-h") || "16");
+    const pre = ev.r === "detail" ? pinnedPreview() : null;
+    if (pre) {
+      // The pinned request reads on after the transcript: down moves the transcript first, up the request.
+      // Its box is small, so one tick moves it by most of a box, never past text unread.
+      const step = (n: number) => Math.sign(n) * Math.min(Math.abs(n), Math.max(12, pre.clientHeight * 0.8));
+      if (px > 0) {
+        const rest = scrollBy(target, px);
+        if (rest) scrollBy(pre, step(rest));
+      } else if (pre.scrollTop > 0) scrollBy(pre, step(px));
+      else target.scrollTop += px;
+      syncPinned();
+    } else target.scrollTop += px;
     if (ev.r === "detail") {
-      follow = model?.detail.kind === "thread" && target.scrollTop + target.clientHeight >= target.scrollHeight - 8;
-      els.latest.style.display = model?.detail.kind !== "thread" || follow ? "none" : "";
+      follow = model?.detail.kind === "thread" && atBottom(target);
+      showFoot(undefined, model?.detail.kind === "thread" && !follow);
       rememberReadingPlace();
     }
-    return;
-  }
-  if (ev.t === "hover") {
-    const hit = ev.x < 0 ? null : (pointIn(ev.r, ev.x, ev.y)?.closest("[data-act]") ?? null);
-    if (hit !== hovered) {
-      hovered?.classList.remove("hover");
-      hit?.classList.add("hover");
-      hovered = hit;
-    }
+    schedulePainted(); // the card scrolled
     return;
   }
   if (ev.t === "click") {
@@ -878,6 +1036,10 @@ bridge.on("model", (m: RenderModel) => {
   if (relayout) applyLayout();
 });
 bridge.on("input", onInput);
+bridge.on("approve", (a: { byClick?: unknown; key?: unknown }) => {
+  approve = { byClick: a?.byClick === true, key: typeof a?.key === "string" ? a.key : "" };
+  render();
+});
 bridge.on("vis", (v: { visible: boolean; devInput?: boolean }) => {
   visible = v.visible;
   devInput = !!v.devInput;
@@ -886,7 +1048,7 @@ bridge.on("vis", (v: { visible: boolean; devInput?: boolean }) => {
 });
 window.addEventListener("resize", () => applyLayout());
 
-// ---- audio: the six synthesized cues (shared/cues.ts; no assets) and optional speech ----------------
+// ---- audio: the six synthesized cues (shared/cues.ts; no assets) ----------------
 // Main sends { kind, volume } (volume 0..1, cfg.soundVolume / 100); an older main sends the bare cue
 // name, played at the default volume. Anything else is ignored. The context is built on the first cue.
 let audio: AudioContext | null = null;
@@ -894,15 +1056,6 @@ bridge.on("sound", (p: unknown) => {
   const { kind, volume } = (typeof p === "string" ? { kind: p } : (p ?? {})) as { kind?: unknown; volume?: unknown };
   if (typeof kind !== "string" || !(CUES as readonly string[]).includes(kind)) return;
   playCue((audio ??= new AudioContext()), kind as Cue, typeof volume === "number" && Number.isFinite(volume) ? volume : DEFAULT_CUE_VOLUME);
-});
-bridge.on("speak", (text: string) => {
-  try {
-    const u = new SpeechSynthesisUtterance(text);
-    u.rate = 1.05;
-    speechSynthesis.speak(u);
-  } catch {
-    /* no voices */
-  }
 });
 
 // ---- helpers ------------------------------------------------------------------------------------
@@ -924,13 +1077,22 @@ function diffHtml(text: string): string {
     .join("\n");
 }
 
-function md(text: string): string {
+function md(text: string, streaming = false): string {
+  guessLanguage = !streaming;
   try {
-    return DOMPurify.sanitize(marked.parse(text, { async: false }) as string, { ALLOW_DATA_ATTR: false, FORBID_ATTR: ["style", "id"] });
+    // Text only: an agent's reply never paints pictures, plays media, or draws anything that covers or
+    // passes for the Glass's own controls (forms, dialogs, popovers, positioned or hidden content).
+    return DOMPurify.sanitize(marked.parse(text, { async: false }) as string, { ALLOW_DATA_ATTR: false, FORBID_ATTR: NO_ATTR, FORBID_TAGS: NO_TAGS });
   } catch {
     return esc(text);
+  } finally {
+    guessLanguage = true;
   }
 }
+// Marked emits none of these for what Familiar renders (its task-list <input> is replaced above).
+const NO_TAGS = ["img", "svg", "picture", "video", "audio", "source", "track", "image", "canvas", "math",
+  "dialog", "input", "button", "form", "select", "option", "textarea", "details", "summary"];
+const NO_ATTR = ["style", "id", "name", "hidden", "open", "popover", "popovertarget", "background", "src", "srcset"];
 function esc(s: string) {
   return escapeHtml(s ?? "");
 }
@@ -941,6 +1103,5 @@ function escapeAttr(s: string) {
   return escapeHtml(s);
 }
 function approvalText(a: string | undefined, agent: string) {
-  const always = agent === "claude" || agent === "codex" ? "Approved (always, this quest)" : "Approved (always)";
-  return { approved: "Approved", always, denied: "Denied", expired: "Request expired. The agent no longer waits for this; send a message to retry." }[a ?? ""] ?? "";
+  return { approved: "Approved", always: alwaysLabel(agent).done, denied: "Denied", expired: "Request expired. The agent no longer waits for this; send a message to retry." }[a ?? ""] ?? "";
 }

@@ -29,7 +29,7 @@ Research run 2026-10-03, against the WoW: Forever beta client (then installed in
 | out | SavedVariables | Only on `/reload`/logout. Fallback only. |
 | out | Chat log / whisper-to-self | Routes through Blizzard servers or flushes in 2–48 KB blocks. Rejected. |
 | in  | **Click-through overlay window over the game** ("Glass") | ✅ chosen for live content. Real-time, rich (markdown, code, diffs), zero interaction with the game process. |
-| in  | Data addon file read at login / `/reload` (WeakAuras-Companion pattern) | ✅ chosen for the native snapshot (`FamiliarSync`). |
+| in  | Data addon file read at login / `/reload` (WeakAuras-Companion pattern) | ✅ chosen for the saved status (`FamiliarSync`): a timestamp and status, no conversation. |
 | in  | LoD mailbox slots + deleted-file signals | Works (claude-wow measured it) but single-use per UI session, 200+ folders in the AddOns list. Not needed given the overlay; possible future native fallback. |
 | in  | Synthetic keystrokes into an addon edit box | ❌ rejected: input automation is the line Blizzard enforces; also steals focus. |
 

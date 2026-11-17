@@ -8,7 +8,7 @@ ns.UI = UI
 
 local floor, max, min = math.floor, math.max, math.min
 UI.BASE_ROW_H = 16
-UI.ROW_H = UI.BASE_ROW_H -- scaled by ns.db.fontScale (UI.SetFontScale)
+UI.ROW_H = UI.BASE_ROW_H -- scaled by ns.db.fontScale at login
 
 local BACKDROP_MAIN = {
   bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background-Dark",
@@ -27,10 +27,10 @@ ns.BACKDROP_PANE = BACKDROP_PANE
 local PANE_BG = { 0.02, 0.02, 0.03, 0.85 }
 local COMPOSER_BG = { 0, 0, 0, 0.9 }
 
-local frame, listPane, detailPane, composer, editBox, statusText, nativeBox, nativeScroll
+local frame, listPane, detailPane, composer, editBox, statusText, savedNote, questMenu
 local anchorPanes -- defined with the panes below
-local fullView, chrome = nil, {} -- focus is session-local; never saved across login/reload
-local LOG_W = 236 -- quest log pane width + gap: what collapsing it takes off the window
+local fullView, chrome = nil, {} -- compact view is session-local; never saved across login/reload
+local LOG_W = 236 -- quest list pane width + gap: what hiding it takes off the window
 local rows = {}
 local draftNotice, draftDiscard, composerScroll
 local draftNoticeText = false
@@ -57,13 +57,13 @@ local function relCursor(surface)
   return floor(min(1, max(0, rx)) * 10000 + 0.5) / 10000, floor(min(1, max(0, ry)) * 10000 + 0.5) / 10000
 end
 
--- Make `surface` report clicks, wheel and (low-priority) hover for overlay region `region`.
 function UI.Wheel(region, delta)
   local first = wheelAcc[region] == nil
   wheelAcc[region] = (wheelAcc[region] or 0) + delta
   if first then C_Timer.After(0.03, function() flushWheel(region) end) end
 end
 
+-- Make `surface` report clicks and the wheel for overlay region `region`.
 function UI.MakeSurface(surface, region)
   surface:EnableMouse(true)
   surface:EnableMouseWheel(true)
@@ -72,23 +72,6 @@ function UI.MakeSurface(surface, region)
     local rx, ry = relCursor(self)
     ns.Send({ t = "click", r = region, x = rx, y = ry, b = button == "RightButton" and "R" or "L" }, true)
   end, true))
-  local lastHover, lastX, lastY = 0, -1, -1
-  surface:SetScript("OnUpdate", ns.Guard(region .. " hover", function(self)
-    if not ns.db.hover then return end
-    if not self:IsMouseOver() then
-      if lastX >= 0 then
-        lastX, lastY = -1, -1
-        ns.Send({ t = "hover", r = region, x = -1, y = -1 }, false, "hover")
-      end
-      return
-    end
-    local now = GetTime()
-    if now - lastHover < 0.12 or ns.Link.QueueDepth() > 0 then return end
-    local rx, ry = relCursor(self)
-    if math.abs(rx - lastX) + math.abs(ry - lastY) < 0.004 then return end
-    lastHover, lastX, lastY = now, rx, ry
-    ns.Send({ t = "hover", r = region, x = rx, y = ry }, false, "hover")
-  end))
 end
 
 -- Helpers ----------------------------------------------------------------------------------------
@@ -122,16 +105,52 @@ local function pane(parent)
 end
 
 -- src says how the player did it: "button" (a Familiar button), "bind" (keybinding), "slash".
--- The companion checks approve / always / mode against real input on the PC: a button press must
--- coincide with a physical click on that button, a binding with the Approve key registered in the
--- control panel. Slash commands can't be checked and never approve (deny / stop still work).
+-- Familiar checks approve against real input on the PC: the Approve key registered in the control
+-- panel. Slash commands can't be checked and never approve (deny / stop still work). "send" and
+-- "newQuest" stay here in the game.
 function UI.Key(k, src)
   if k == "send" then return UI.Submit() end
+  if k == "newQuest" then return UI.NewQuest() end
   if k == "newClaude" or k == "newCodex" or k == "newChat" or k == "back" then UI.SetFocusMode(false) end
   if (k == "next" or k == "prev") and editBox and editBox:GetText() ~= "" then UI.CheckDraftTarget() end
   -- Context travels with the decision itself; a queued layout may still describe the old view.
   ns.Send({ t = "key", k = k, src = src or "button", view = UI.focusMode and "focus" or "full" }, true)
-  if k == "native" then UI.ToggleNative() end
+end
+
+-- "+ Quest": the familiars a new quest can start with (Familiar's new-quest keys), limited to the
+-- ones switched on in the last saved status. One familiar: start at once; more: a small menu.
+local NEW_QUEST = { { id = "claude", key = "newClaude", label = "Claude Code" }, { id = "codex", key = "newCodex", label = "Codex" } }
+local function newQuestFamiliars()
+  local on = type(FamiliarSyncData) == "table" and type(FamiliarSyncData.providers) == "table" and FamiliarSyncData.providers
+  local list = {}
+  for _, f in ipairs(NEW_QUEST) do
+    local ok = not on
+    for _, id in ipairs(on or {}) do if id == f.id then ok = true end end
+    if ok then list[#list + 1] = f end
+  end
+  return #list > 0 and list or NEW_QUEST
+end
+
+function UI.NewQuest()
+  local list = newQuestFamiliars()
+  if #list == 1 or not questMenu then
+    if questMenu then questMenu:Hide() end
+    return UI.Key(list[1].key)
+  end
+  if questMenu:IsShown() then return questMenu:Hide() end
+  local shown = {}
+  for _, f in ipairs(list) do shown[f.key] = true end
+  local n = 0
+  for _, b in ipairs(questMenu.buttons) do
+    b:SetShown(shown[b.key] == true)
+    if shown[b.key] then
+      b:ClearAllPoints()
+      b:SetPoint("TOPLEFT", 6, -6 - n * 24)
+      n = n + 1
+    end
+  end
+  questMenu:SetHeight(12 + n * 24)
+  questMenu:Show()
 end
 
 -- Row height follows the text size (0.8-1.6, the companion's font scale). The Glass sizes its row
@@ -140,7 +159,7 @@ local function rowHeight(scale)
   return floor(UI.BASE_ROW_H * (tonumber(scale) or 1) + 0.5)
 end
 
--- Rows (native fallback labels + hover highlight; clicks go through the list surface) -----------
+-- Rows (a hint line + hover highlight; clicks go through the list surface) ----------------------
 local function layoutRows()
   local c = listPane.content
   local n = max(1, floor(c:GetHeight() / UI.ROW_H))
@@ -171,15 +190,7 @@ local function layoutRows()
     end
   end
   UI.rowCount = n
-  UI.RefreshNative()
-end
-
--- Apply a text size to the quest list now (the setting itself is ns.db.fontScale).
-function UI.SetFontScale(scale)
-  ns.db.fontScale = scale
-  UI.ROW_H = rowHeight(scale)
-  if listPane then layoutRows() end
-  ns.Layout.Dirty()
+  UI.RefreshSaved()
 end
 
 -- Hover highlight follows the cursor without stealing mouse events from the surface.
@@ -191,67 +202,21 @@ local function updateRowHover()
   for _, r in ipairs(rows) do r.hl:SetShown(r:IsShown() and r:IsMouseOver()) end
 end
 
--- Native fallback (snapshot written by the companion, loaded at login / reload) -----------------
-function UI.RefreshNative()
-  local data = FamiliarSyncData
-  local list = data and data.list or {}
+-- Saved status (FamiliarSync, loaded at login / reload) -----------------------------------------
+-- The Glass covers the panes and the status bar while Familiar is drawing, so whoever can read
+-- these is looking at the window without the live view. They say what the addon actually knows.
+function UI.RefreshSaved()
+  local state, short, long = ns.SavedState()
   for i, r in ipairs(rows) do
-    local item = list[i]
-    if item then
-      local indent = item.kind == "thread" and "    " or ""
-      local color = item.kind == "zone" and "|cffffd100" or "|cffe0e0e0"
-      r.text:SetText(indent .. color .. (item.text or "") .. "|r")
-    else
-      r.text:SetText(i == 1 and not data and "|cffff9d2eStart Familiar on your PC to see your quests here.|r" or "")
-    end
+    r.text:SetText(i == 1 and "|cff9d9384Your quests show here on the Glass.|r" or "")
   end
-  if nativeBox then
-    local sel = data and data.selected
-    local text
-    if sel then
-      text = ("|cffffd100%s|r\n\n%s"):format(sel.title or "", sel.text or "")
-    else
-      text = "Familiar isn't running on your PC.\n\nOpen the Familiar folder and double-click Run Familiar.cmd; it paints "
-        .. "live replies on top of this window. Messages you send meanwhile are kept: /fam resend sends them "
-        .. "once it's running. A native copy of the selected quest is saved here on /reload."
-    end
-    if UI.focusMode then
-      text = "Live Glass is unavailable or Text view is on. This is a saved snapshot, not live status.\nUse Full view below to restore controls; queued messages are not provider receipts.\n\n" .. text
-    end
-    nativeBox.locked = text
-    nativeBox:SetText(text)
+  if savedNote then
+    local notice = type(FamiliarSyncData) == "table" and type(FamiliarSyncData.notice) == "string" and FamiliarSyncData.notice
+    savedNote:SetText(long .. "\n\n|cff9d9384This is a saved status, not the conversation: replies show only on the Glass."
+      .. (state == "saved" and "" or " Messages you send meanwhile wait in the outbox; /fam resend sends them once Familiar runs.")
+      .. "|r" .. (notice and ("\n\n|cffff9d2e" .. notice .. "|r") or ""))
   end
-  if statusText then
-    -- The live overlay covers this bar while the companion is drawing, so whoever can read it is
-    -- looking at a game without the companion.
-    local msg
-    if not data then
-      msg = "Familiar isn't running on your PC - start it there"
-    elseif data.stoppedAt then
-      msg = ("Familiar was closed at %s - start it on your PC"):format(date("%H:%M", data.stoppedAt))
-    else
-      msg = ("Familiar isn't drawing - is it running on your PC? (last seen %s)"):format(date("%H:%M", data.generatedAt or 0))
-    end
-    statusText:SetText("|cffff9d2e" .. msg .. "|r")
-  end
-end
-
-function UI.Echo(text)
-  if nativeBox and nativeBox.locked then
-    nativeBox.locked = nativeBox.locked .. "\n\n|cff9d7cff> " .. text .. "|r"
-    nativeBox:SetText(nativeBox.locked)
-  end
-end
-
-function UI.ToggleNative()
-  UI.native = not UI.native
-  if UI.nativeBadge then UI.nativeBadge:SetShown(UI.native) end
-  -- In native view the transcript box takes the mouse (select + Ctrl+C); otherwise clicks fall
-  -- through to the detail surface for the overlay.
-  nativeBox:EnableMouse(UI.native)
-  nativeScroll:EnableMouseWheel(UI.native)
-  if nativeScroll.ScrollBar then nativeScroll.ScrollBar:SetShown(UI.native) end
-  ns.Layout.Dirty()
+  if statusText then statusText:SetText("|cffff9d2e" .. short .. "|r") end
 end
 
 -- Composer ---------------------------------------------------------------------------------------
@@ -261,7 +226,7 @@ local function updateDraftNotice()
   if not draftNotice then return end
   local warning = UI.draftTooLong and "Draft over 64 KB: copy it before reload; latest edits aren't saved."
     or UI.sendTooLong and "Too long to send (limit is about 40 KB): shorten or split it before Send."
-    or UI.draftTargetChanged and "Conversation changed: check the message target before Send."
+    or UI.draftTargetChanged and "Selected quest changed: check the message target before Send."
     or UI.draftRestored and "Recovered draft: check the message target before Send."
   local text = warning or ""
   if text == draftNoticeText then return end
@@ -314,7 +279,7 @@ function UI.RestoreDraft()
     editBox:SetText(text)
     settingHistory = false
     UI.draftRestored = true
-    ns.Print("Recovered this character's unsent draft. Check the message target before Send; /fam draft discard clears it. Nothing was sent.")
+    ns.Print("Recovered this character's unsent draft. Check the message target before Send; the Discard button clears it. Nothing was sent.")
   end
   if overflow then ns.Print("The previous draft exceeded 64 KB. Only its last saved version, if any, could be recovered.") end
   updateDraftNotice()
@@ -335,22 +300,27 @@ local function setHistoryText(text)
   settingHistory = false
 end
 
--- Send something the player typed (prompt, /fam ask, /fam <provider>) and remember it for Ctrl+Up.
+-- Send something the player typed (prompt, /fam ask, /fam <familiar>) and remember it for Ctrl+Up.
 -- Returns false, and says so, if it was too large for the Runestrip (~40 KB): nothing is sent.
-function UI.SendTyped(msg, text)
+-- `note` ("summoning claude...") is printed only when Familiar may be listening; when it is known
+-- closed, the player is told the message waits in the outbox instead.
+function UI.SendTyped(msg, text, note)
   if not ns.SendTracked(msg) then
     ns.Print("|cffff5a4fThat message is too long to send (limit is about 40 KB). Nothing was sent.|r")
     return false
   end
   UI.Remember(text)
+  if ns.AppClosed() then
+    ns.Print("|cffff9d2ekept in the outbox - Familiar isn't running|r (as of your last login or /reload). /fam resend sends it once it runs.")
+  elseif note then
+    ns.Print(note)
+  end
   return true
 end
 
--- Send a prompt (escaped as typed in WoW) and echo it in the native view.
+-- Send a prompt (escaped as typed in WoW) to the selected quest.
 function UI.SendPrompt(text)
-  if not UI.SendTyped({ t = "prompt", text = ns.Unescape(text), ctx = ns.GameContext() }, text) then return false end
-  UI.Echo(text)
-  return true
+  return UI.SendTyped({ t = "prompt", text = ns.Unescape(text), ctx = ns.GameContext() }, text)
 end
 
 -- Ctrl+Up recalls anything sent: composer, /fam <text>, /fam claude|codex <text>.
@@ -420,7 +390,7 @@ local function buildComposer(parent)
   editBox:SetScript("OnEditFocusLost", function(self) hint:SetShown(self:GetText() == "") end)
   editBox:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
   editBox:SetScript("OnEnterPressed", function(self)
-    if IsShiftKeyDown() or not ns.db.enterSends then
+    if IsShiftKeyDown() then
       -- Insert is programmatic (OnTextChanged user=false), but this is a real edit of
       -- recalled history. Stop browsing before the callback saves the edited text.
       UI.histIdx, UI.histDraft = nil, nil
@@ -460,7 +430,7 @@ local function buildComposer(parent)
   draftDiscard:SetScript("OnClick", UI.DiscardDraft)
   draftDiscard:SetScript("OnEnter", function(self)
     GameTooltip:SetOwner(self, "ANCHOR_TOP")
-    GameTooltip:SetText("Discard this character's unfinished composer text. Sent messages and history are kept.", 1, 1, 1, 1, true)
+    GameTooltip:SetText("Discard this character's unfinished message. Sent messages and history are kept.", 1, 1, 1, 1, true)
     GameTooltip:Show()
   end)
   draftDiscard:SetScript("OnLeave", GameTooltip_Hide)
@@ -499,8 +469,32 @@ local function savePosition()
   w.w, w.h = floor(frame:GetWidth() + 0.5), floor(frame:GetHeight() + 0.5)
 end
 
--- Crop chrome around the current conversation. Full view is a native escape hatch even with no
--- companion. The edit box is never hidden/recreated/focused, so text, selection and focus survive.
+-- One view button cycles Full -> Quest only (quest list hidden, remembered) -> Compact (just the
+-- conversation and the message box, this session only) -> Full. Its label is what a click does.
+local VIEW_LABEL = { full = "Quest only", quest = "Compact", compact = "Full view" }
+local VIEW_TIP = {
+  full = "Quest only: hide the quest list so the window is just the quest you're in (remembered).",
+  quest = "Compact: just the conversation and the message box, for this session.",
+  compact = "Full view: the whole window again, quest list included.",
+}
+local function viewState() return UI.focusMode and "compact" or UI.logCollapsed and "quest" or "full" end
+local function updateViewButton()
+  if UI.viewBtn then UI.viewBtn:SetText(VIEW_LABEL[viewState()]) end
+end
+
+function UI.CycleView()
+  local v = viewState()
+  if v == "full" then UI.SetLogCollapsed(true)
+  elseif v == "quest" then UI.SetFocusMode(true)
+  else
+    UI.SetFocusMode(false)
+    UI.SetLogCollapsed(false)
+  end
+end
+
+-- Compact view: crop chrome around the current conversation (internally "focus", the name the
+-- Glass knows it by). The view button stays as the way back even with no Glass. The edit box is
+-- never hidden/recreated/focused, so text, selection and keyboard focus survive.
 function UI.SetFocusMode(on)
   on = on and true or false
   if not frame or on == (UI.focusMode and true or false) then return end
@@ -515,13 +509,10 @@ function UI.SetFocusMode(on)
   if frame.SetResizeBounds then frame:SetResizeBounds(on and 324 or 560, on and 300 or 340, 1600, 1100)
   else frame:SetMinResize(on and 324 or 560, on and 300 or 340) end
   for _, item in ipairs(chrome) do item:SetShown(not on) end
+  if questMenu then questMenu:Hide() end
   listPane:SetShown(not on and not UI.logCollapsed)
-  UI.logBtn:SetShown(not on)
   UI.status:SetShown(not on)
-  UI.focusBtn:ClearAllPoints()
-  UI.focusBtn:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", on and 14 or 80, 14)
-  UI.focusBtn:SetSize(on and 82 or 62, 22)
-  UI.focusBtn:SetText(on and "Full view" or "Focus")
+  updateViewButton()
   frame:SetBackdrop(on and BACKDROP_PANE or BACKDROP_MAIN)
   UI.ApplyOpacity(ns.db.opacity) -- a new backdrop comes back opaque
   if on then
@@ -541,15 +532,12 @@ function UI.SetFocusMode(on)
     fullView = nil
   end
   anchorPanes()
-  UI.RefreshNative()
-  -- Send now rather than waiting for the ordinary layout debounce; no new companion downlink.
+  -- Send now rather than waiting for the ordinary layout debounce.
   ns.Layout.Send()
 end
 
-function UI.ToggleFocusMode() UI.SetFocusMode(not UI.focusMode) end
-
--- Collapse: hide the quest log and take its width off the window's left side, so the current
--- quest stays where it is on screen. Expand: the reverse (within the window's size limits).
+-- Hide: take the quest list's width off the window's left side, so the current quest stays where
+-- it is on screen. Show: the reverse (within the window's size limits).
 function UI.SetLogCollapsed(on, initial)
   if UI.focusMode then UI.SetFocusMode(false) end
   on = on and true or false
@@ -559,9 +547,7 @@ function UI.SetLogCollapsed(on, initial)
   ns.db.logCollapsed = on
   listPane:SetShown(not on)
   anchorPanes()
-  -- The arrows point the way the window's left edge goes: right when the log collapses, left
-  -- when it comes back.
-  UI.logBtn:SetText(on and "<< Log" or "Log >>")
+  updateViewButton()
   if not initial and was ~= nil and frame:GetLeft() then
     local minW, _, maxW = 560, 340, 1600
     local w = frame:GetWidth()
@@ -604,7 +590,6 @@ function UI.Init()
   frame:EnableMouse(true)
   frame:EnableMouseWheel(true)
   frame:SetScript("OnMouseWheel", ns.Guard("window wheel", function(_, delta)
-    if UI.native then return end
     if listPane and listPane:IsMouseOver() then UI.Wheel("list", delta)
     elseif detailPane and detailPane:IsMouseOver() then UI.Wheel("detail", delta) end
   end, true))
@@ -639,20 +624,39 @@ function UI.Init()
   close:SetScript("OnClick", function() UI.Hide() end)
 
   -- Toolbar
-  local newClaude = button(frame, "+ Claude", 80, "newClaude", "Start a new quest with Claude Code in a project you pick")
-  newClaude:SetPoint("TOPLEFT", 16, -28)
-  local newCodex = button(frame, "+ Codex", 80, "newCodex", "Start a new quest with Codex in a project you pick")
-  newCodex:SetPoint("LEFT", newClaude, "RIGHT", 4, 0)
-  local newChat = button(frame, "+ Chat", 64, "newChat", "Ask anything (no project): game questions, quick lookups. Web search only.")
-  newChat:SetPoint("LEFT", newCodex, "RIGHT", 4, 0)
-  local back = button(frame, "Back", 60, "back", "Back to the quest log")
+  local newQuest = button(frame, "+ Quest", 80, "newQuest", "Start a new quest: pick a familiar, then a zone")
+  newQuest:SetPoint("TOPLEFT", 16, -28)
+  local newChat = button(frame, "+ Chat", 64, "newChat", "Ask anything (no zone): game questions, quick lookups. Web search only.")
+  newChat:SetPoint("LEFT", newQuest, "RIGHT", 4, 0)
+  local back = button(frame, "Back", 60, "back", "Back to the quest list")
   back:SetPoint("LEFT", newChat, "RIGHT", 4, 0)
-  local nativeBtn = button(frame, "Text", 54, "native", "Toggle the native, copyable transcript (from the last /reload snapshot)")
-  nativeBtn:SetPoint("TOPRIGHT", -34, -28)
-  local mode = button(frame, "Mode", 64, "mode", "Permission mode for this quest: Ask first <-> Plan only. Accept edits and Auto are chosen in the desktop control panel.")
-  mode:SetPoint("RIGHT", nativeBtn, "LEFT", -4, 0)
-  local model = button(frame, "Model", 64, "model", "Choose the model for this quest (opens the list in the details pane)")
-  model:SetPoint("RIGHT", mode, "LEFT", -4, 0)
+  -- Modes are set in Familiar on your PC (Safety), never from the game.
+  local model = button(frame, "Model", 64, "model", "Choose the model for this quest (opens the list in the quest pane)")
+  model:SetPoint("TOPRIGHT", -34, -28)
+
+  -- The "+ Quest" menu: one button per familiar. It opens over the quest list, where the Glass
+  -- paints; Layout lists it as an occluder so the Glass leaves a hole for it.
+  questMenu = CreateFrame("Frame", "FamiliarQuestMenu", frame, "BackdropTemplate")
+  questMenu:SetBackdrop(BACKDROP_PANE)
+  questMenu:SetBackdropColor(0.02, 0.02, 0.03, 0.95)
+  questMenu:SetBackdropBorderColor(0.6, 0.5, 0.3, 1)
+  questMenu:SetFrameStrata("DIALOG")
+  questMenu:SetSize(124, 60)
+  questMenu:SetPoint("TOPLEFT", newQuest, "BOTTOMLEFT", 0, -2)
+  questMenu.buttons = {}
+  for _, f in ipairs(NEW_QUEST) do
+    local b = CreateFrame("Button", nil, questMenu, "UIPanelButtonTemplate")
+    b:SetSize(112, 22)
+    b:SetText(f.label)
+    b.key = f.key
+    b:SetScript("OnClick", function()
+      questMenu:Hide()
+      UI.Key(f.key)
+    end)
+    questMenu.buttons[#questMenu.buttons + 1] = b
+  end
+  questMenu:Hide()
+  UI.questMenu = questMenu
 
   -- Panes
   listPane = pane(frame)
@@ -672,85 +676,48 @@ function UI.Init()
   detailPane.content:SetScript("OnSizeChanged", function() ns.Layout.Dirty() end)
   UI.detailPane = detailPane
 
-  -- Native transcript (copyable). Sits under the overlay; visible when the overlay is absent or
-  -- the user toggles "Text". Read-only: edits are reverted.
-  nativeScroll = CreateFrame("ScrollFrame", "FamiliarNativeScroll", detailPane, "UIPanelScrollFrameTemplate")
-  nativeScroll:SetPoint("TOPLEFT", detailPane.content, "TOPLEFT", 2, -2)
-  nativeScroll:SetPoint("BOTTOMRIGHT", detailPane.content, "BOTTOMRIGHT", -22, 2)
-  nativeBox = CreateFrame("EditBox", nil, nativeScroll)
-  nativeBox:SetMultiLine(true)
-  nativeBox:SetAutoFocus(false)
-  nativeBox:SetFontObject(GameFontHighlightSmall)
-  nativeBox:SetWidth(300)
-  nativeScroll:SetScrollChild(nativeBox)
-  nativeScroll:SetScript("OnSizeChanged", function(_, wdt) nativeBox:SetWidth(wdt) end)
-  nativeBox:SetScript("OnTextChanged", function(self, user)
-    if user and self.locked then self:SetText(self.locked) end
-  end)
-  nativeBox:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
-  nativeScroll:SetFrameLevel(detailPane.content:GetFrameLevel() + 2)
-  nativeScroll:EnableMouse(false)
-  nativeScroll:EnableMouseWheel(false)
-  nativeBox:EnableMouse(false)
-  -- The native scrollbar only matters in "Text" view; otherwise it would eat wheel events
-  -- meant for the Glass over the right edge of the pane.
-  nativeScroll.scrollBarHideable = true
-  if nativeScroll.ScrollBar then nativeScroll.ScrollBar:Hide() end
-  -- The template re-shows the bar whenever the text overflows; keep it hidden outside Text view.
-  nativeScroll:HookScript("OnScrollRangeChanged", function(self)
-    if not UI.native and self.ScrollBar then self.ScrollBar:Hide() end
-  end)
-  UI.nativeBadge = detailPane:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-  UI.nativeBadge:SetPoint("TOPRIGHT", -8, 12)
-  UI.nativeBadge:SetText("native view")
-  UI.nativeBadge:Hide()
+  -- The saved status, under the Glass: visible only when the live view is not drawing. It says
+  -- what the addon knows and never shows the conversation (FamiliarSync holds none).
+  savedNote = detailPane.content:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+  savedNote:SetPoint("TOPLEFT", 6, -6)
+  savedNote:SetPoint("TOPRIGHT", -6, -6)
+  savedNote:SetJustifyH("LEFT")
+  savedNote:SetJustifyV("TOP")
+  savedNote:SetWordWrap(true)
+  UI.savedNote = savedNote
 
-  -- Bottom bar: status (overlay paints live link status here) + actions
+  -- Bottom bar: status (the Glass paints the live link status here) + actions. Approving is done
+  -- with the registered Approve key (or on the Glass card); "Always" only in the control panel.
   local send = button(frame, "Send", 64, "send", "Send (Enter)")
   send:SetPoint("BOTTOMRIGHT", -30, 14) -- leaves the corner to the resize grip
   local stop = button(frame, "Stop", 56, "stop", "Interrupt the running turn")
   stop:SetPoint("RIGHT", send, "LEFT", -4, 0)
-  local always = button(frame, "Always", 64, "always", "Approve, and allow this kind of action for the rest of this quest (not other quests)")
-  always:SetPoint("RIGHT", stop, "LEFT", -12, 0)
   local deny = button(frame, "Deny", 56, "deny", "Deny the pending request")
-  deny:SetPoint("RIGHT", always, "LEFT", -4, 0)
-  local approve = button(frame, "Approve", 72, "approve", "Approve the pending request")
-  approve:SetPoint("RIGHT", deny, "LEFT", -4, 0)
+  deny:SetPoint("RIGHT", stop, "LEFT", -4, 0)
 
-  -- Collapse / expand the quest log (left pane): the window becomes just the current quest.
-  local logBtn = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
-  logBtn:SetSize(62, 22)
-  logBtn:SetPoint("BOTTOMLEFT", 14, 14)
-  logBtn:SetScript("OnClick", function() UI.ToggleLog() end)
-  logBtn:SetScript("OnEnter", function(self)
+  -- The view button: Full -> Quest only -> Compact -> Full (see UI.CycleView).
+  local viewBtn = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+  viewBtn:SetSize(82, 22)
+  viewBtn:SetPoint("BOTTOMLEFT", 14, 14)
+  viewBtn:SetScript("OnClick", function() UI.CycleView() end)
+  viewBtn:SetScript("OnEnter", function(self)
     GameTooltip:SetOwner(self, "ANCHOR_TOP")
-    GameTooltip:SetText(UI.logCollapsed and "Show the quest log" or "Hide the quest log: just the quest you're in", 1, 1, 1, 1, true)
+    GameTooltip:SetText(VIEW_TIP[viewState()] .. " Click again for the next view.", 1, 1, 1, 1, true)
     GameTooltip:Show()
   end)
-  logBtn:SetScript("OnLeave", GameTooltip_Hide)
-  UI.logBtn = logBtn
-  local focusBtn = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
-  focusBtn:SetSize(62, 22)
-  focusBtn:SetText("Focus")
-  focusBtn:SetPoint("BOTTOMLEFT", 80, 14)
-  focusBtn:SetScript("OnClick", function() UI.ToggleFocusMode() end)
-  focusBtn:SetScript("OnEnter", function(self)
-    GameTooltip:SetOwner(self, "ANCHOR_TOP")
-    GameTooltip:SetText("Conversation-only view. Full view restores this window; /fam view full also works without Glass. Escape keeps its normal behavior. This choice lasts until reload.", 1, 1, 1, 1, true)
-    GameTooltip:Show()
-  end)
-  focusBtn:SetScript("OnLeave", GameTooltip_Hide)
-  UI.focusBtn = focusBtn
-  chrome = { header, title, icon, close, newClaude, newCodex, newChat, back, nativeBtn, mode, model, stop, always, deny, approve }
+  viewBtn:SetScript("OnLeave", GameTooltip_Hide)
+  UI.viewBtn = viewBtn
+  chrome = { header, title, icon, close, newQuest, newChat, back, model, stop, deny }
 
   local status = CreateFrame("Frame", nil, frame)
-  status:SetPoint("LEFT", focusBtn, "RIGHT", 6, 0)
+  status:SetPoint("LEFT", viewBtn, "RIGHT", 6, 0)
   status:SetPoint("BOTTOM", 0, 14)
-  status:SetPoint("RIGHT", approve, "LEFT", -8, 0)
+  status:SetPoint("RIGHT", deny, "LEFT", -8, 0)
   status:SetHeight(22)
   statusText = status:CreateFontString(nil, "ARTWORK", "GameFontNormalSmall")
   statusText:SetAllPoints()
   statusText:SetJustifyH("LEFT")
+  statusText:SetWordWrap(true)
   UI.MakeSurface(status, "status")
   UI.status = status
 
@@ -783,9 +750,10 @@ function UI.Init()
 
   frame:SetScript("OnShow", function() ns.Layout.Dirty() end)
   frame:SetScript("OnHide", function()
-    -- Escape (UISpecialFrames) closes us without UI.Hide; remember it, unless we were hidden for
-    -- combat or only because UIParent hid (Alt+Z, cinematics) - then IsShown() is still true.
-    if not UI.tempHidden and not frame:IsShown() then ns.db.shown = false end
+    questMenu:Hide()
+    -- Escape (UISpecialFrames) closes us without UI.Hide; remember it, unless we were hidden only
+    -- because UIParent hid (Alt+Z, cinematics) - then IsShown() is still true.
+    if not frame:IsShown() then ns.db.shown = false end
     ns.Layout.Dirty()
   end)
   layoutRows()
@@ -796,11 +764,9 @@ function UI.Show()
   ns.db.shown = true
 end
 
-function UI.Hide(temporary)
-  UI.tempHidden = temporary
+function UI.Hide()
   frame:Hide()
-  UI.tempHidden = nil
-  if not temporary then ns.db.shown = false end
+  ns.db.shown = false
 end
 
 function UI.Toggle()

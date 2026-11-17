@@ -1,11 +1,23 @@
 name: Glass preview smoke
+# Browser journeys over the built Glass and control panel, only when what they render may have
+# changed. Typecheck and tests are not repeated here: windows.yml is the authoritative check.
 on:
-  # addon/** too: npm test runs the addon API-conformance and Lua<->TS codec parity checks.
   pull_request:
-    paths: ['companion/**', 'addon/**', '.github/workflows/glass-preview.yml']
-  push:
-    branches: [main]
-    paths: ['companion/**', 'addon/**', '.github/workflows/glass-preview.yml']
+    paths:
+      - 'companion/src/overlay/**'
+      - 'companion/src/control/**'
+      - 'companion/src/shared/**'
+      - 'companion/src/assets/**'
+      - 'companion/src/hub/viewmodel.ts'
+      - 'companion/src/main/preload-*.ts'
+      - 'companion/src/main/physical.ts' # control panel: approve-key labels
+      - 'companion/scripts/build.mjs'
+      - 'companion/scripts/bundles.mjs'
+      - 'companion/scripts/preview*'
+      - 'companion/scripts/*-journey.mjs'
+      - 'companion/scripts/render-media.mjs'
+      - 'companion/package-lock.json'
+      - '.github/workflows/glass-preview.yml'
   workflow_dispatch:
 permissions:
   contents: read
@@ -34,11 +46,8 @@ jobs:
           cache-dependency-path: companion/package-lock.json
       - name: Install locked application dependencies without install hooks
         run: npm ci --ignore-scripts --no-audit --no-fund
-      - name: Check and build actual renderers
-        run: |
-          npm run typecheck
-          npm test
-          npm run build
+      - name: Build the actual renderers
+        run: npm run build
       - name: Install isolated pinned browser QA tooling
         run: |
           npm install --prefix "$RUNNER_TEMP/familiar-qa" --no-package-lock --ignore-scripts --no-audit --no-fund playwright@1.56.1

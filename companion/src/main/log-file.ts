@@ -28,8 +28,7 @@ export function describeAddonMessage(m: Record<string, unknown>): string {
 }
 
 /** An overlay action for the log: its type, boolean flags and (for "decide") the decision, never
- * card ids, option labels or request text. Catch-up identity/outcome is traced by the Hub with
- * opaque tokens. */
+ * card ids, option labels or request text. */
 export function describeOverlayAction(a: any): string {
   const out: Record<string, string | boolean> = { type: typeof a?.type === "string" ? a.type : "?" };
   if (a && typeof a === "object") for (const [k, v] of Object.entries(a)) if (typeof v === "boolean") out[k] = v;

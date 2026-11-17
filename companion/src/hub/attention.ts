@@ -2,6 +2,7 @@ import type { Entry, Hub, Thread } from "./hub";
 import { createHash } from "node:crypto";
 import { MODE_LABEL } from "../agents/types";
 import { STOP_NOTICE, USAGE_LIMIT_NOTICE } from "../shared/notes";
+import { NEEDS_YOU, REPLY_READY } from "../shared/words";
 
 export interface AttentionItem {
   thread: string;
@@ -50,8 +51,8 @@ export function attentionItems(hub: Hub): AttentionItem[] {
     const pending = e.kind === "approval" && e.approval === "pending";
     const revision = attentionRevision(e);
     if (!pending && t.attentionSeen === revision) continue;
-    const label = pending ? "Needs approval" : e.kind === "approval" ? "Request expired" :
-      e.kind === "assistant" ? "Reply waiting" : STOP_NOTICE.test(e.text) ? "Interrupted" : "Needs attention";
+    const label = pending ? NEEDS_YOU : e.kind === "approval" ? "Request expired" :
+      e.kind === "assistant" ? REPLY_READY : STOP_NOTICE.test(e.text) ? "Interrupted" : "Needs attention";
     const excerpt = e.kind === "approval" ? e.title ?? e.text : e.text;
     const mode = t.kind === "chat" ? "Chat" : MODE_LABEL[t.mode];
     items.push({ thread: t.id, entry: e.id, revision, title: t.title, project: hub.projectName(t), cwd: t.cwd,

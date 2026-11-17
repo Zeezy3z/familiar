@@ -5,8 +5,11 @@ versions pinned in `companion/package-lock.json`. In a git clone, `Run Familiar.
 from the npm registry on your own machine (`npm ci`). The release download
 `FamiliarApp-vX.Y.Z-windows.zip` includes the runtime packages below and the Electron binary
 (MIT; Chromium and Node.js notices in `companion/node_modules/electron/dist/LICENSE` and
-`LICENSES.chromium.html`), each with the licence files its package publishes, in its folder under
-`companion/node_modules/`, **except Anthropic's Claude packages**: the download contains no
+`LICENSES.chromium.html`). Packages esbuild bundles into `companion/dist/` (marked, dompurify,
+highlight.js, @agentclientprotocol/sdk, and the Marcellus font from @fontsource/marcellus) ship their
+licence texts under `companion/dist/licenses/`; the other runtime packages ship in their folders
+under `companion/node_modules/` with the licence files they publish, **except Anthropic's Claude
+packages**: the download contains no
 Anthropic proprietary code, neither `@anthropic-ai/claude-agent-sdk` nor
 `@anthropic-ai/claude-agent-sdk-win32-x64`. Its first run downloads both from the npm registry
 onto your own machine (`companion/fetch-claude.cjs`), at the versions the lockfile pins and
@@ -47,7 +50,7 @@ Two of them publish no licence file, only a `"license": "MIT"` field in their `p
 ## SIL Open Font License 1.1
 
 The Marcellus font is licensed under the SIL Open Font License, Version 1.1. The full licence
-text ships with the package at `companion/node_modules/@fontsource/marcellus/LICENSE` and is
+text ships in `companion/dist/licenses/` with the font and is
 available at https://openfontlicense.org/open-font-license-official-text/. Under the OFL the font
 may be bundled with software under any licence; it may not be sold by itself, and modified
 versions may not use the Reserved Font Name "Marcellus".

@@ -6,7 +6,8 @@ import type { Entry, Thread } from "./hub";
 import { MODES } from "../agents/types";
 import { writeFileAtomic } from "./config";
 
-export interface RecoveryNotice { backup: string; skipped: number; recovered: number; at: number }
+/** `format`: the file's version, when it was one this Familiar can't read (kept aside whole). */
+export interface RecoveryNotice { backup: string; skipped: number; recovered: number; at: number; format?: string }
 export interface StoredQuests {
   [key: string]: unknown;
   threads: Thread[];
@@ -51,12 +52,13 @@ function thread(v: unknown): v is Thread {
 
 function recovery(v: unknown): v is RecoveryNotice {
   return object(v) && string(v.backup) && /^threads\.json\.recovery(?:\.\d{1,2})?$/.test(v.backup) &&
-    Number.isSafeInteger(v.skipped) && v.skipped >= 0 && Number.isSafeInteger(v.recovered) && v.recovered >= 0 && finite(v.at);
+    Number.isSafeInteger(v.skipped) && v.skipped >= 0 && Number.isSafeInteger(v.recovered) && v.recovered >= 0 && finite(v.at) && optional(v, "format", string);
 }
 
-function decode(raw: unknown): { data: StoredQuests; damaged: boolean; skipped: number; unsupported?: boolean } {
+function decode(raw: unknown): { data: StoredQuests; damaged: boolean; skipped: number; format?: string } {
   if (!object(raw)) return { data: { threads: [] }, damaged: true, skipped: 0 };
-  if (raw.version !== undefined && raw.version !== 1) return { data: { threads: [] }, damaged: false, skipped: 0, unsupported: true };
+  // Another version's format (a newer Familiar, most likely): kept aside whole, never read in part.
+  if (raw.version !== undefined && raw.version !== 1) return { data: { threads: [] }, damaged: true, skipped: 0, format: String(raw.version).slice(0, 20) };
   // Missing version, attentionSeen, optional provider fields and optional root collections are
   // supported legacy omissions. Unknown optional properties are retained, not reconstructed away.
   const data: StoredQuests = { ...raw, threads: [] };
@@ -80,7 +82,7 @@ function decode(raw: unknown): { data: StoredQuests; damaged: boolean; skipped: 
 export class ThreadStore {
   private extras: Record<string, unknown> = {};
   private original?: Buffer;
-  private blocked?: "read" | "unsupported" | "preserve" | "conflict";
+  private blocked?: "read" | "preserve" | "conflict";
   private writeError = false;
   private notice?: RecoveryNotice;
   code = "other";
@@ -89,11 +91,11 @@ export class ThreadStore {
   constructor(private file: string) {}
 
   get warning(): StorageWarning | undefined {
-    if (this.blocked) return { level: "error", text: this.blocked === "unsupported"
-      ? "Saved quests use an unsupported format. Saving is paused; the file has not been replaced."
-      : this.blocked === "conflict" ? "The saved-quest file changed elsewhere during recovery. Saving is paused; the changed file has not been replaced."
+    if (this.blocked) return { level: "error", text: this.blocked === "conflict"
+      ? "The saved-quest file changed elsewhere during recovery. Saving is paused; the changed file has not been replaced."
       : "Saved quests could not be safely read or preserved. Saving is paused to protect the original file. Keep Familiar open and ask for recovery help." };
     if (this.writeError) return { level: "error", text: "Recent changes could not be saved. Keep Familiar open. New messages will not be sent until a save succeeds." };
+    if (this.notice?.format) return { level: "warn", text: "Saved quests were in a format this version of Familiar can't read (perhaps saved by a newer version). They are kept unchanged, privately in Familiar's data folder; Familiar started without them." };
     if (this.notice) return { level: "warn", text: `Saved quests could not be fully loaded: ${this.notice.recovered} valid records recovered; ${this.notice.skipped} invalid or ambiguous records skipped. Original bytes are preserved privately in Familiar's data folder.` };
   }
 
@@ -109,12 +111,11 @@ export class ThreadStore {
     let result: ReturnType<typeof decode>;
     try { result = decode(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes))); }
     catch { result = { data: { threads: [] }, damaged: true, skipped: 0 }; }
-    if (result.unsupported) { this.blocked = "unsupported"; return { threads: [] }; }
     if (result.damaged) {
       try {
         const backup = this.preserve(bytes);
         this.original = bytes;
-        result.data.recovery = { backup, skipped: result.skipped, recovered: result.data.threads.length, at: Date.now() };
+        result.data.recovery = { backup, skipped: result.skipped, recovered: result.data.threads.length, at: Date.now(), ...(result.format ? { format: result.format } : {}) };
       } catch (e) { this.blocked = "preserve"; this.code = storageCode(e); return { threads: [] }; }
     }
     this.notice = result.data.recovery;

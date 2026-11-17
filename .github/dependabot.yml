@@ -1,14 +1,20 @@
 version: 2
+# One grouped pull request per ecosystem per week: every npm update in one, every action update in
+# the other. Security updates still arrive on their own.
 updates:
   - package-ecosystem: npm
     directory: /companion
     schedule:
       interval: weekly
-    open-pull-requests-limit: 3
+    open-pull-requests-limit: 1
     groups:
-      dev:
-        dependency-type: development
+      npm:
+        patterns: ['*']
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+    open-pull-requests-limit: 1
+    groups:
+      actions:
+        patterns: ['*']

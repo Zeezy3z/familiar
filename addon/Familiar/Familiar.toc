@@ -1,6 +1,6 @@
 ## Interface: 16001, 16002, 16003
 ## Title: Familiar
-## Notes: Talk to your Claude Code and Codex agents without leaving the game. Needs the Familiar companion app on your PC.
+## Notes: A quest log for your coding agents (Claude Code, Codex and others). Needs the Familiar app running on your Windows PC.
 ## Author: Zeezy3z
 ## Version: 0.6.0
 ## X-License: MIT

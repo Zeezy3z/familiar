@@ -1,6 +1,18 @@
 // End-to-end checks against a running FakeWoW + companion (scripts/dev-restart.sh --fake).
 // Every interaction goes through FakeWoW -> Runestrip pixels -> WGC capture -> decoder -> Hub.
 // Usage: node scripts/e2e.mjs [--agents]   (--agents also runs live Claude turns)
+//
+// What must be true for a local run:
+// - A dev companion started with FAMILIAR_DEV=1 and FakeWoW (scripts/dev-restart.sh --fake), with its hooks on
+//   127.0.0.1:47810/47811 and this run's token in %TEMP%\familiar-dev-<port>.token. Never against the live app.
+// - FakeWoW is the foreground window and the Glass is showing (the second check stops the run otherwise).
+// - The tutorial quest can be opened (/fam tutorial); it needs no agent. --agents needs a signed-in Claude Code.
+// - The rules these checks hold the companion to: in game, a request is approved only by the registered Approve key
+//   (a real key press physical.ts sees) or, with approveByClick on, a Glass card click with proof. FakeWoW's keys
+//   and clicks are not physical input, so they approve nothing. Always and Mode are never accepted from the game,
+//   even with proof: only the control panel's own commands ("decide", "questMode") give them. The token-gated
+//   /action hook stands in for a card click WITH proof (TRUSTED): it approves a whole request, refuses a cut one, and
+//   is refused for Always. (A real click's proof is refused outright while approveByClick is off; hub.test.ts covers it.)
 import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -113,7 +125,7 @@ await check("right-click a zone starts a draft there", async () => {
   await until(async () => (await model()).list.title === "Quest Log");
 });
 
-await check("mode from the game needs a physical click (a synthetic one is refused)", async () => {
+await check("mode never changes from the game (only the control panel's questMode sets it)", async () => {
   await key("newClaude");
   await until(async () => (await model()).list.title === "New Quest");
   // The picker may start with one row per agent (when more than Claude and Codex are installed).
@@ -121,10 +133,10 @@ await check("mode from the game needs a physical click (a synthetic one is refus
   await until(async () => (await model()).detail.kind === "draft");
   try {
     const before = (await model()).detail.mode;
-    // FakeWoW's clicks are not physical mouse input, so physical.ts must refuse this (and say so).
+    // Refused by design, physical or not: the hub answers "Modes are changed in Familiar on your PC".
     await key("mode");
-    await new Promise((r) => setTimeout(r, 1500));
-    assert((await model()).detail.mode === before, "mode changed without physical input");
+    await sleep(1500);
+    assert((await model()).detail.mode === before, "mode changed from the game");
   } finally {
     await key("back");
     await until(async () => (await model()).list.title === "Quest Log");
@@ -197,6 +209,49 @@ await check("a request shown whole in game is listed for the control panel too (
   } finally {
     await post("/inject", { agent: "familiar", type: "approvalResolved", threadId: quest.id, requestId });
   }
+});
+
+// One short request in the tutorial quest (it needs no agent), old enough to be decided; removed again afterwards.
+async function withShortRequest(name, fn) {
+  await key("tutorial");
+  const quest = await until(async () => (await get("/threads")).find((x) => x.agent === "familiar"));
+  assert(quest, "no tutorial quest");
+  const requestId = `e2e-${name}-${Date.now()}`;
+  await post("/inject", { agent: "familiar", type: "approval", threadId: quest.id, requestId, kind: "command", title: `e2e: ${name}`, detail: "echo hi", canAlways: true });
+  await sleep(500); // older than minCardAgeMs, so "too fresh" is never the reason
+  const card = async () => (await get("/threads")).find((x) => x.id === quest.id)?.last.find((e) => e.requestId === requestId);
+  try {
+    await fn(quest, requestId, card);
+  } finally {
+    await post("/inject", { agent: "familiar", type: "approvalResolved", threadId: quest.id, requestId });
+  }
+}
+
+await check("the Approve key sent from the game approves nothing without a real key press", async () => {
+  await withShortRequest("key", async (quest) => {
+    const states = async () => JSON.stringify((await get("/threads")).find((x) => x.id === quest.id)?.last.filter((e) => e.kind === "approval").map((e) => [e.requestId, e.approval]));
+    const before = await states();
+    assert(before.includes('"pending"'), "nothing pending to approve");
+    // FakeWoW's key is a strip message, not a press physical.ts sees on the keyboard: the hub refuses it.
+    await key("approve");
+    await sleep(1500);
+    assert((await states()) === before, `a request was decided from the game: ${before} -> ${await states()}`);
+  });
+});
+
+await check("Always is never accepted from the game, even with proof of a click", async () => {
+  await withShortRequest("always", async (quest, requestId, card) => {
+    await post("/action", { type: "decide", thread: quest.id, requestId, decision: "allowAlways" });
+    await sleep(500);
+    assert((await card())?.approval === "pending", `card is ${(await card())?.approval}`);
+  });
+});
+
+await check("a card click with proof approves a request shown whole", async () => {
+  await withShortRequest("click", async (quest, requestId, card) => {
+    await post("/action", { type: "decide", thread: quest.id, requestId, decision: "allow" });
+    assert(await until(async () => (await card())?.approval === "approved", 3000), `card is ${(await card())?.approval}`);
+  });
 });
 
 await check("Save what Familiar sees: a PNG of at most 320x32 px with the strip's magenta finder in it", async () => {

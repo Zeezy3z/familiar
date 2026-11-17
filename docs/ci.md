@@ -1,8 +1,20 @@
 # Local-first CI
 
-The [Glass preview workflow](../.github/workflows/glass-preview.yml) is the executable source of
-truth: one fast test/build/renderer job on pull requests and on pushes to `main`. Validate locally
-first; do not use repeated pushes as a test loop.
+Validate locally first; do not use repeated pushes as a test loop. The workflows are the
+executable source of truth:
+
+- [`windows.yml`](../.github/workflows/windows.yml), the one authoritative check: typecheck,
+  tests (including the README media check) and build on Windows, for pull requests touching
+  `companion/`, `addon/` or `Run Familiar.cmd`, once more on the push to `main` (the merged tree),
+  and called by `release.yml` for every `v*` tag before anything is published.
+- [`glass-preview.yml`](../.github/workflows/glass-preview.yml): build plus the browser journeys
+  and media render, only on pull requests touching the Glass, the control panel or their preview
+  scripts. It does not repeat typecheck or tests.
+- [`docs.yml`](../.github/workflows/docs.yml): only the README media test, for changes to
+  `README.md` or `docs/media/`, which `windows.yml` does not run for.
+- `release.yml` and `installer.yml`: see [releasing.md](releasing.md).
+- Dependabot opens at most one grouped npm pull request and one grouped actions pull request a
+  week. Actions stay pinned by commit SHA and workflows default to `contents: read`.
 
 ## Before a push
 
@@ -29,8 +41,8 @@ Windows: `node scripts/prebuilt.mjs build <scratch>\FamiliarApp-test-windows.zip
 requests and manual runs (not on pushes) and keeps the zip as an artifact for 3 days.
 
 For documentation-only edits, check links and documented commands against their actual
-definitions. The workflow does not run for ordinary docs changes; a filtered or absent check is
-not a passing check.
+definitions. Only `README.md` and `docs/media/` changes run a check (`docs.yml`); other docs
+changes run nothing, and a filtered or absent check is not a passing check.
 
 ## The live pipeline on Windows (FakeWoW)
 
@@ -68,8 +80,13 @@ the failed job only.
 
 ## What the evidence proves
 
-- PR runs check out the PR head SHA; the push to `main` checks the integrated tree. A green PR
-  head alone does not prove the merged tree.
+- PR runs check out the PR head SHA; the push to `main` checks the integrated tree (`windows.yml`
+  only; the Glass preview runs on pull requests only). A green PR head alone does not prove the
+  merged tree.
+- `scripts/build.mjs` empties `dist/` first, so a file from an older build cannot ship. Source maps
+  are written beside each bundle (`dist/*.js.map`) for development and left out of both downloads
+  (`electron-builder.yml`, `scripts/prebuilt.mjs`); `installer-check.mjs` and `prebuilt.mjs check`
+  fail if one is shipped.
 - Local typecheck, tests and build catch cheap failures. For visual diagnosis, from `companion/`
   run `node scripts/build.mjs`, then `node scripts/preview.mjs`, and open
   `http://127.0.0.1:47812/control.html?scenario=setup` (also `waiting`, `searching`, `linked`,

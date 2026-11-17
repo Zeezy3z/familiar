@@ -12,6 +12,7 @@ const main = path.join(root, "dist", "main.js");
 const prebuilt = fs.existsSync(path.join(root, ".prebuilt"));
 
 function newest(p) {
+  if (!fs.existsSync(p)) return 0;
   const st = fs.statSync(p);
   if (!st.isDirectory()) return st.mtimeMs;
   let t = 0;
@@ -47,8 +48,9 @@ function start() {
   let stale = !prebuilt;
   if (stale) {
     try {
-      // What the bundle is built from: sources, build scripts (build identity too) and locked dependencies.
-      const inputs = ["src", "scripts", "package-lock.json"].map((p) => newest(path.join(root, p)));
+      // What the bundle is built from: sources, build scripts (build identity too), locked
+      // dependencies and package.json (the version is built in).
+      const inputs = ["src", "scripts", "package.json", "package-lock.json"].map((p) => newest(path.join(root, p)));
       stale = Math.max(...inputs) > fs.statSync(main).mtimeMs;
     } catch {
       /* no dist yet */

@@ -11,7 +11,6 @@ end
 
 function Minimap_.Init()
   local db = ns.db.minimap
-  if db.hide then return end
   local btn = CreateFrame("Button", "FamiliarMinimapButton", Minimap)
   Minimap_.button = btn -- Layout reports its rect (layout.mini) so the Glass can mark it
   btn:SetSize(31, 31)
@@ -55,7 +54,7 @@ function Minimap_.Init()
   btn:SetScript("OnEnter", function(self)
     GameTooltip:SetOwner(self, "ANCHOR_LEFT")
     GameTooltip:AddLine("Familiar", 1, 0.82, 0)
-    GameTooltip:AddLine("Left-click: Quest Log", 1, 1, 1)
+    GameTooltip:AddLine("Left-click: Familiar window", 1, 1, 1)
     GameTooltip:AddLine("Right-click: quest tracker", 1, 1, 1)
     GameTooltip:AddLine("Drag: move", 0.6, 0.6, 0.6)
     GameTooltip:Show()

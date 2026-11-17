@@ -1,14 +1,13 @@
 // FakeWoW: a stand-in game window for end-to-end tests without the real client. It behaves like
 // the addon: renders the Runestrip (same codec + scheduling as Link.lua), draws a mock Familiar
 // panel, and turns clicks / wheel / typing on that panel into the same messages the addon sends.
-import { chunkMessage, encodeFrameCells, finderRgb, FLAG_IDLE, FLAG_REPEAT, Palette, symbolToRgb } from "../link/codec";
+import { chunkMessage, encodeFrameCells, finderRgb, FLAG_IDLE, FLAG_REPEAT, symbolToRgb } from "../link/codec";
 
 const COLS = 64,
   ROWS = 4,
   CELL = 4,
   HOLD = 70;
 const enc = new TextEncoder();
-let palette: Palette = "vivid";
 
 const canvas = document.getElementById("c") as HTMLCanvasElement;
 const ctx = canvas.getContext("2d")!;
@@ -60,15 +59,14 @@ const regions = () => {
   const status = { x: p.x + 16, y: p.y + p.h - 44, w: Math.round(p.w * 0.45), h: 28 };
   const composer = { x: detail.x, y: detail.y + detail.h + 8, w: detail.w, h: 70 };
   const tracker = { x: W() - 340, y: 80, w: 300, h: 180 };
-  // The buttons whose rects the addon sends in layout.keys (Layout.lua): the Glass glows / labels
-  // them, and the companion matches a press on them to the real mouse (physical.ts). The addon
-  // sends a rect only while its button is shown; FakeWoW always shows all four.
+  // The button whose rect the addon sends in layout.keys (Layout.lua): Stop, which the Glass glows.
+  // There is no Approve, Always or Mode button in game. FakeWoW always shows it.
   const bx = status.x + status.w + 8,
-    bw = Math.floor((p.x + p.w - 16 - bx - 3 * 6) / 4);
+    bw = Math.floor((p.x + p.w - 16 - bx - (KEY_BUTTONS.length - 1) * 6) / KEY_BUTTONS.length);
   const keys = Object.fromEntries(KEY_BUTTONS.map((k, i) => [k, { x: bx + i * (bw + 6), y: status.y, w: bw, h: status.h }]));
   return { list, detail, status, composer, tracker, keys };
 };
-const KEY_BUTTONS = ["approve", "always", "mode", "stop"] as const;
+const KEY_BUTTONS = ["stop"] as const;
 const R = (r: { x: number; y: number; w: number; h: number }) => [r.x, r.y, r.w, r.h];
 
 let panelShown = true;
@@ -81,7 +79,6 @@ function sendLayout() {
       px: 1.2,
       fpx: 1.2,
       panel: panelShown,
-      native: false,
       drag: false,
       combat: false,
       ui: true,
@@ -100,7 +97,7 @@ function sendLayout() {
 
 // ---- input: clicks / wheel / typing --------------------------------------------------------------
 // A key message as the addon sends it (UI.Key): src says how ("button", "bind", "slash") and view
-// the window's context, so approve / always / mode reach the same checks as in the game.
+// the window's context, so approve / mode reach the same checks as in the game.
 function key(k: string, src: "button" | "bind" | "slash" = "button") {
   send({ t: "key", k, src, view: "full" }, true);
 }
@@ -146,13 +143,13 @@ window.addEventListener("keydown", (e) => {
 });
 
 // Test hooks for automation (driven from the main process via executeJavaScript).
-(window as any).fake = { send, key, sendLayout, regions, panel, queueDepth: () => queue.length, setPalette: (p: Palette) => (palette = p) };
+(window as any).fake = { send, key, sendLayout, regions, panel, queueDepth: () => queue.length };
 
 // ---- drawing ---------------------------------------------------------------------------------
 function drawStrip(cells: ArrayLike<number>, cols: number, rows: number) {
   for (let i = 0; i < cols * rows; i++) {
     const v = cells[i];
-    const rgb = v < 0 ? finderRgb(-v - 1, palette) : symbolToRgb(v, palette);
+    const rgb = v < 0 ? finderRgb(-v - 1) : symbolToRgb(v);
     ctx.fillStyle = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
     ctx.fillRect((i % cols) * CELL, Math.floor(i / cols) * CELL, CELL, CELL);
   }
@@ -236,7 +233,7 @@ function resize() {
 window.addEventListener("resize", resize);
 resize();
 // As Core.lua: hello at login and every 20 s (a companion started later still learns who is here).
-const hello = () => send({ t: "hello", addon: "fakewow", viewKeys: 1, build: "0.0.0", iface: 16001, char: "Testy", realm: "FakeRealm", locale: "enUS", syncAt: 0 }, false, "hello");
+const hello = () => send({ t: "hello", addon: "fakewow", build: "0.0.0", iface: 16001, char: "Testy", realm: "FakeRealm", locale: "enUS", syncAt: 0 }, false, "hello");
 hello();
 setInterval(hello, 20_000);
 setInterval(sendLayout, 4000);

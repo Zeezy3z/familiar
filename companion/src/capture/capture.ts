@@ -1,10 +1,19 @@
 // Hidden capture renderer: reads the WoW window via Windows.Graphics.Capture (Electron
-// desktopCapturer), finds the Runestrip, decodes frames and reassembles messages.
+// desktopCapturer), finds the Runestrip, decodes frames and reassembles messages. The decoder
+// (link/decoder.ts StripDecoder) decides which parts of each frame to read; this page only reads
+// them out of the video frame.
+//
+// Messages from main: "start" (StartCfg), "stop", "snapshot" ({ id, width, height }) and
+// "rate" ({ fps }): cap the running track at `fps` frames per second (1..60) without restarting
+// the stream. A later "start" uses its own `fps`. The addon holds each strip frame >= 70 ms, so a
+// cap under ~15 fps misses frames of multi-frame messages: main lowers it only while that is fine.
+// Stats report `fps` (frames received in the last second: the effective rate) and `fpsCap` (the
+// cap the track reports).
 import { crc16, FLAG_IDLE, Reassembler } from "../link/codec";
-import { acquire, decodeAt, findStrip, MAX_COLS, MAX_ROWS, Rgba, StripLock } from "../link/decoder";
+import { Box, StripDecoder, View } from "../link/decoder";
+import { clientCorners } from "../main/geometry";
 import type { CaptureBridge } from "../shared/bridge";
 const bridge = window.familiar as CaptureBridge;
-
 
 interface StartCfg {
   sourceId: string;
@@ -14,13 +23,18 @@ interface StartCfg {
   /** Client-area origin inside the captured frame (title bar offset when windowed). */
   clientX: number;
   clientY: number;
+  /** Client size (frame px). Absent: the client reaches the frame's bottom-right (window capture). */
+  clientW?: number;
+  clientH?: number;
 }
 
 let session = 0;
 let stream: MediaStream | null = null;
+let current: { track: MediaStreamTrack; cfg: StartCfg } | null = null;
 
 const stats = {
   fps: 0,
+  fpsCap: 0,
   frames: 0,
   decoded: 0,
   crc: 0,
@@ -29,6 +43,8 @@ const stats = {
   locked: false,
   lock: null as null | { x: number; y: number; pitch: number },
   lastOk: 0,
+  /** When the finder was last seen with its grey ramp collapsed or clipped (ms epoch, 0 = never). */
+  rampAt: 0,
   frameW: 0,
   frameH: 0,
   error: "",
@@ -60,11 +76,32 @@ bridge.on("start", (cfg: StartCfg) => {
     bridge.send("log", "[capture] start failed: " + stats.error);
   });
 });
+try {
+  bridge.on("rate", (r: { fps: number }) => {
+    setRate(r?.fps).catch((e) => bridge.send("log", "[capture] rate failed: " + String(e?.message ?? e)));
+  });
+} catch {
+  // The capture preload must list "rate" among the channels main may send.
+  bridge.send("log", "[capture] rate control unavailable: the preload does not pass the rate message");
+}
+
+async function setRate(fps: number) {
+  const f = Math.round(Number(fps));
+  if (!current || !(f > 0)) return;
+  const { track, cfg } = current;
+  const max = Math.min(60, Math.max(1, f));
+  // applyConstraints replaces every constraint, so the size stays pinned to the frame.
+  await track.applyConstraints({ width: { min: cfg.w, max: cfg.w }, height: { min: cfg.h, max: cfg.h }, frameRate: { max } });
+  if (current?.track !== track) return;
+  stats.fpsCap = track.getSettings().frameRate ?? max;
+  bridge.send("log", `[capture] frame rate capped at ${max} fps (track reports ${stats.fpsCap})`);
+}
 
 function stop() {
   session++;
   stream?.getTracks().forEach((t) => t.stop());
   stream = null;
+  current = null;
   stats.locked = false;
 }
 
@@ -94,32 +131,32 @@ async function start(cfg: StartCfg) {
   }
   stream = s;
   const track = s.getVideoTracks()[0];
+  current = { track, cfg };
+  stats.fpsCap = track.getSettings().frameRate ?? cfg.fps;
   const proc = new window.MediaStreamTrackProcessor({ track });
   const reader = proc.readable.getReader();
-  let lock: StripLock | null = null; // in frame coordinates
-  let lastSearch = 0;
+  // The strip is anchored to a client corner: search those before the whole frame.
+  const client = { x: cfg.clientX, y: cfg.clientY, width: cfg.clientW ?? cfg.w - cfg.clientX, height: cfg.clientH ?? cfg.h - cfg.clientY };
+  const dec = new StripDecoder({ hints: clientCorners({ width: cfg.w, height: cfg.h }, client) });
   let lastDiag = 0;
-  let lastFull = 0;
   let lastSeq = -1;
-  let crcStreak = 0;
   let fpsCount = 0;
   let fpsAt = performance.now();
-  const buf = { data: new Uint8Array(0) };
+  const bufs: Uint8Array[] = [];
 
-  async function region(frame: any, x: number, y: number, w: number, h: number): Promise<Rgba & { ox: number; oy: number }> {
+  /** Copy part of the frame (even-aligned: the frame is I420) into the reusable buffer `slot`. */
+  async function region(frame: any, b: Box, slot: number): Promise<View> {
     const fw = frame.displayWidth,
       fh = frame.displayHeight;
-    let x0 = Math.max(0, Math.floor(x)) & ~1;
-    let y0 = Math.max(0, Math.floor(y)) & ~1;
-    let x1 = Math.min(fw, Math.ceil(x + w));
-    let y1 = Math.min(fh, Math.ceil(y + h));
-    x1 = Math.min(fw & ~1, (x1 + 1) & ~1);
-    y1 = Math.min(fh & ~1, (y1 + 1) & ~1);
+    const x0 = Math.max(0, Math.floor(b.x)) & ~1;
+    const y0 = Math.max(0, Math.floor(b.y)) & ~1;
+    const x1 = Math.min(fw & ~1, (Math.min(fw, Math.ceil(b.x + b.w)) + 1) & ~1);
+    const y1 = Math.min(fh & ~1, (Math.min(fh, Math.ceil(b.y + b.h)) + 1) & ~1);
     const rw = Math.max(2, x1 - x0),
       rh = Math.max(2, y1 - y0);
     const size = rw * rh * 4;
-    if (buf.data.length < size) buf.data = new Uint8Array(size);
-    const data = buf.data.subarray(0, size);
+    if (!bufs[slot] || bufs[slot].length < size) bufs[slot] = new Uint8Array(size);
+    const data = bufs[slot].subarray(0, size);
     await frame.copyTo(data, { rect: { x: x0, y: y0, width: rw, height: rh }, format: "RGBA", colorSpace: "srgb" });
     return { width: rw, height: rh, data, ox: x0, oy: y0 };
   }
@@ -138,65 +175,52 @@ async function start(cfg: StartCfg) {
       }
       stats.frames++;
       fpsCount++;
-      stats.frameW = frame.displayWidth;
-      stats.frameH = frame.displayHeight;
+      const fw = frame.displayWidth,
+        fh = frame.displayHeight;
+      stats.frameW = fw;
+      stats.frameH = fh;
       const now = performance.now();
       if (now - fpsAt >= 1000) {
         stats.fps = Math.round((fpsCount * 1000) / (now - fpsAt));
         fpsCount = 0;
         fpsAt = now;
-        stats.locked = !!lock && Date.now() - stats.lastOk < 2500;
-        stats.lock = lock;
+        stats.locked = !!dec.lock && Date.now() - stats.lastOk < 2500;
+        stats.lock = dec.lock;
         bridge.send("stats", { ...stats });
       }
-      if (lock) {
-        const img = await region(frame, lock.x - 6, lock.y - 6, MAX_COLS * lock.pitch + 12, MAX_ROWS * lock.pitch + 12);
-        const local = { x: lock.x - img.ox, y: lock.y - img.oy, pitch: lock.pitch };
-        let r = decodeAt(img, local);
-        if (!r.ok && r.reason !== "nofinder" && ++crcStreak >= 3) {
-          crcStreak = 0;
-          r = acquire(img, local);
-        }
-        if (r.ok) {
-          crcStreak = 0;
-          lock = { x: r.lock.x + img.ox, y: r.lock.y + img.oy, pitch: r.lock.pitch };
-          handle(r.frame);
-        } else if (r.reason === "nofinder") {
-          lock = null;
-        } else if (r.reason === "crc") stats.crc++;
-        continue;
-      }
-      // Searching: the default strip spot (client top-left) often, the whole frame now and then.
-      if (now - lastSearch < 250) continue;
-      lastSearch = now;
-      const full = now - lastFull > 2000;
-      if (full) lastFull = now;
-      const img = full
-        ? await region(frame, 0, 0, frame.displayWidth, frame.displayHeight)
-        : await region(frame, cfg.clientX - 4, cfg.clientY - 4, 700, 160);
-      const found = findStrip(img);
-      if (!found) {
-        if (full && Date.now() - lastDiag > 10_000) {
-          lastDiag = Date.now();
-          // Diagnostics: what does the client's top-left corner look like in the capture?
-          const px = (x: number, y: number) => {
-            const o = ((y - img.oy) * img.width + (x - img.ox)) * 4;
-            return `${img.data[o]},${img.data[o + 1]},${img.data[o + 2]}`;
-          };
-          const ys = [cfg.clientY - 1, cfg.clientY, cfg.clientY + 2];
-          const xs = Array.from({ length: 36 }, (_, i) => i);
-          bridge.send("log", `[capture] no strip; frame ${img.width}x${img.height} client@${cfg.clientX},${cfg.clientY} samples ` + ys.map((y) => xs.map((x) => px(x, y)).join(" ")).join(" | "));
-        }
-        continue;
-      }
-      const r = acquire(img, found);
+      // Locked: the strip's box. Searching: the client corners often, the whole frame now and then.
+      const boxes = dec.plan(now, fw, fh);
+      if (!boxes.length) continue;
+      const views: View[] = [];
+      for (let i = 0; i < boxes.length; i++) views.push(await region(frame, boxes[i], i));
+      const wasLocked = !!dec.lock;
+      const r = dec.decode(views, now);
       if (r.ok) {
-        lock = { x: r.lock.x + img.ox, y: r.lock.y + img.oy, pitch: r.lock.pitch };
-        bridge.send("log", `[capture] locked at ${lock.x.toFixed(1)},${lock.y.toFixed(1)} pitch ${lock.pitch.toFixed(2)}`);
-        // Main's screen-capture gate checks where the strip is: tell it before this lock's messages.
-        stats.lock = lock;
-        bridge.send("stats", { ...stats });
+        if (!wasLocked) {
+          bridge.send("log", `[capture] locked at ${r.lock.x.toFixed(1)},${r.lock.y.toFixed(1)} pitch ${r.lock.pitch.toFixed(2)}`);
+          // Main's screen-capture gate checks where the strip is: tell it before this lock's messages.
+          stats.lock = dec.lock;
+          bridge.send("stats", { ...stats });
+        }
         handle(r.frame);
+        continue;
+      }
+      if (wasLocked && r.reason === "crc") stats.crc++;
+      if (r.reason === "ramp") stats.rampAt = Date.now();
+      const full = !wasLocked && views.length === 1 && views[0].width >= (fw & ~1) && views[0].height >= (fh & ~1);
+      if (full && Date.now() - lastDiag > 10_000) {
+        lastDiag = Date.now();
+        const img = views[0];
+        if (r.reason === "ramp" && r.levels)
+          bridge.send("log", `[capture] strip seen but its grey steps run together (HDR or a colour filter?): R ${r.levels[0].map(Math.round).join("/")} G ${r.levels[1].map(Math.round).join("/")} B ${r.levels[2].map(Math.round).join("/")}`);
+        // Diagnostics: what does the client's top-left corner look like in the capture?
+        const px = (x: number, y: number) => {
+          const o = ((y - (img.oy ?? 0)) * img.width + (x - (img.ox ?? 0))) * 4;
+          return `${img.data[o]},${img.data[o + 1]},${img.data[o + 2]}`;
+        };
+        const ys = [cfg.clientY - 1, cfg.clientY, cfg.clientY + 2];
+        const xs = Array.from({ length: 36 }, (_, i) => i);
+        bridge.send("log", `[capture] no strip; frame ${img.width}x${img.height} client@${cfg.clientX},${cfg.clientY} samples ` + ys.map((y) => xs.map((x) => px(x, y)).join(" ")).join(" | "));
       }
     } catch (e: any) {
       stats.error = String(e?.message ?? e);
@@ -212,11 +236,11 @@ async function start(cfg: StartCfg) {
       fh = frame.displayHeight;
     const w = Math.min(want.width, fw) & ~1,
       h = Math.min(want.height, fh) & ~1;
-    const at = lock ? { x: lock.x - 6, y: lock.y - 6 } : { x: cfg.clientX, y: cfg.clientY };
+    const at = dec.lock ? { x: dec.lock.x - 6, y: dec.lock.y - 6 } : { x: cfg.clientX, y: cfg.clientY };
     const x = Math.max(0, Math.min(fw - w, Math.floor(at.x))) & ~1;
     const y = Math.max(0, Math.min(fh - h, Math.floor(at.y))) & ~1;
     try {
-      const img = await region(frame, x, y, w, h);
+      const img = await region(frame, { x, y, w, h }, 0);
       bridge.send("snapshot", { id: want.id, width: img.width, height: img.height, data: img.data.slice(0, img.width * img.height * 4) });
     } catch (e: any) {
       bridge.send("snapshot", { id: want.id, error: String(e?.message ?? e) });
