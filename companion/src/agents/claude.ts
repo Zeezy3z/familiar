@@ -48,6 +48,20 @@ const PERMISSION_MODE: Record<Mode, "default" | "acceptEdits" | "plan" | "auto">
   auto: "auto",
 };
 
+/** The environment Familiar's Claude runs in. Started from inside a Claude session (a terminal in
+ * Claude Code or the desktop app), Familiar inherits that session's own variables: its entrypoint
+ * name, session ids, messaging socket and host-refreshed sign-in. Passed on, they make Familiar's
+ * quests register as desktop-app sessions, which Familiar then takes for "open in the Claude app".
+ * So in that case those are dropped; the player's own settings (ANTHROPIC_*, CLAUDE_CONFIG_DIR)
+ * are kept, and outside a Claude session nothing is touched. */
+export function ownEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  if (!env.CLAUDE_CODE_ENTRYPOINT && !env.CLAUDECODE) return { ...env };
+  const out: NodeJS.ProcessEnv = {};
+  for (const [k, v] of Object.entries(env))
+    if (!/^(CLAUDE_CODE_|CLAUDE_AGENT_SDK_|CLAUDE_PREVIEW_)|^(CLAUDECODE|CLAUDE_PID|CLAUDE_EFFORT)$/i.test(k)) out[k] = v;
+  return out;
+}
+
 /** What a quest loads from the player's own Claude Code configuration. Inheriting: the user,
  * project and local settings (allow rules, hooks, MCP servers, CLAUDE.md), as the CLI would. Not
  * inheriting (the default): no settings files and no MCP servers but the ones Familiar passes. The
@@ -326,7 +340,7 @@ export class ClaudeBackend implements AgentBackend {
       // Web search is on in every mode: it reads the web and returns results, nothing leaves but the
       // query. WebFetch (any URL, so it can carry data out) still follows the mode.
       allowedTools: ["WebSearch"],
-      env: { ...process.env, CLAUDE_CODE_ENABLE_TODO_TOOLS: "1", CLAUDE_AGENT_SDK_CLIENT_APP: `familiar-wow/${this.opts.version}` },
+      env: { ...ownEnv(process.env), CLAUDE_CODE_ENABLE_TODO_TOOLS: "1", CLAUDE_AGENT_SDK_CLIENT_APP: `familiar-wow/${this.opts.version}` },
       canUseTool: (toolName: string, input: Record<string, unknown>, opts: any) => this.canUseTool(l, toolName, input, opts),
       // Warnings and errors only (the CLI prints config paths and MCP command lines at startup).
       stderr: (s: string) => {

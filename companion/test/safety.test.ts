@@ -4,7 +4,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
-import { configOptions } from "../src/agents/claude";
+import { configOptions, ownEnv } from "../src/agents/claude";
 import { DEFAULT_CONFIG } from "../src/hub/config";
 import { DEV_ENV, devEnabled, distributed, stripDevEnv } from "../src/main/dev-hooks";
 
@@ -44,4 +44,11 @@ describe("development switches in a distributed build", () => {
     stripDevEnv(env);
     expect(env).toEqual({ PATH: "kept" });
   });
+});
+
+it("Claude's environment drops a parent Claude session's variables, and only then", () => {
+  const mine = { PATH: "p", ANTHROPIC_API_KEY: "k", CLAUDE_CONFIG_DIR: "d", CLAUDE_CODE_USE_BEDROCK: "1" };
+  expect(ownEnv(mine)).toEqual(mine);
+  const nested = { ...mine, CLAUDECODE: "1", CLAUDE_CODE_ENTRYPOINT: "claude-desktop", CLAUDE_CODE_SESSION_ID: "s", CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH: "1", CLAUDE_AGENT_SDK_MCP_NO_PREFIX: "1", CLAUDE_PID: "9" };
+  expect(ownEnv(nested)).toEqual({ PATH: "p", ANTHROPIC_API_KEY: "k", CLAUDE_CONFIG_DIR: "d" });
 });
