@@ -701,7 +701,8 @@ function pin(el: HTMLElement | undefined) {
   box.classList.add("on");
   syncPinned();
 }
-const pinnedPreview = () => els.pinned.querySelector<HTMLElement>(layout?.focus ? ".card.pending .card-read" : ".card.pending .approval-preview");
+// Rendering can measure the card before a pending Focus/Full layout has reached the DOM.
+const pinnedPreview = () => els.pinned.querySelector<HTMLElement>(els.detail.classList.contains("focused") ? ".card.pending .card-read" : ".card.pending .approval-preview");
 function syncPinned() {
   const pre = pinnedPreview();
   const card = pre?.closest<HTMLElement>(".card");
