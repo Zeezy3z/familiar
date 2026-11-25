@@ -617,6 +617,27 @@ async function focusJourney() {
     && await page.locator(`${action('decide')}[data-act*='"decision":"deny"']`).count() === 1);
   await point(`${action('decide')}[data-act*='"decision":"deny"']`);
   await snapshot('focus-approval-bottom');
+  // A new, complete request must still be read to the end in this short pane.
+  await page.evaluate(() => {
+    const p = window.preview;
+    const previous = p.model.detail.entries[0];
+    p.model.detail.entries = [{ ...previous, id: 'focus-complete', requestId: 'focus-complete', cut: false,
+      text: Array.from({ length: 20 }, (_, i) => 'Review fixture line ' + i).join('\n') }];
+    p.emit('model', { ...p.model });
+  });
+  await settle();
+  const focusGrant = page.locator('#pinned .grant');
+  check('focus approval: a fresh complete request keeps the grant hidden before its tail', await focusGrant.count() === 1 && !await focusGrant.isVisible());
+  await page.evaluate(l => window.preview.emit('layout', l), layoutFor(560, false));
+  await settle();
+  check('focus approval: switching to Full keeps an unread request gated', !await focusGrant.isVisible());
+  await page.evaluate(l => window.preview.emit('layout', l), layoutFor(560, true));
+  await settle();
+  await point(`${action('decide')}[data-act*='"decision":"deny"']`);
+  for (let i = 0; i < 80 && !await focusGrant.isVisible(); i++) await wheel(-1);
+  check('focus approval: forwarded scrolling reveals the grant at the end', await focusGrant.isVisible()
+    && await page.locator('#pinned .card-read').evaluate(e => e.scrollTop + e.clientHeight >= e.scrollHeight - 2));
+  await point('#pinned .grant');
   await open('running');
   await page.evaluate(l => window.preview.emit('layout', l), layoutFor(720, true));
   await settle();

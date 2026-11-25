@@ -672,12 +672,14 @@ function approvalCard(e: EntryR3, d: ThreadDetail, pinned: boolean): string {
     : `Approving lets ${esc(agent)} do this${d.project ? ` in ${esc(d.project)}` : ""}, with your access on this PC.`;
   const unseen = pinned && !e.cut && !tailSeen.has(`${d.id}:${e.requestId}`);
   return `<div class="card ${pending ? "pending" : e.approval}${unseen ? " tail-unseen" : ""}" data-request="${esc(`${d.id}:${e.requestId}`)}">
+    ${pinned ? '<div class="card-read">' : ""}
     <div class="card-h">${pending ? '<span class="bang">!</span> ' : ""}${esc(e.title ?? "Approval")}</div>
     ${pending && where ? `<div class="card-where">In ${esc(where)}</div>` : ""}
     ${pending && e.cut ? `<div class="preview-cut" role="alert">! ${e.incomplete ? INCOMPLETE_REQUEST : "Part of this request is not shown here. To approve it, read it in full in Familiar's control panel on your PC — or Deny."}</div>` : ""}
     ${preview.shortened ? `<span class="btn preview-toggle" aria-expanded="${!!e.expanded}" data-act="${attr({ type: "approvalPreview", thread: d.id, id: e.id })}"><span aria-hidden="${!!e.expanded}">Show more of preview</span><span aria-hidden="${!e.expanded}">Collapse preview</span></span>` : ""}
     <pre class="card-b approval-preview">${diffHtml(preview.text)}${preview.shortened && !e.expanded ? "\n… [More preview text hidden]" : ""}</pre>
-    ${pending ? `<div class="card-what">${effect} <span class="preview-note">The agent wrote this itself. Unsure? Deny: nothing has happened yet.</span></div>${ask}` : `<div class="card-s">${approvalText(e.approval, d.agent)}</div>`}
+    ${pending ? `<div class="card-what">${effect} <span class="preview-note">The agent wrote this itself. Unsure? Deny: nothing has happened yet.</span></div>` : `<div class="card-s">${approvalText(e.approval, d.agent)}</div>`}
+    ${pinned ? "</div>" : ""}${ask}
     ${pending && e.refused ? `<div class="card-refused" role="alert">✗ ${esc(e.refused)}</div>` : ""}
   </div>`;
 }
@@ -699,7 +701,8 @@ function pin(el: HTMLElement | undefined) {
   box.classList.add("on");
   syncPinned();
 }
-const pinnedPreview = () => els.pinned.querySelector<HTMLElement>(".card.pending .approval-preview");
+// Rendering can measure the card before a pending Focus/Full layout has reached the DOM.
+const pinnedPreview = () => els.pinned.querySelector<HTMLElement>(els.detail.classList.contains("focused") ? ".card.pending .card-read" : ".card.pending .approval-preview");
 function syncPinned() {
   const pre = pinnedPreview();
   const card = pre?.closest<HTMLElement>(".card");

@@ -288,8 +288,12 @@ body.short-detail .welcome .portrait, .welcome.faceless .portrait, .welcome.tigh
 #pinned.on { position: relative; }
 #pinned .card-refused { position: absolute; left: 0; right: 0; bottom: 100%; margin: 0; padding: calc(var(--u-fixed) * 0.75) calc(var(--u-fixed) * 3); background: rgb(9, 8, 11); box-shadow: 0 -6px 8px -6px #000; }
 #pinned > .entry, #pinned .card { display: flex; flex-direction: column; min-height: 0; flex: 0 1 auto; margin: 0; }
-#pinned .card > * { flex: none; }
-#pinned .card > .approval-preview { flex: 0 1 auto; min-height: 3em; overflow: hidden; }
+#pinned .card-read { display: contents; }
+#pinned .card > *, #pinned .card-read > * { flex: none; }
+#pinned .card-read > .approval-preview { flex: 0 1 auto; min-height: 3em; overflow: hidden; }
+/* In Focus view even the title, warnings and explanation can exceed the pinned area.
+   Scroll them with the request, keeping the decision row reachable. */
+#detail.focused #pinned .card-read { display: block; flex: 0 1 auto; min-height: 0; overflow: hidden; }
 #pinned .approval-preview.more-below { border-bottom: 1px dashed var(--warn); }
 .tail-hint { display: none; }
 .card.tail-unseen .tail-hint { display: inline; color: var(--warn); font-style: normal; }
