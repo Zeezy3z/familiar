@@ -141,6 +141,20 @@ describe("AcpBackend", () => {
     expect(events.at(-1)).toMatchObject({ type: "done", status: "completed" });
   });
 
+  it("checks waiting messages again when the active turn finishes", async () => {
+    const { agent, b, events } = setup();
+    await b.init();
+    await b.open({ threadId: "q1", cwd: "fixture", mode: "ask" });
+    await b.send("q1", "slow");
+    await until(() => !!agent.release);
+    let enabled = true;
+    await b.send("q1", "queued", () => { if (!enabled) throw new Error("provider disabled"); });
+    enabled = false;
+    agent.release!();
+    await until(() => events.some(e => e.type === "error" && e.message.includes("disabled")));
+    expect(agent.prompts).toEqual(["slow"]);
+  });
+
   it("modes, models, listing, and messages sent mid-turn run as the next turn", async () => {
     const { agent, b, events } = setup();
     await b.init();
@@ -226,7 +240,7 @@ describe("AcpBackend keeps Ask first", () => {
     modes: { currentModeId, availableModes },
   });
 
-  it("falls back to the agent's ask mode when the requested mode is missing, for quests and chats", async () => {
+  it("allows a stricter fallback for edits and refuses a chat when the read-only mode is missing", async () => {
     const { agent, b, events } = setup();
     await b.init();
     agent.newSession = session("s1", NO_PLAN);
@@ -234,8 +248,18 @@ describe("AcpBackend keeps Ask first", () => {
     expect(agent.modeCalls).toEqual(["default"]); // not left in "yolo"
     expect(events.find((e) => e.type === "error")).toMatchObject({ threadId: "q1", message: expect.stringMatching(/Default/) });
     agent.newSession = session("s2", NO_PLAN);
-    await b.open({ threadId: "q2", cwd: "D:\\src\\X", mode: "ask", chat: { instructions: "x" } }); // chats ask for "plan"
-    expect(agent.modeCalls).toEqual(["default", "default"]);
+    await expect(b.open({ threadId: "q2", cwd: "fixture", mode: "ask", chat: { instructions: "x" } })).rejects.toThrow();
+    expect(b.isOpen("q2")).toBe(false);
+    expect(agent.modeCalls).toEqual(["default"]);
+  });
+
+  it("requires a verifiable mode when a provider omits its mode list", async () => {
+    const { agent, b } = setup();
+    await b.init();
+    agent.newSession = async () => ({ sessionId: "fixture" });
+    await expect(b.open({ threadId: "q", cwd: "fixture", mode: "ask" })).rejects.toThrow(/advertise/);
+    expect(b.isOpen("q")).toBe(false);
+    expect(agent.prompts).toEqual([]);
   });
 
   it("fails the open when every mode the agent offers skips approvals", async () => {

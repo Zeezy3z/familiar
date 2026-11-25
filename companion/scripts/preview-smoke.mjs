@@ -284,7 +284,7 @@ async function controlSafetyJourney(width) {
   check(`${size}: choosing Auto sends one questMode and shows the risk in the same words as for new quests`,
     JSON.stringify(await page.evaluate(() => window.preview.calls.filter(c => c.cmd === 'questMode').map(c => c.args))) === '[{"mode":"auto","thread":"preview"}]'
     && q.mode === 'auto' && q.warn && q.warnText === await page.locator('#ui-mode-warn').textContent());
-  check(`${size}: the answer is said beside the control`, JSON.stringify(await feedback('#quest-mode')) === JSON.stringify({ text: 'This quest is now in Auto', level: 'ok', role: 'status' }));
+  check(`${size}: the answer is said beside the control`, JSON.stringify(await feedback('#quest-mode')) === JSON.stringify({ text: 'Next turn: Auto', level: 'ok', role: 'status' }));
   await snapshot(`control-${width}-quest-auto`);
   // A refusal says why beside the control and puts the shown mode back.
   await page.evaluate(() => {

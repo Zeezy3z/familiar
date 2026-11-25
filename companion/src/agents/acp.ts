@@ -54,7 +54,7 @@ interface Live {
   cwd: string;
   mode: Mode;
   running: boolean;
-  queue: string[];
+  queue: { text: string; check?: () => void }[];
   replaying: boolean;
   msgSeq: number;
   msgId?: string;
@@ -67,7 +67,7 @@ interface Live {
   models?: { currentModelId?: string; availableModels?: { modelId: string; name?: string }[] } | null;
   /** Chat instructions, sent once in front of the first message (ACP has no system prompt). */
   preface?: string;
-  /** Chats run in the agent's plan/read-only mode, or its ask mode when it has none. */
+  /** Chats require the agent's plan/read-only mode. */
   chat: boolean;
 }
 
@@ -93,7 +93,13 @@ const isUnsafe = (m: acp.SessionMode) => UNSAFE_MODE.test(`${m.id} ${m.name} ${m
 export function pickMode(available: acp.SessionMode[], mode: Mode): string | undefined {
   const safe = available.filter((m) => !isUnsafe(m));
   const want = MODE_WANT[mode];
-  return safe.find((m) => want.test(m.id) || want.test(m.name))?.id ?? (mode === "ask" ? safe[0]?.id : undefined);
+  return safe.find((m) => want.test(m.id) || want.test(m.name))?.id ??
+    (mode === "ask" ? safe.find((m) => MODE_WANT.plan.test(m.id) || MODE_WANT.plan.test(m.name))?.id : undefined);
+}
+
+/** Edits and Auto may fall back to asking. A Plan request requires the provider's read-only mode. */
+function targetMode(available: acp.SessionMode[], mode: Mode) {
+  return pickMode(available, mode) ?? (mode === "edits" || mode === "auto" ? pickMode(available, "ask") : undefined);
 }
 
 export class AcpBackend implements AgentBackend {
@@ -309,13 +315,16 @@ export class AcpBackend implements AgentBackend {
         `${this.label} is in its "${unsafe}" mode, which acts without asking, and Familiar couldn't move it to a mode that asks before acting${modeError ? ` (${modeError.message ?? modeError})` : ""}.`,
       );
     }
-    if (modeError) this.o.log(`[${this.o.id}] mode: ${modeError}`);
+    if (modeError) {
+      await this.close(o.threadId);
+      throw modeError;
+    }
     if (o.model) await this.setModel(o.threadId, o.model).catch((e) => this.o.log(`[${this.o.id}] model: ${e}`));
     this.ev.emit({ type: "session", threadId: o.threadId, nativeId: l.sessionId, model: this.currentModel(l) });
     return l.sessionId;
   }
 
-  async send(threadId: string, text: string): Promise<void> {
+  async send(threadId: string, text: string, check?: () => void): Promise<void> {
     const l = this.live.get(threadId);
     if (!l) throw new Error("thread not open");
     // Agents' own slash commands that switch approvals off (Grok /always-approve, Hermes /yolo)
@@ -327,13 +336,17 @@ export class AcpBackend implements AgentBackend {
     }
     if (l.running) {
       // ACP has no steering: run it as the next turn.
-      l.queue.push(text);
+      l.queue.push({ text, check });
       return;
     }
-    this.runTurn(l, text);
+    this.runTurn(l, text, check);
   }
 
-  private runTurn(l: Live, text: string) {
+  private runTurn(l: Live, text: string, check?: () => void) {
+    check?.();
+    const modes = l.modes?.availableModes;
+    if (!modes?.length || this.unsafeMode(l) || targetMode(modes, wanted(l)) !== l.modes?.currentModeId)
+      throw new Error("The provider's permission mode changed. Confirm the mode before sending.");
     const conn = this.conn;
     if (!conn) {
       this.ev.emit({ type: "done", threadId: l.threadId, status: "failed", error: `${this.label} is not running` });
@@ -367,8 +380,11 @@ export class AcpBackend implements AgentBackend {
       .finally(() => {
         l.running = false;
         this.cancelApprovals(l.threadId);
-        const next = l.queue.shift();
-        if (next !== undefined && this.live.has(l.threadId)) this.runTurn(l, next);
+        while (l.queue.length && this.live.get(l.threadId) === l) {
+          const next = l.queue.shift()!;
+          try { this.runTurn(l, next.text, next.check); break; }
+          catch (e) { this.ev.emit({ type: "error", threadId: l.threadId, message: String(e) }); }
+        }
       });
   }
 
@@ -523,17 +539,17 @@ export class AcpBackend implements AgentBackend {
   async setMode(threadId: string, mode: Mode) {
     const l = this.live.get(threadId);
     if (!l) return;
-    l.mode = mode;
     await this.applyMode(l, mode);
+    l.mode = mode;
   }
 
-  /** Use the agent's safe mode for `mode`, or its ask mode when it has none. Throws when every
-   * mode it offers acts without asking. */
+  /** Apply an advertised mode. Edits and Auto may safely fall back to asking. */
   private async applyMode(l: Live, mode: Mode, announce = true) {
     const available = l.modes?.availableModes ?? [];
-    if (!available.length || !this.conn) return;
+    if (!this.conn) throw new Error("Provider disconnected during mode selection.");
+    if (!available.length) throw new Error(`${this.label} did not advertise a permission mode Familiar can verify.`);
     const exact = pickMode(available, mode);
-    const id = exact ?? pickMode(available, "ask");
+    const id = targetMode(available, mode);
     if (!id) throw new Error(`it offers no other mode: ${available.map((m) => m.name || m.id).join(", ")}`);
     if (!exact && announce)
       this.ev.emit({ type: "error", threadId: l.threadId, message: `${this.label} has no "${mode}" mode; using ${modeName(l, id)}, which asks first.` });

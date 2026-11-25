@@ -193,10 +193,12 @@ question (never your character name or realm). `/fam ask context off` stops that
 
 ## More agents
 
-Familiar drives any agent that speaks the Agent Client Protocol over stdio. Hermes (`hermes acp`)
+Familiar drives agents that speak the Agent Client Protocol over stdio and advertise a compatible
+permission mode. Plan quests and chats require a plan or read-only mode. Hermes (`hermes acp`)
 and Grok Build (`grok agent stdio`) are picked up when installed; add others under `providers` in
 `config.json`, e.g. `"gemini": { "command": "gemini", "args": ["--experimental-acp"] }`
-(`"enabled": false` hides one). Start their quests with `/fam <id> <message>`.
+(`"enabled": false` hides one and blocks new messages, including queued sends and retries).
+Start their quests with `/fam <id> <message>`.
 
 Familiar never selects a mode that skips approvals (yolo, bypass, "don't ask") and strips `*YOLO*`
 switches from the agent's environment. An agent that offers only such modes is not started; one

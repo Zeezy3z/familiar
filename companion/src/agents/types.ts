@@ -136,7 +136,9 @@ export interface AgentBackend {
    * link that opens the same conversation in the agent's own app. Absent: the agent has no app. */
   handOff?(threadId: string | undefined, nativeId: string): Promise<string>;
   /** Open (start or resume) a thread. Returns the native id once known. */
-  open(o: StartOptions): Promise<string>;  send(threadId: string, text: string): Promise<void>;
+  open(o: StartOptions): Promise<string>;
+  /** Recheck authorization immediately before handing off input, including queued turns and retries. */
+  send(threadId: string, text: string, checkDispatch?: () => void): Promise<void>;
   interrupt(threadId: string): Promise<void>;
   respondApproval(threadId: string, requestId: string, d: Decision): void;
   answerQuestion?(threadId: string, requestId: string, label: string): void;

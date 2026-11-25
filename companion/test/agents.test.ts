@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import { CodexBackend, prettyCommand } from "../src/agents/codex";
-import { ClaudeBackend, insideFolder, INSTRUCTIONS_MAX, projectInstructions } from "../src/agents/claude";
+import { AsyncQueue, ClaudeBackend, insideFolder, INSTRUCTIONS_MAX, projectInstructions } from "../src/agents/claude";
 import type { AgentEvent } from "../src/agents/types";
 import { approvalText, editPreview, FULL_CAP, summarizeTool, truncatePreview } from "../src/agents/types";
 import { projectRootOf } from "../src/hub/projects";
@@ -127,6 +127,19 @@ describe("Codex keeps Ask first", () => {
       params: { approvalsReviewer: "user", sandbox: "read-only", config: { web_search: "live", features: { shell_tool: false, unified_exec: false } } },
     });
     expect(calls[0].params.approvalPolicy).not.toBe("never"); // with "never", nothing Codex would ask about reaches the game
+  });
+
+  it("preserves the current policy on a retry and refuses to steer a turn opened under another mode", async () => {
+    const { backend, calls } = recorded();
+    await backend.open({ threadId: "q", cwd: "fixture", mode: "edits" });
+    await backend.setMode("q", "ask");
+    vi.spyOn((backend as any).rpc, "request").mockRejectedValueOnce(new Error("fixture refusal"));
+    await expect(backend.send("q", "first")).rejects.toThrow("fixture refusal");
+    await backend.send("q", "retry");
+    expect(calls.at(-1)?.params).toMatchObject({ approvalPolicy: "untrusted", approvalsReviewer: "user", sandboxPolicy: { type: "readOnly" } });
+    await backend.setMode("q", "plan");
+    await expect(backend.send("q", "follow-up")).rejects.toThrow(/different permission mode/);
+    expect(calls.some(c => c.method === "turn/steer")).toBe(false);
   });
 
   it("project quests send approvals to the player, not to Codex's own reviewer, except in Auto-review", async () => {
@@ -273,6 +286,25 @@ describe("FamiliarSync lua strings", () => {
 });
 
 describe("Claude automatic retry", () => {
+  it("checks queued input at SDK consumption and reports a rejected permission change", async () => {
+    const b = new ClaudeBackend({ log: () => {}, version: "test" });
+    await b.open({ threadId: "q", cwd: "fixture", mode: "edits" });
+    const l = (b as any).live.get("q");
+    const input = new AsyncQueue<any>();
+    l.input = input;
+    l.q = { setPermissionMode: vi.fn().mockRejectedValue(new Error("fixture refusal")) };
+    let enabled = true;
+    l.running = true;
+    const message = b.send("q", "queued", () => { if (!enabled) throw new Error("disabled"); });
+    enabled = false;
+    const received = input[Symbol.asyncIterator]().next();
+    await expect(message).rejects.toThrow("disabled");
+    input.end();
+    expect((await received).done).toBe(true);
+    await expect(b.setMode("q", "ask")).rejects.toThrow("fixture refusal");
+    expect(l.mode).toBe("edits");
+  });
+
   it("retries a prompt that failed before anything happened, never one whose tools already ran", async () => {
     vi.useFakeTimers();
     try {
@@ -284,7 +316,7 @@ describe("Claude automatic retry", () => {
       const turns: (() => AsyncGenerator<any>)[] = [];
       // Stand-in for the SDK query: each start plays the next scripted turn.
       (b as any).startQuery = async (l: any) => {
-        l.input = { push: (m: any) => prompts.push(m.message.content), end() {} };
+        l.input = { push: (m: any, check?: () => void) => { check?.(); prompts.push(m.message.content); }, end() {} };
         l.q = turns.shift()!();
         (b as any).consume(l, l.q);
       };
@@ -296,6 +328,14 @@ describe("Claude automatic retry", () => {
       await vi.advanceTimersByTimeAsync(6_000);
       expect(prompts).toEqual(["what changed?", "what changed?"]);
       expect(events.at(-1)).toMatchObject({ type: "done", status: "completed" });
+
+      let enabled = true;
+      turns.push(async function* () { await later(); throw overloaded(); });
+      await b.send("q1", "another question", () => { if (!enabled) throw new Error("provider disabled"); });
+      enabled = false;
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(prompts.filter(p => p === "another question")).toHaveLength(1);
+      expect(events.at(-1)).toMatchObject({ type: "done", status: "failed", error: "provider disabled" });
 
       turns.push(async function* () {
         await later();

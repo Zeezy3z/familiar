@@ -132,23 +132,32 @@ export function projectInstructions(cwd: string): { text: string; files: string[
 const TODO_TOOLS = new Set(["TaskCreate", "TaskUpdate", "TodoWrite", "TaskList", "TaskGet"]);
 const IDLE_CLOSE_MS = 15 * 60_000;
 
-class AsyncQueue<T> implements AsyncIterable<T> {
-  private items: T[] = [];
+export class AsyncQueue<T> implements AsyncIterable<T> {
+  private items: { value: T; check?: () => void; resolve(): void; reject(e: unknown): void }[] = [];
   private waiters: ((r: IteratorResult<T>) => void)[] = [];
   private ended = false;
-  push(v: T) {
-    const w = this.waiters.shift();
-    if (w) w({ value: v, done: false });
-    else this.items.push(v);
+  async push(v: T, check?: () => void): Promise<void> {
+    if (this.ended) throw new Error("The conversation closed before the message was sent.");
+    if (this.waiters.length) {
+      check?.();
+      this.waiters.shift()!({ value: v, done: false });
+    } else await new Promise<void>((resolve, reject) => this.items.push({ value: v, check, resolve, reject }));
   }
   end() {
     this.ended = true;
+    for (const item of this.items.splice(0)) item.reject(new Error("The conversation closed before the message was sent."));
     for (const w of this.waiters.splice(0)) w({ value: undefined as any, done: true });
   }
   [Symbol.asyncIterator](): AsyncIterator<T> {
     return {
       next: () => {
-        if (this.items.length) return Promise.resolve({ value: this.items.shift()!, done: false });
+        while (this.items.length) {
+          const item = this.items.shift()!;
+          try { item.check?.(); }
+          catch (e) { item.reject(e); continue; }
+          item.resolve();
+          return Promise.resolve({ value: item.value, done: false });
+        }
         if (this.ended) return Promise.resolve({ value: undefined as any, done: true });
         return new Promise((r) => this.waiters.push(r));
       },
@@ -189,6 +198,8 @@ interface Live {
   idleSince?: number;
   retryTimer?: NodeJS.Timeout;
   lastText?: string;
+  lastCheck?: () => void;
+  starting?: Promise<void>;
   retries: number;
   producedOutput: boolean;
   chat?: ChatOptions;
@@ -385,6 +396,8 @@ export class ClaudeBackend implements AgentBackend {
     } else {
       options.sessionId = l.nativeId;
     }
+    if (this.live.get(l.threadId) !== l) throw new Error("The conversation closed before the message was sent.");
+    if (!l.chat) options.permissionMode = PERMISSION_MODE[l.mode];
     l.q = sdk.query({ prompt: l.input, options });
     this.consume(l, l.q);
   }
@@ -408,17 +421,23 @@ export class ClaudeBackend implements AgentBackend {
       this.opts.log(`[claude] query error (${l.threadId}): ${msg}`);
       if (l.q !== q) return; // superseded
       l.q = undefined;
+      l.input?.end();
       l.input = undefined;
       const transient = /oauth|refresh|ECONNRESET|overloaded|529|socket hang up|rate.?limit/i.test(msg);
       if (l.running && transient && !l.producedOutput && l.retries < 3 && l.lastText) {
+        const text = l.lastText;
+        const check = l.lastCheck;
         const delay = [5_000, 15_000, 30_000][l.retries++];
         // Info, not an error: Familiar retries by itself, so it isn't something to catch up on.
         this.ev.emit({ type: "notice", threadId: l.threadId, message: `Claude hiccup (${msg.slice(0, 80)}); retrying in ${delay / 1000}s...` });
         l.retryTimer = setTimeout(() => {
           l.retryTimer = undefined;
           if (!this.live.has(l.threadId) || l.q) return; // closed, or a newer send already restarted it
-          this.startQuery(l)
-            .then(() => l.input!.push(userMessage(l.lastText!)))
+          Promise.resolve().then(() => {
+            check?.();
+            return this.ensureQuery(l);
+          })
+            .then(() => l.input!.push(userMessage(text), check))
             .catch((err) => {
               l.running = false;
               this.ev.emit({ type: "done", threadId: l.threadId, status: "failed", error: String(err?.message ?? err).slice(0, 400) });
@@ -434,6 +453,7 @@ export class ClaudeBackend implements AgentBackend {
     }
     if (l.q === q) {
       l.q = undefined;
+      l.input?.end();
       l.input = undefined;
       if (l.running) {
         l.running = false;
@@ -655,7 +675,11 @@ export class ClaudeBackend implements AgentBackend {
     this.ev.emit({ type: "approvalResolved", threadId, requestId });
   }
 
-  async send(threadId: string, text: string) {
+  private ensureQuery(l: Live) {
+    return l.starting ??= this.startQuery(l).finally(() => { l.starting = undefined; });
+  }
+
+  async send(threadId: string, text: string, check?: () => void) {
     const l = this.live.get(threadId);
     if (!l) throw new Error("thread not open");
     if (l.idleTimer) clearTimeout(l.idleTimer);
@@ -663,15 +687,21 @@ export class ClaudeBackend implements AgentBackend {
       clearTimeout(l.retryTimer);
       l.retryTimer = undefined;
     }
-    l.lastText = text;
-    l.producedOutput = false;
+    check?.();
     if (l.q && !l.running && (await this.changedElsewhere(l))) this.dropQuery(l);
-    if (!l.q) await this.startQuery(l);
-    if (!l.running) {
-      l.running = true;
-      this.ev.emit({ type: "turnStarted", threadId });
-    }
-    l.input!.push(userMessage(text));
+    check?.();
+    if (!l.q) await this.ensureQuery(l);
+    check?.();
+    await l.input!.push(userMessage(text), () => {
+      check?.();
+      l.lastText = text;
+      l.lastCheck = check;
+      l.producedOutput = false;
+      if (!l.running) {
+        l.running = true;
+        this.ev.emit({ type: "turnStarted", threadId });
+      }
+    });
   }
 
   async interrupt(threadId: string) {
@@ -699,8 +729,9 @@ export class ClaudeBackend implements AgentBackend {
   async setMode(threadId: string, mode: Mode) {
     const l = this.live.get(threadId);
     if (!l) return;
+    await l.starting;
+    await l.q?.setPermissionMode(PERMISSION_MODE[mode]);
     l.mode = mode;
-    await l.q?.setPermissionMode(PERMISSION_MODE[mode]).catch((e: any) => this.opts.log("[claude] setPermissionMode: " + e));
   }
 
   async setModel(threadId: string, model: string) {

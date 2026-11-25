@@ -1303,7 +1303,7 @@ function startClaudeDownload(why: "start" | "retry") {
   }).then((s) => {
     const failed = claudeDownloadError();
     if (failed) log(`[claude] download failed: ${failed}`);
-    if (s.state !== "present" || !missing) return;
+    if (s.state !== "present" || !missing || !hub.enabled("claude")) return;
     log("[claude] Claude Code is downloaded");
     hub.backends.claude
       ?.init()
@@ -1431,19 +1431,24 @@ app.whenReady().then(async () => {
         return shell.openPath(path.join(appDataDir(), "config.json"));
       case "openLogs":
         return shell.openPath(logFile);
-      case "reloadConfig":
+      case "reloadConfig": {
+        const previous = cfg;
         cfg = loadConfig(log);
+        for (const id of Object.keys(hub.backends))
+          if (previous.providers?.[id]?.enabled !== false && !hub.enabled(id)) hub.providerDisabled(id);
         hub.reloadProjects(); // folders removed from config.json go too
         hub.changed("config");
         return true;
+      }
       case "providerEnable": {
         const { id, on } = args as { id: string; on: boolean };
+        if (!on) hub.providerDisabled(id);
         cfg.providers = { ...cfg.providers, [id]: { ...cfg.providers?.[id], enabled: !!on } };
         saveConfig(cfg);
         if (on && !hub.backends[id]) {
           const b = makeAcpBackend(id);
           if (b) hub.addBackend(id, b);
-        } else if (on) hub.wake().then(() => hub.backends[id].init()).then(() => hub.refreshExternal()).catch(() => {});
+        } else if (on) hub.wake().then(() => hub.enabled(id) ? hub.backends[id].init() : undefined).then(() => hub.refreshExternal()).catch(() => {});
         else hub.refreshExternal().catch(() => {});
         providersCache = undefined;
         hub.changed("providers");
@@ -1477,7 +1482,7 @@ app.whenReady().then(async () => {
         // The mode of the quest open in the game. Only here: the game cannot change modes.
         const { mode, thread } = (args ?? {}) as { mode?: unknown; thread?: unknown };
         if (!MODES.includes(mode as Mode)) return { ok: false, why: "Unknown mode." };
-        const r = hub.setSelectedMode(mode as Mode, String(thread ?? ""));
+        const r = await hub.setSelectedMode(mode as Mode, String(thread ?? ""));
         sendStatus();
         return r;
       }

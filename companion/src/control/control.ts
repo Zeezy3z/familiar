@@ -445,7 +445,7 @@ function renderQuest(q: unknown) {
 questSel.addEventListener("change", () => {
   const mode = questSel.value;
   showQuestWarn();
-  act(questSel, `This quest is now in ${modeNames[mode] ?? mode}`, async () => {
+  act(questSel, `Next turn: ${modeNames[mode] ?? mode}`, async () => {
     const r = await bridge.invoke("questMode", { mode, thread: questId });
     if (!r?.ok) {
       questSel.value = questMode; // still focused, so the status redraw would leave the refused choice showing

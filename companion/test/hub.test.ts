@@ -109,6 +109,12 @@ let claude: FakeBackend, codex: FakeBackend, hub: InstanceType<typeof Hub>;
 // entry. private-vault stands in for a folder the user added to `exclude` in config.json.
 const cfg = { ...DEFAULT_CONFIG, projectRoots: [projRoot], exclude: [...DEFAULT_CONFIG.exclude.filter((e) => !e.includes("temp")), "\\private-vault"] };
 const tick = () => new Promise((r) => setTimeout(r, 0));
+function deferred() {
+  let resolve!: () => void;
+  let reject!: (e: Error) => void;
+  const promise = new Promise<void>((yes, no) => { resolve = yes; reject = no; });
+  return { resolve, reject, promise };
+}
 
 beforeEach(async () => {
   appData = fs.mkdtempSync(path.join(tmp, "state-"));
@@ -527,22 +533,75 @@ describe("Hub", () => {
     expect(hub.threads.get(id)!.mode).toBe("ask");
     expect(hub.toasts.at(-1)!.text).toBe("Modes are changed in Familiar on your PC, not from the game.");
     for (const m of ["plan", "edits", "auto", "ask"] as const) {
-      expect(hub.setSelectedMode(m, id)).toEqual({ ok: true });
+      expect(await hub.setSelectedMode(m, id)).toEqual({ ok: true });
       expect(hub.threads.get(id)!.mode).toBe(m);
       await hub.key("mode", undefined, "full", OK);
       expect(hub.threads.get(id)!.mode).toBe(m);
     }
-    expect(hub.setSelectedMode("yolo" as any, id)).toMatchObject({ ok: false });
+    expect(await hub.setSelectedMode("yolo" as any, id)).toMatchObject({ ok: false });
     expect(claude.modes).toEqual(["plan", "edits", "auto", "ask"]);
     // The panel names the quest it showed: one opened in the game since is never changed in its place.
     await hub.quick("claude", "@familiar another");
     const other = hub.view.selected!;
-    expect(hub.setSelectedMode("auto", id)).toEqual({ ok: false, why: expect.stringMatching(/Another quest is open/) });
+    expect(await hub.setSelectedMode("auto", id)).toEqual({ ok: false, why: expect.stringMatching(/Another quest is open/) });
     expect([hub.threads.get(id)!.mode, hub.threads.get(other)!.mode]).toEqual(["ask", "ask"]);
     hub.action({ type: "select", id });
     claude.emit({ type: "turnStarted", threadId: id });
     await hub.key("stop");
     expect(claude.interrupted).toEqual([id]);
+  });
+
+  it("blocks saved-quest messages during a rejected mode change until the panel confirms a retry", async () => {
+    await hub.quick("claude", "@familiar first");
+    const id = hub.selectedThread()!.id;
+    await hub.setSelectedMode("edits", id);
+    const ack = deferred();
+    vi.spyOn(claude, "setMode").mockImplementationOnce(() => ack.promise);
+    const change = hub.setSelectedMode("ask", id);
+    await expect(hub.prompt("during")).rejects.toThrow(/paused/);
+    expect(hub.selectedThread()!.mode).toBe("edits");
+    ack.reject(new Error("fixture refusal"));
+    expect(await change).toMatchObject({ ok: false });
+    await expect(hub.prompt("after refusal")).rejects.toThrow(/paused/);
+    expect(claude.sent.map(s => s.text)).toEqual(["first"]);
+    hub.saveNow();
+    const saved = JSON.parse(fs.readFileSync(path.join(appData, "Familiar", "threads.json"), "utf8"));
+    expect(saved.threads.find((t: any) => t.id === id).mode).toBe("ask");
+    expect(await hub.setSelectedMode("ask", id)).toEqual({ ok: true });
+    await hub.prompt("confirmed");
+    expect(claude.sent.map(s => s.text)).toEqual(["first", "confirmed"]);
+  });
+
+  it("revokes a waiting send during open and checks the switch on a saved quest", async () => {
+    const previous = cfg.providers;
+    const opened = deferred();
+    const entered = deferred();
+    const original = claude.open.bind(claude);
+    vi.spyOn(claude, "open").mockImplementationOnce(async o => {
+      entered.resolve();
+      await opened.promise;
+      return original(o);
+    });
+    try {
+      const waiting = hub.quick("claude", "@familiar waiting");
+      await entered.promise;
+      cfg.providers = { ...previous, claude: { enabled: false } };
+      hub.providerDisabled("claude");
+      hub.handleAddon({ t: "prompt", id: "off-prompt", text: "still off" });
+      await tick();
+      expect(hub.selectedThread()!.lastError).toMatch(/switched off/);
+      expect(hub.selectedThread()!.entries.some(e => e.kind === "user" && e.text === "still off")).toBe(true);
+      cfg.providers = previous;
+      opened.resolve();
+      await expect(waiting).rejects.toThrow(/permissions changed/);
+      expect(claude.sent).toEqual([]);
+      hub.handleAddon({ t: "prompt", id: "resend", text: "explicit resend" });
+      await tick();
+      expect(claude.sent.map(s => s.text)).toEqual(["explicit resend"]);
+    } finally {
+      cfg.providers = previous;
+      opened.resolve();
+    }
   });
 
   it("selecting a desktop thread loads history; sending adopts and resumes it", async () => {
