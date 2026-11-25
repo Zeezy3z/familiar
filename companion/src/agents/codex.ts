@@ -223,6 +223,37 @@ interface PendingApproval {
   rpcId: number | string;
   threadId: string;
   method: string;
+  commandDecisions?: Partial<Record<Decision, string>>;
+}
+
+/** Extra protocol fields may describe a different approval or contain provider-private data. Only
+ * the known display fields leave the adapter. Unsupported shapes stay deniable. */
+function commandApproval(p: Record<string, any>) {
+  const { threadId, turnId, itemId, approvalId, startedAtMs, command, cwd, reason, commandActions, availableDecisions, ...extra } = p;
+  const offers = (choice: string) => availableDecisions == null || (Array.isArray(availableDecisions) && availableDecisions.includes(choice));
+  const validActions = commandActions == null || (Array.isArray(commandActions) && commandActions.every(a =>
+    a && typeof a.type === "string" && Object.entries(a).every(([k, v]) =>
+      ["type", "command", "path", "name", "query"].includes(k) && (v == null || typeof v === "string"))));
+  const known = validActions && [cwd, reason].every(v => v == null || typeof v === "string") &&
+    Object.values(extra).every(v => v == null);
+  const supported = known && typeof command === "string" && !!command.trim() && offers("accept");
+  let review: ReturnType<typeof approvalText>;
+  if (supported) {
+    const whole = [command, reason ? `Reason: ${reason}` : "", cwd ? `in ${cwd}` : "",
+      commandActions?.length ? JSON.stringify(commandActions, null, 2) : ""].filter(Boolean).join("\n");
+    review = approvalText(truncatePreview(whole, 4000), whole);
+  } else {
+    review = { detail: "Codex did not supply a fully supported command and one-time approval option.", cut: true, incomplete: true };
+  }
+  const canAccept = supported && !review.incomplete;
+  const decline = offers("decline") ? "decline" : undefined;
+  const cancel = offers("cancel") ? "cancel" : undefined;
+  return { review, decisions: {
+    allow: canAccept ? "accept" : undefined,
+    allowAlways: canAccept && offers("acceptForSession") ? "acceptForSession" : undefined,
+    deny: decline ?? cancel,
+    denyAndStop: cancel ?? decline,
+  } };
 }
 
 export class CodexBackend implements AgentBackend {
@@ -473,10 +504,15 @@ export class CodexBackend implements AgentBackend {
     const a = this.approvals.get(requestId);
     if (!a || a.threadId !== _threadId || !this.rpc) return;
     this.approvals.delete(requestId);
-    const decision = d === "allow" ? "accept" : d === "allowAlways" ? "acceptForSession" : d === "deny" ? "decline" : "cancel";
-    if (a.method === "mcpServer/elicitation/request") {
+    if (a.commandDecisions) {
+      const decision = a.commandDecisions[d];
+      if (decision) this.rpc.respond(a.rpcId, { decision });
+      else this.rpc.respondError(a.rpcId, "No supported decision for this command request");
+      if (d === "denyAndStop" && decision !== "cancel") void this.interrupt(a.threadId);
+    } else if (a.method === "mcpServer/elicitation/request") {
       this.rpc.respond(a.rpcId, { action: d === "allow" || d === "allowAlways" ? "accept" : d === "deny" ? "decline" : "cancel", content: null, _meta: null });
     } else {
+      const decision = d === "allow" ? "accept" : d === "allowAlways" ? "acceptForSession" : d === "deny" ? "decline" : "cancel";
       this.rpc.respond(a.rpcId, { decision });
     }
     this.ev.emit({ type: "approvalResolved", threadId: a.threadId, requestId });
@@ -609,18 +645,20 @@ export class CodexBackend implements AgentBackend {
       return;
     }
     switch (method) {
-      case "item/commandExecution/requestApproval":
-        this.approvals.set(requestId, { rpcId: id, threadId, method });
+      case "item/commandExecution/requestApproval": {
+        const { review, decisions } = commandApproval(p);
+        this.approvals.set(requestId, { rpcId: id, threadId, method, commandDecisions: decisions });
         this.ev.emit({
           type: "approval",
           threadId,
           requestId,
           kind: "command",
           title: "Run command?",
-          detail: [p.command ?? "(command)", p.reason ? `Reason: ${p.reason}` : "", p.cwd ? `in ${p.cwd}` : ""].filter(Boolean).join("\n"),
-          canAlways: true,
+          ...review,
+          canAlways: !!decisions.allowAlways,
         });
         break;
+      }
       case "item/fileChange/requestApproval": {
         this.approvals.set(requestId, { rpcId: id, threadId, method });
         const whole = [p.reason, p.grantRoot ? `Grant write access under ${p.grantRoot}` : ""].filter(Boolean).join("\n");
