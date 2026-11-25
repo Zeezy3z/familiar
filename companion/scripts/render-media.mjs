@@ -265,7 +265,7 @@ async function controlScene(page) {
   await probe.waitForFunction(() => window.preview && document.getElementById("journey-title")?.textContent);
   await probe.evaluate(() => document.fonts.ready);
   await probe.waitForTimeout(300);
-  const contentH = Math.ceil(await probe.evaluate(() => document.getElementById("advanced").getBoundingClientRect().bottom + window.scrollY)) + 28;
+  const contentH = Math.ceil(await probe.locator("main").evaluate(el => el.getBoundingClientRect().bottom + window.scrollY)) + 28;
   await probe.close();
   const M = 40, W2 = paneW + M * 2, H2 = contentH + M * 2 + LABEL_H - 10;
   await page.setViewportSize({ width: W2, height: H2 });
