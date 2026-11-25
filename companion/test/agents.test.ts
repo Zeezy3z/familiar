@@ -12,6 +12,27 @@ import { DEFAULT_CONFIG, isExcluded } from "../src/hub/config";
 import { luaString } from "../src/main/wow";
 
 describe("display helpers", () => {
+  it("shows the exact Claude standing rules and marks an unspecified Codex change deny-only", async () => {
+    const events: AgentEvent[] = [];
+    const claude = new ClaudeBackend({ log: () => {}, version: "test" });
+    claude.on(e => events.push(e));
+    await claude.open({ threadId: "q", cwd: "fixture", mode: "ask" });
+    const rule = { type: "addRules", rules: [{ toolName: "Read", ruleContent: "fixture.txt" }], behavior: "allow", destination: "session" };
+    const grant = (claude as any).canUseTool((claude as any).live.get("q"), "Read", { file_path: "fixture.txt" }, {
+      toolUseID: "rule", suggestions: [{ ...rule, destination: "localSettings" }],
+    });
+    const card = events.find(e => e.type === "approval")!;
+    expect(card.detail).toContain(JSON.stringify([rule], null, 2));
+    expect(card.canAlways).toBe(true);
+    claude.respondApproval("q", card.requestId, "allowAlways");
+    expect((await grant).updatedPermissions).toEqual([rule]);
+    await claude.close("q");
+    const codex = new CodexBackend({ log: () => {}, version: "test" });
+    codex.on(e => events.push(e));
+    (codex as any).byNative.set("native", "q");
+    (codex as any).onRequest(3, "item/fileChange/requestApproval", { threadId: "native" });
+    expect(events.at(-1)).toMatchObject({ type: "approval", cut: true, incomplete: true, canAlways: false });
+  });
   it("displays the edit scope, and only a pending single-choice question accepts an offered answer", async () => {
     const b = new ClaudeBackend({ log: () => {}, version: "test" });
     const events: AgentEvent[] = [];

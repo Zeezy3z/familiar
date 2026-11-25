@@ -619,7 +619,7 @@ export class ClaudeBackend implements AgentBackend {
     // Which tool asked, in which mode (no content): answers "why did Auto ask?" from the log.
     this.opts.log(`[claude] approval asked (${l.threadId}): ${toolName} in ${l.mode} mode`);
     return new Promise((resolve) => {
-      const pending: PendingApproval = { resolve, input, suggestions: opts?.suggestions, toolName };
+      const pending: PendingApproval = { resolve, input, toolName };
       let kind: "tool" | "question" | "planExit" = "tool";
       let title = opts?.title ?? `Allow ${opts?.displayName ?? toolName}?`;
       // The card's text within its limits, or (Infinity) the whole request for the control panel.
@@ -646,6 +646,10 @@ export class ClaudeBackend implements AgentBackend {
         title = "Approve the plan and start implementing?";
         const plan = Object.keys(input).every(k => k === "plan") ? String(input.plan ?? "") : JSON.stringify(input, null, 2);
         text = approvalText(truncatePreview(plan, 4000), plan);
+      } else if (!opts?.suppressAlwaysAllowRule && opts?.suggestions?.length) {
+        pending.suggestions = opts.suggestions.map((rule: any) => ({ ...rule, destination: "session" }));
+        const rules = "\n\nAlways would apply these rules for this quest:\n" + JSON.stringify(pending.suggestions, null, 2);
+        text = approvalText(truncatePreview(text.detail + rules, 4000), describe(Infinity, Infinity) + rules);
       }
       l.approvals.set(requestId, pending);
       opts?.signal?.addEventListener?.("abort", () => {
@@ -661,7 +665,7 @@ export class ClaudeBackend implements AgentBackend {
         kind,
         title,
         ...text,
-        canAlways: kind === "tool" && !opts?.suppressAlwaysAllowRule && (opts?.suggestions?.length ?? 0) > 0,
+        canAlways: !!pending.suggestions?.length && !text.incomplete,
         ...(pending.options ? { options: pending.options } : {}),
       } as AgentEvent);
     });
@@ -683,11 +687,11 @@ export class ClaudeBackend implements AgentBackend {
     const a = l?.approvals.get(requestId);
     if (!l || !a) return;
     if (a.options && (d === "allow" || d === "allowAlways")) return;
+    if (d === "allowAlways" && !a.suggestions?.length) return;
     l.approvals.delete(requestId);
     if (d === "allow") a.resolve({ behavior: "allow", updatedInput: a.input });
     else if (d === "allowAlways") {
-      const perms = (a.suggestions ?? []).map((s: any) => ({ ...s, destination: "session" }));
-      a.resolve({ behavior: "allow", updatedInput: a.input, updatedPermissions: perms });
+      a.resolve({ behavior: "allow", updatedInput: a.input, updatedPermissions: a.suggestions });
     } else a.resolve({ behavior: "deny", message: "Denied by the user (from World of Warcraft).", interrupt: d === "denyAndStop" });
     this.ev.emit({ type: "approvalResolved", threadId, requestId });
   }

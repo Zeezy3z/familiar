@@ -621,18 +621,22 @@ export class CodexBackend implements AgentBackend {
           canAlways: true,
         });
         break;
-      case "item/fileChange/requestApproval":
+      case "item/fileChange/requestApproval": {
         this.approvals.set(requestId, { rpcId: id, threadId, method });
+        const whole = [p.reason, p.grantRoot ? `Grant write access under ${p.grantRoot}` : ""].filter(Boolean).join("\n");
         this.ev.emit({
           type: "approval",
           threadId,
           requestId,
           kind: "fileChange",
           title: "Apply file changes?",
-          detail: [p.reason ?? "", p.grantRoot ? `Grant write access under ${p.grantRoot}` : ""].filter(Boolean).join("\n") || "Codex wants to edit files.",
-          canAlways: true,
+          ...(whole.trim() ? approvalText(truncatePreview(whole, 4000), whole) : {
+            detail: "Codex supplied no description or write scope for this file change.", cut: true, incomplete: true,
+          }),
+          canAlways: !!whole.trim(),
         });
         break;
+      }
       case "item/permissions/requestApproval":
         // Familiar has no permission-subset picker. Keep the existing empty grant explicit.
         this.rpc?.respond(id, { permissions: {}, scope: "turn" });
