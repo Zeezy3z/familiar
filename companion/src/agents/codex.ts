@@ -209,7 +209,8 @@ interface Live {
   mode: Mode;
   model?: string;
   turnId?: string;
-  modeDirty: boolean;
+  turnMode?: Mode;
+  startingTurn?: Promise<any>;
   chat?: ChatOptions;
   releaseTimer?: NodeJS.Timeout;
 }
@@ -422,36 +423,44 @@ export class CodexBackend implements AgentBackend {
       });
     }
     const nativeId: string = res.thread.id;
-    this.live.set(o.threadId, { threadId: o.threadId, nativeId, cwd: o.cwd, mode: o.mode, model: res.model, modeDirty: false, chat: o.chat });
+    this.live.set(o.threadId, { threadId: o.threadId, nativeId, cwd: o.cwd, mode: o.mode, model: res.model, chat: o.chat });
     this.byNative.set(nativeId, o.threadId);
     this.ev.emit({ type: "session", threadId: o.threadId, nativeId, model: res.model });
     return nativeId;
   }
 
-  async send(threadId: string, text: string): Promise<void> {
+  async send(threadId: string, text: string, check?: () => void): Promise<void> {
     const rpc = await this.ensure();
     const l = this.live.get(threadId);
     if (!l) throw new Error("thread not open");
+    if (l.startingTurn) await l.startingTurn;
+    check?.();
     if (l.releaseTimer) clearTimeout(l.releaseTimer);
     // Plan mode: read-only sandbox plus a per-turn note (developer instructions would stick forever).
     const body = l.mode === "plan" && !l.chat ? `${PLAN_INSTRUCTIONS}\n\n${text}` : text;
     const input = [{ type: "text", text: body, text_elements: [] }];
     if (l.turnId) {
+      if (!l.chat && l.turnMode !== l.mode) throw new Error("The active turn has a different permission mode. Stop it or wait for it to finish before sending.");
       await rpc.request("turn/steer", { threadId: l.nativeId, input, expectedTurnId: l.turnId });
       return;
     }
     const mp = modeParams(l.mode);
     const params: any = { threadId: l.nativeId, input };
     if (l.chat?.effort) params.effort = l.chat.effort;
-    if (l.modeDirty && !l.chat) {
+    if (!l.chat) {
       params.approvalPolicy = mp.approvalPolicy;
       params.sandboxPolicy = mp.sandboxPolicy;
       params.approvalsReviewer = mp.approvalsReviewer;
-      l.modeDirty = false;
     }
     if (l.model) params.model = l.model;
-    const r = await rpc.request("turn/start", params);
-    l.turnId = r?.turn?.id ?? l.turnId;
+    l.turnMode = l.mode;
+    l.startingTurn = rpc.request("turn/start", params);
+    try {
+      const r = await l.startingTurn;
+      l.turnId = r?.turn?.id ?? l.turnId;
+    } finally {
+      l.startingTurn = undefined;
+    }
   }
 
   async interrupt(threadId: string) {
@@ -462,12 +471,10 @@ export class CodexBackend implements AgentBackend {
 
   respondApproval(_threadId: string, requestId: string, d: Decision) {
     const a = this.approvals.get(requestId);
-    if (!a || !this.rpc) return;
+    if (!a || a.threadId !== _threadId || !this.rpc) return;
     this.approvals.delete(requestId);
     const decision = d === "allow" ? "accept" : d === "allowAlways" ? "acceptForSession" : d === "deny" ? "decline" : "cancel";
-    if (a.method === "item/permissions/requestApproval") {
-      this.rpc.respond(a.rpcId, d === "allow" || d === "allowAlways" ? { permissions: {}, scope: d === "allowAlways" ? "session" : "turn" } : { permissions: {}, scope: "turn" });
-    } else if (a.method === "mcpServer/elicitation/request") {
+    if (a.method === "mcpServer/elicitation/request") {
       this.rpc.respond(a.rpcId, { action: d === "allow" || d === "allowAlways" ? "accept" : d === "deny" ? "decline" : "cancel", content: null, _meta: null });
     } else {
       this.rpc.respond(a.rpcId, { decision });
@@ -477,10 +484,7 @@ export class CodexBackend implements AgentBackend {
 
   async setMode(threadId: string, mode: Mode) {
     const l = this.live.get(threadId);
-    if (l) {
-      l.mode = mode;
-      l.modeDirty = true;
-    }
+    if (l) l.mode = mode;
   }
 
   async setModel(threadId: string, model: string) {
@@ -617,30 +621,38 @@ export class CodexBackend implements AgentBackend {
           canAlways: true,
         });
         break;
-      case "item/fileChange/requestApproval":
+      case "item/fileChange/requestApproval": {
         this.approvals.set(requestId, { rpcId: id, threadId, method });
+        const whole = [p.reason, p.grantRoot ? `Grant write access under ${p.grantRoot}` : ""].filter(Boolean).join("\n");
         this.ev.emit({
           type: "approval",
           threadId,
           requestId,
           kind: "fileChange",
           title: "Apply file changes?",
-          detail: [p.reason ?? "", p.grantRoot ? `Grant write access under ${p.grantRoot}` : ""].filter(Boolean).join("\n") || "Codex wants to edit files.",
-          canAlways: true,
+          ...(whole.trim() ? approvalText(truncatePreview(whole, 4000), whole) : {
+            detail: "Codex supplied no description or write scope for this file change.", cut: true, incomplete: true,
+          }),
+          canAlways: !!whole.trim(),
         });
         break;
+      }
       case "item/permissions/requestApproval":
+        // Familiar has no permission-subset picker. Keep the existing empty grant explicit.
+        this.rpc?.respond(id, { permissions: {}, scope: "turn" });
+        this.ev.emit({ type: "notice", threadId, message: "Codex requested additional permissions. Familiar granted none." });
+        break;
       case "mcpServer/elicitation/request": {
         this.approvals.set(requestId, { rpcId: id, threadId, method });
-        const whole = JSON.stringify(p?.permissions ?? p?.message ?? p, null, 1);
+        const whole = JSON.stringify(p, null, 1);
         this.ev.emit({
           type: "approval",
           threadId,
           requestId,
           kind: "permissions",
-          title: method === "mcpServer/elicitation/request" ? "Tool needs input" : "Grant permissions?",
+          title: "Tool needs input",
           ...approvalText(truncatePreview(whole, 600), whole),
-          canAlways: method === "item/permissions/requestApproval",
+          canAlways: false,
         });
         break;
       }

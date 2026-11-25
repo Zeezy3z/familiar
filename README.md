@@ -66,12 +66,13 @@ the quest on the Glass (the layer Familiar draws over the game). Nothing happens
   about to click.
 * **Deny** and **Stop** always work: the bottom-bar buttons, their keybinds, `/fam deny`, `/fam stop`.
 * **Always** and **modes** are set only in the control panel. **Requests waiting** at the top of the
-  panel lists every request in full with **Approve · Deny · Always** (questions with options are
+  panel lists pending requests and offers **Approve · Deny · Always** for complete requests (questions with options are
   answered on the Glass); **Safety → Open quest** sets the
   mode of the quest open in the game, and **New quests start in** sets the default. Keep **Ask first**.
 
 With no Approve key and click approval off, requests can be approved only in the control panel; the
-panel says so. A request too long for the in-game card is always approved in the panel.
+panel says so. Review long requests in the panel. If the panel also cuts the text, choose **Deny**
+and ask the agent for a smaller request.
 
 ## Where settings live
 
@@ -193,10 +194,12 @@ question (never your character name or realm). `/fam ask context off` stops that
 
 ## More agents
 
-Familiar drives any agent that speaks the Agent Client Protocol over stdio. Hermes (`hermes acp`)
+Familiar drives agents that speak the Agent Client Protocol over stdio and advertise a compatible
+permission mode. Plan quests and chats require a plan or read-only mode. Hermes (`hermes acp`)
 and Grok Build (`grok agent stdio`) are picked up when installed; add others under `providers` in
 `config.json`, e.g. `"gemini": { "command": "gemini", "args": ["--experimental-acp"] }`
-(`"enabled": false` hides one). Start their quests with `/fam <id> <message>`.
+(`"enabled": false` hides one and blocks new messages, including queued sends and retries).
+Start their quests with `/fam <id> <message>`.
 
 Familiar never selects a mode that skips approvals (yolo, bypass, "don't ask") and strips `*YOLO*`
 switches from the agent's environment. An agent that offers only such modes is not started; one
@@ -272,7 +275,8 @@ never lets a message from the game decide anything that grants a familiar someth
   then find the addon.
 * **Requests are shown whole.** Long edits are cut at 60 lines on the card, plans and commands at
   4,000 characters, permission lists at 600. A cut request can only be denied in game; approve it
-  in the control panel, where it is shown in full.
+  in the control panel when it is shown in full. If the panel copy exceeds its 200,000-character
+  limit, Familiar offers only **Deny**.
 * **No bypass modes.** Nothing in the game or the control panel reaches bypass-permissions /
   danger-full-access / yolo modes.
 

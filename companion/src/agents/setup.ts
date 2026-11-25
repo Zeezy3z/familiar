@@ -106,7 +106,7 @@ export function providerSetup(enabled: (id: string) => boolean, custom: Record<s
         glyph: custom[id]?.glyph ?? info.glyph,
         installed,
         enabled: installed && enabled(id),
-        detail: installed ? `ACP agent: ${cmd} ${(custom[id]?.args ?? []).join(" ")}` : `${cmd || "(no command)"} not found on PATH`,
+        detail: installed ? `ACP agent: ${path.basename(cmd)} (${custom[id]?.args?.length ?? 0} args)` : `${path.basename(cmd) || "(no command)"} not found on PATH`,
         canLogin: false,
       };
     }

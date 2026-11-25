@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import { CodexBackend, prettyCommand } from "../src/agents/codex";
-import { ClaudeBackend, insideFolder, INSTRUCTIONS_MAX, projectInstructions } from "../src/agents/claude";
+import { AsyncQueue, ClaudeBackend, insideFolder, INSTRUCTIONS_MAX, projectInstructions } from "../src/agents/claude";
 import type { AgentEvent } from "../src/agents/types";
 import { approvalText, editPreview, FULL_CAP, summarizeTool, truncatePreview } from "../src/agents/types";
 import { projectRootOf } from "../src/hub/projects";
@@ -12,6 +12,50 @@ import { DEFAULT_CONFIG, isExcluded } from "../src/hub/config";
 import { luaString } from "../src/main/wow";
 
 describe("display helpers", () => {
+  it("shows the exact Claude standing rules and marks an unspecified Codex change deny-only", async () => {
+    const events: AgentEvent[] = [];
+    const claude = new ClaudeBackend({ log: () => {}, version: "test" });
+    claude.on(e => events.push(e));
+    await claude.open({ threadId: "q", cwd: "fixture", mode: "ask" });
+    const rule = { type: "addRules", rules: [{ toolName: "Read", ruleContent: "fixture.txt" }], behavior: "allow", destination: "session" };
+    const grant = (claude as any).canUseTool((claude as any).live.get("q"), "Read", { file_path: "fixture.txt" }, {
+      toolUseID: "rule", suggestions: [{ ...rule, destination: "localSettings" }],
+    });
+    const card = events.find(e => e.type === "approval")!;
+    expect(card.detail).toContain(JSON.stringify([rule], null, 2));
+    expect(card.canAlways).toBe(true);
+    claude.respondApproval("q", card.requestId, "allowAlways");
+    expect((await grant).updatedPermissions).toEqual([rule]);
+    await claude.close("q");
+    const codex = new CodexBackend({ log: () => {}, version: "test" });
+    codex.on(e => events.push(e));
+    (codex as any).byNative.set("native", "q");
+    (codex as any).onRequest(3, "item/fileChange/requestApproval", { threadId: "native" });
+    expect(events.at(-1)).toMatchObject({ type: "approval", cut: true, incomplete: true, canAlways: false });
+  });
+  it("displays the edit scope, and only a pending single-choice question accepts an offered answer", async () => {
+    const b = new ClaudeBackend({ log: () => {}, version: "test" });
+    const events: AgentEvent[] = [];
+    b.on(e => events.push(e));
+    await b.open({ threadId: "q", cwd: "fixture", mode: "ask" });
+    const l = (b as any).live.get("q");
+    const edit = { file_path: "fixture.txt", old_string: "one", new_string: "two", replace_all: true };
+    const decision = (b as any).canUseTool(l, "Edit", edit, { toolUseID: "edit" });
+    const card = events.find(e => e.type === "approval")!;
+    expect(JSON.parse(card.detail)).toEqual(edit);
+    expect(b.answerQuestion("q", card.requestId, "A")).toBe(false);
+    b.respondApproval("q", card.requestId, "deny");
+    expect((await decision).behavior).toBe("deny");
+    const questions = [{ question: "Which fixture?", options: [{ label: "A" }, { label: "B" }] }];
+    const answer = (b as any).canUseTool(l, "AskUserQuestion", { questions }, { toolUseID: "choice" });
+    expect(b.answerQuestion("q", "claude:choice", "C")).toBe(false);
+    b.respondApproval("q", "claude:choice", "allow");
+    expect(b.answerQuestion("q", "claude:choice", "B")).toBe(true);
+    expect((await answer).updatedInput.answers).toEqual({ "Which fixture?": "B" });
+    const multi = (b as any).canUseTool(l, "AskUserQuestion", { questions: [...questions, ...questions] }, {});
+    expect((await multi).behavior).toBe("deny");
+    await b.close("q");
+  });
   it("Claude's actual plan approval preserves the 4,000-character preview cap and marks the omitted text", async () => {
     const backend = new ClaudeBackend({ log: () => {}, version: "test" });
     const events: AgentEvent[] = [];
@@ -50,15 +94,20 @@ describe("display helpers", () => {
     await result;
   });
 
-  it("Codex's actual permission approval preserves the 600-character preview cap and marks omitted text", () => {
+  it("reports the empty Codex permission grant and retains the full elicitation for review", () => {
     const backend = new CodexBackend({ log: () => {}, version: "test" });
     const events: AgentEvent[] = [];
     backend.on(e => events.push(e));
     (backend as any).byNative.set("native", "fixture");
+    const respond = vi.fn();
+    (backend as any).rpc = { respond };
     const permissions = { description: "x".repeat(650) };
     (backend as any).onRequest(1, "item/permissions/requestApproval", { threadId: "native", permissions });
-    expect(events[0]).toMatchObject({ type: "approval", kind: "permissions", detail: truncatePreview(JSON.stringify(permissions, null, 1), 600), canAlways: true });
-    expect(events[0]).toMatchObject({ cut: true, full: JSON.stringify(permissions, null, 1) });
+    expect(respond).toHaveBeenCalledWith(1, { permissions: {}, scope: "turn" });
+    expect(events[0]).toMatchObject({ type: "notice" });
+    const request = { threadId: "native", message: "Fixture input", requestedSchema: permissions };
+    (backend as any).onRequest(2, "mcpServer/elicitation/request", request);
+    expect(events[1]).toMatchObject({ type: "approval", cut: true, full: JSON.stringify(request, null, 1), canAlways: false });
   });
   it("capped provider previews identify text that expansion cannot recover", () => {
     for (const limit of [600, 4000]) {
@@ -73,7 +122,8 @@ describe("display helpers", () => {
     // The whole request travels with a cut card, capped (and saying so) past 200k characters.
     expect(approvalText(preview, preview)).toEqual({ detail: preview });
     expect(approvalText(preview, text)).toEqual({ detail: preview, cut: true, full: text });
-    expect(approvalText("v", "v".repeat(FULL_CAP + 5)).full).toBe("v".repeat(FULL_CAP) + "\n… (truncated at 200k)");
+    expect(approvalText("v", "v".repeat(FULL_CAP + 5))).toMatchObject({ incomplete: true, full: "v".repeat(FULL_CAP) + "\n… (truncated at 200k)" });
+    expect(approvalText("v", "v".repeat(FULL_CAP)).incomplete).toBeUndefined();
   });
 
   it("Claude's actual file write approval is cut past 60 lines and carries the whole write", async () => {
@@ -127,6 +177,19 @@ describe("Codex keeps Ask first", () => {
       params: { approvalsReviewer: "user", sandbox: "read-only", config: { web_search: "live", features: { shell_tool: false, unified_exec: false } } },
     });
     expect(calls[0].params.approvalPolicy).not.toBe("never"); // with "never", nothing Codex would ask about reaches the game
+  });
+
+  it("preserves the current policy on a retry and refuses to steer a turn opened under another mode", async () => {
+    const { backend, calls } = recorded();
+    await backend.open({ threadId: "q", cwd: "fixture", mode: "edits" });
+    await backend.setMode("q", "ask");
+    vi.spyOn((backend as any).rpc, "request").mockRejectedValueOnce(new Error("fixture refusal"));
+    await expect(backend.send("q", "first")).rejects.toThrow("fixture refusal");
+    await backend.send("q", "retry");
+    expect(calls.at(-1)?.params).toMatchObject({ approvalPolicy: "untrusted", approvalsReviewer: "user", sandboxPolicy: { type: "readOnly" } });
+    await backend.setMode("q", "plan");
+    await expect(backend.send("q", "follow-up")).rejects.toThrow(/different permission mode/);
+    expect(calls.some(c => c.method === "turn/steer")).toBe(false);
   });
 
   it("project quests send approvals to the player, not to Codex's own reviewer, except in Auto-review", async () => {
@@ -273,6 +336,30 @@ describe("FamiliarSync lua strings", () => {
 });
 
 describe("Claude automatic retry", () => {
+  it("checks queued input at SDK consumption and reports a rejected permission change", async () => {
+    const b = new ClaudeBackend({ log: () => {}, version: "test" });
+    await b.open({ threadId: "q", cwd: "fixture", mode: "edits" });
+    const l = (b as any).live.get("q");
+    const input = new AsyncQueue<any>();
+    l.input = input;
+    l.q = { setPermissionMode: vi.fn().mockRejectedValue(new Error("fixture refusal")) };
+    let enabled = true;
+    const reader = input[Symbol.asyncIterator]();
+    const first = b.send("q", "first");
+    expect((await reader.next()).value.message.content).toBe("first");
+    await first;
+    const received = reader.next(); // eager SDK consumer, before consent changes
+    const message = b.send("q", "queued", () => { if (!enabled) throw new Error("disabled"); });
+    enabled = false;
+    (b as any).onMessage(l, { type: "result" });
+    await expect(message).rejects.toThrow("disabled");
+    input.end();
+    expect((await received).done).toBe(true);
+    await expect(b.setMode("q", "ask")).rejects.toThrow("fixture refusal");
+    expect(l.mode).toBe("edits");
+    await b.close("q");
+  });
+
   it("retries a prompt that failed before anything happened, never one whose tools already ran", async () => {
     vi.useFakeTimers();
     try {
@@ -284,7 +371,7 @@ describe("Claude automatic retry", () => {
       const turns: (() => AsyncGenerator<any>)[] = [];
       // Stand-in for the SDK query: each start plays the next scripted turn.
       (b as any).startQuery = async (l: any) => {
-        l.input = { push: (m: any) => prompts.push(m.message.content), end() {} };
+        l.input = { push: (m: any, check?: () => void) => { check?.(); prompts.push(m.message.content); }, pause() {}, resume() {}, end() {} };
         l.q = turns.shift()!();
         (b as any).consume(l, l.q);
       };
@@ -296,6 +383,14 @@ describe("Claude automatic retry", () => {
       await vi.advanceTimersByTimeAsync(6_000);
       expect(prompts).toEqual(["what changed?", "what changed?"]);
       expect(events.at(-1)).toMatchObject({ type: "done", status: "completed" });
+
+      let enabled = true;
+      turns.push(async function* () { await later(); throw overloaded(); });
+      await b.send("q1", "another question", () => { if (!enabled) throw new Error("provider disabled"); });
+      enabled = false;
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(prompts.filter(p => p === "another question")).toHaveLength(1);
+      expect(events.at(-1)).toMatchObject({ type: "done", status: "failed", error: "provider disabled" });
 
       turns.push(async function* () {
         await later();

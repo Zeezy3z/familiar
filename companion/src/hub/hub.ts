@@ -29,7 +29,7 @@ import { providerAvailable } from "../agents/setup";
 import { CHAT_INSTRUCTIONS, withGameContext } from "./chat";
 import { CHATS_KEY, isChatPath, Project, ProjectRegistry, projectRootOf, zoneRefusal } from "./projects";
 import { rewards } from "./rewards";
-import { NEEDS_YOU, needYou } from "../shared/words";
+import { INCOMPLETE_REQUEST, NEEDS_YOU, needYou } from "../shared/words";
 import { visibleText } from "./visible-text";
 import { TUTORIAL_AGENT, TUTORIAL_NO_MODE, tutorialDecide, tutorialReply, tutorialSetOut, tutorialThread } from "./tutorial";
 
@@ -53,6 +53,7 @@ export interface Entry {
   options?: string[];
   /** approval: the card's text is a cut preview; `full` is the whole request, approved only on the PC. */
   cut?: boolean;
+  incomplete?: true;
   full?: string;
   /** approval: why the last approving click or key was refused (shown on the card until a decision). */
   refused?: { why: Refusal; at: number };
@@ -66,6 +67,9 @@ export type Refusal = "proof" | "fresh" | "cut" | "view";
 export type DecisionOrigin = "game" | "panel";
 
 export type ThreadStatus = "idle" | "running" | "approval" | "error" | "new";
+
+/** Safe for the saved transcript. Provider setup exceptions may contain private details. */
+class DispatchRefused extends Error {}
 
 export interface Thread {
   id: string;
@@ -163,6 +167,7 @@ export interface PendingRequest {
   full?: string;
   /** Too long for the in-game card: approved only here, never from the game. */
   cut: boolean;
+  incomplete?: true;
   canAlways: boolean;
   at: number;
 }
@@ -620,6 +625,8 @@ export class Hub {
   saveNow(): boolean {
     const threads = [...this.threads.values()].map((t) => ({
       ...t,
+      // A fresh session must use the requested policy even after a failed transition.
+      mode: this.requestedModes.get(t) ?? t.mode,
       // A cut request's whole text is only needed while it can still be approved (pending requests
       // expire on the next start anyway); a quest full of large file writes must not bloat the file.
       entries: t.entries.slice(-MAX_ENTRIES).map((e) => {
@@ -780,6 +787,7 @@ export class Hub {
         if (t && t.kind !== "tutorial" && (t.status === "running" || t.status === "approval")) {
           // Before the provider has opened the quest, interrupt has nothing to stop: sendTo sees this.
           this.stops.set(t.id, (this.stops.get(t.id) ?? 0) + 1);
+          this.dispatchKeys.delete(t);
           await this.backends[t.agent].interrupt(t.id);
           this.note(t, STOPPING_NOTE);
         }
@@ -918,10 +926,17 @@ export class Hub {
       case "answer": {
         const t = this.threads.get(a.thread);
         if (!t) return;
-        // Mark it answered first, so the backend's approvalResolved doesn't call it "expired".
+        const blocked = this.dispatchRefusal(t);
+        if (blocked) return this.toast(blocked, "info");
         const q = t.entries.find((x) => x.requestId === a.requestId && x.approval === "pending");
-        if (q) settle(q, "approved");
-        this.backends[t.agent]?.answerQuestion?.(t.id, a.requestId, a.label);
+        if (!q || q.cut || q.incomplete || !q.options?.includes(a.label)) return;
+        if (Date.now() - q.at < this.minCardAgeMs) return this.toast(oneMoment(this.cfg()), "info");
+        if (this.backends[t.agent]?.answerQuestion?.(t.id, a.requestId, a.label)) {
+          // A synchronous approvalResolved marks it expired until the adapter confirms our answer.
+          settle(q, "approved");
+          this.refreshStatus(t);
+          this.changed("answer");
+        }
         return;
       }
       case "tutorial": // the welcome page's "Replay A Familiar Face"
@@ -1227,6 +1242,16 @@ export class Hub {
     const e = t?.entries.find((x) => x.requestId === requestId && x.approval === "pending");
     if (!t || !e) return { ok: false, why: "no longer pending" };
     const grants = d !== "deny" && d !== "denyAndStop";
+    if (grants && e.options?.length) return { ok: false, why: "Choose an answer on the question card." };
+    if (grants && e.incomplete) {
+      this.toast(INCOMPLETE_REQUEST, "info");
+      return { ok: false, why: INCOMPLETE_REQUEST };
+    }
+    const blocked = grants && this.dispatchRefusal(t);
+    if (blocked) {
+      this.toast(blocked, "info");
+      return { ok: false, why: blocked };
+    }
     // "Always" is a standing grant: only from the control panel, and only where the card offers it
     // (never on a plan card, where it would move the quest to Accept edits).
     if (d === "allowAlways" && origin !== "panel") {
@@ -1264,7 +1289,8 @@ export class Hub {
       t.entries
         .filter((e) => e.kind === "approval" && e.approval === "pending" && e.requestId && !e.options?.length)
         .map((e) => ({ thread: t.id, questTitle: t.title, project: this.projectName(t), agent: agentName(t.agent), agentId: t.agent, requestId: e.requestId!,
-          title: e.title ?? "", detail: e.text, ...(e.cut ? { full: e.full ?? e.text } : {}), cut: !!e.cut, canAlways: !!e.canAlways, at: e.at })),
+          title: e.title ?? "", detail: e.text, ...(e.cut ? { full: e.full ?? e.text } : {}), cut: !!e.cut,
+          ...(e.incomplete ? { incomplete: true as const } : {}), canAlways: !!e.canAlways, at: e.at })),
     );
   }
 
@@ -1383,7 +1409,7 @@ export class Hub {
    * started has no mode of its own (it takes the default): the panel names the open quest, so
    * never change a different one behind it. `thread`: the quest the panel showed; another one open
    * now is refused. */
-  setSelectedMode(mode: Mode, thread: string): { ok: boolean; why?: string } {
+  async setSelectedMode(mode: Mode, thread: string): Promise<{ ok: boolean; why?: string }> {
     const t = this.selectedThread();
     if (!MODES.includes(mode)) return { ok: false, why: "Unknown mode." };
     if (this.view.draft) return { ok: false, why: "Send the new quest's first message, then set its mode here." };
@@ -1391,9 +1417,24 @@ export class Hub {
     if (t.id !== thread) return { ok: false, why: "Another quest is open in the game now. Check the quest named here, then choose again." };
     if (t.kind === "chat") return { ok: false, why: "Chats have no permission modes: they can only search the web." };
     if (t.kind === "tutorial") return { ok: false, why: TUTORIAL_NO_MODE };
+    if (this.applyingMode.has(t)) return { ok: false, why: "A mode change is already in progress." };
+    this.dispatchKeys.delete(t);
+    this.requestedModes.set(t, mode);
+    if (!this.saveNow()) return { ok: false, why: "Messages are paused. Fix saved-quest storage, then choose the mode again." };
+    this.applyingMode.add(t);
+    try {
+      // A provider may still be opening with the previous mode.
+      await this.opening.get(t.id);
+      await this.backends[t.agent].setMode(t.id, mode);
+    } catch {
+      this.changed("mode");
+      return { ok: false, why: "The provider did not confirm the mode. Messages are paused. Choose a mode again to retry." };
+    } finally {
+      this.applyingMode.delete(t);
+    }
     t.mode = mode;
-    this.backends[t.agent].setMode(t.id, mode).catch((e) => this.fail(e));
-    this.toast(`Mode: ${MODE_LABEL[mode]}`, "info");
+    this.requestedModes.delete(t);
+    this.toast(`Next turn: ${MODE_LABEL[mode]}`, "info");
     this.changed("mode");
     return { ok: true };
   }
@@ -1514,17 +1555,43 @@ export class Hub {
   }
 
   private opening = new Map<string, Promise<string>>();
+  private requestedModes = new WeakMap<Thread, Mode>();
+  private applyingMode = new WeakSet<Thread>();
+  private dispatchKeys = new WeakMap<Thread, symbol>();
+
+  providerDisabled(id: AgentKind) {
+    for (const t of this.threads.values()) if (t.agent === id) this.dispatchKeys.delete(t);
+  }
+
+  private dispatchRefusal(t: Thread): string | undefined {
+    if (t.kind === "tutorial") return;
+    if (!this.enabled(t.agent)) return `${agentName(t.agent)} is switched off in Familiar's control panel.`;
+    if (this.requestedModes.has(t)) return "Messages are paused until the provider confirms the mode.";
+  }
+
+  private dispatchCheck(t: Thread): () => void {
+    const key = this.dispatchKeys.get(t) ?? Symbol();
+    this.dispatchKeys.set(t, key);
+    const mode = t.mode;
+    return () => {
+      const blocked = this.dispatchRefusal(t);
+      if (blocked) throw new DispatchRefused(blocked);
+      if (this.dispatchKeys.get(t) !== key || t.mode !== mode || this.threads.get(t.id) !== t)
+        throw new DispatchRefused("The quest or its permissions changed. Review the settings and send again.");
+    };
+  }
   /** Stop presses per quest, so a prompt still waiting for its provider to start is never sent. */
   private stops = new Map<string, number>();
   private chatSending = new Map<string, Promise<void>>();
 
   /** Keep context selection and submission in order even when chat prompts overlap. */
-  private async sendChat(t: Thread, text: string, ctx?: string) {
+  private async sendChat(t: Thread, text: string, check: () => void, ctx?: string) {
     const previous = this.chatSending.get(t.id) ?? Promise.resolve();
     const sending = previous.catch(() => {}).then(async () => {
       const quests = this.addon.quests;
       const fresh = quests !== undefined && quests !== t.questsSent ? quests : undefined;
-      await this.backends[t.agent].send(t.id, withGameContext(text, ctx, fresh));
+      check();
+      await this.backends[t.agent].send(t.id, withGameContext(text, ctx, fresh), check);
       // Empty is a real snapshot; unavailable/off is undefined. Failed sends must retry it.
       if (fresh !== undefined) t.questsSent = fresh;
     });
@@ -1546,9 +1613,10 @@ export class Hub {
 
   private async sendTo(t: Thread, text: string, ctx?: string) {
     const b = this.backends[t.agent];
+    const check = this.dispatchCheck(t);
     // The agent's own app has this conversation open and owns writing to it: ask (quit it and
     // Retry, or continue as a copy) instead of silently continuing a copy.
-    if (t.nativeId && !t.fork && b.heldElsewhere?.(t.nativeId)) {
+    if (!this.dispatchRefusal(t) && t.nativeId && !t.fork && b?.heldElsewhere?.(t.nativeId)) {
       if (this.view.held?.threadId === t.id) return this.toast("Choose Retry, Continue as a copy or Cancel first.", "info");
       this.view.held = { threadId: t.id, text, ctx };
       this.changed("held");
@@ -1556,12 +1624,13 @@ export class Hub {
     }
     this.markCaughtUp(t);
     t.entries.push({ id: uid("u"), kind: "user", text, at: Date.now() });
-    t.status = "running";
+    const alreadyWorking = t.status === "running" || t.status === "approval";
+    if (!alreadyWorking) t.status = "running";
     t.updatedAt = Date.now();
     t.lastError = undefined;
     this.changed("send");
     if (!this.saveNow()) { // Provider work may start only after the user's words were saved.
-      t.status = "error";
+      if (!alreadyWorking) t.status = "error";
       t.lastError = "Not sent; this message is currently only in memory. Keep Familiar open, resolve saved-quest storage, then use Ctrl+Up and send again.";
       this.note(t, t.lastError, "error");
       throw new Error(t.lastError); // Outside provider-init handling: never claim this message is saved.
@@ -1577,13 +1646,15 @@ export class Hub {
     };
     let ready = false;
     try {
+      check();
       if (!b.status().ready) {
         const st = await b.init();
         if (stopped()) return;
+        check();
         if (!st.ready) throw new Error("Provider not ready");
       }
       ready = true;
-      if (!b.isOpen(t.id)) {
+      if (this.opening.has(t.id) || !b.isOpen(t.id)) {
         // One open per quest even if a second prompt arrives while the first open is in flight.
         let opening = this.opening.get(t.id);
         if (!opening) {
@@ -1607,18 +1678,20 @@ export class Hub {
         if (stopped()) return;
       }
       // Chats get the player's game context (class, level, zone) in front of the question.
-      if (t.kind === "chat") await this.sendChat(t, text, ctx);
-      else await b.send(t.id, text);
+      check();
+      if (t.kind === "chat") await this.sendChat(t, text, check, ctx);
+      else await b.send(t.id, text, check);
     } catch (e: any) {
-      t.status = "error";
+      if (!alreadyWorking || t.status === "idle") t.status = "error";
       // Initialization diagnostics may contain credentials or private paths. Keep setup failures
       // actionable in the saved transcript and toast without copying the provider's exception.
-      const setup = !ready && b.status().setup; // Familiar's own words, unlike the provider's exception
-      t.lastError = ready ? String(e?.message ?? e) : setup ? `${setup}. Your message is saved: after that, use Ctrl+Up in the composer and send again.` :
+      const reportError = ready || e instanceof DispatchRefused;
+      const setup = !reportError && b?.status().setup; // Familiar's own words, unlike the provider's exception
+      t.lastError = reportError ? String(e?.message ?? e) : setup ? `${setup}. Your message is saved: after that, use Ctrl+Up in the composer and send again.` :
         `${agentName(t.agent)} couldn't start. Your message is saved. Check setup and sign-in in the control panel's Familiars card, then use Ctrl+Up in the composer and send again.`;
       this.note(t, t.lastError, "error");
       this.saveNow(); // Keep the error/catch-up note too, even if Familiar closes immediately.
-      throw ready ? e : new Error(t.lastError);
+      throw reportError ? e : new Error(t.lastError);
     }
   }
 
@@ -1695,6 +1768,7 @@ export class Hub {
           canAlways: e.canAlways,
           options: e.options,
           ...(e.cut ? { cut: true, full: e.full ?? e.detail } : {}),
+          ...(e.incomplete || (e.cut && e.full === undefined) ? { incomplete: true } : {}),
           approval: "pending",
           at: Date.now(),
         });
@@ -1702,7 +1776,7 @@ export class Hub {
         t.unread = this.view.selected !== t.id;
         {
           // A cut request is approved only on the PC: the toast says where, and main makes the panel easy to reach.
-          const onPc = e.cut ? ` · ${CUT_TOAST}` : "";
+          const onPc = e.cut ? ` · ${e.incomplete || e.full === undefined ? INCOMPLETE_REQUEST : CUT_TOAST}` : "";
           this.toast(`${NEEDS_YOU} · ${agentName(t.agent)} · ${this.projectName(t)} · ${e.title}${onPc}`, "approval", t.id, `${NEEDS_YOU} · ${agentName(t.agent)}${onPc}`, e.requestId);
         }
         this.sound("approval");

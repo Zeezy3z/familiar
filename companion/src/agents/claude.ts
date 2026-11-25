@@ -132,25 +132,45 @@ export function projectInstructions(cwd: string): { text: string; files: string[
 const TODO_TOOLS = new Set(["TaskCreate", "TaskUpdate", "TodoWrite", "TaskList", "TaskGet"]);
 const IDLE_CLOSE_MS = 15 * 60_000;
 
-class AsyncQueue<T> implements AsyncIterable<T> {
-  private items: T[] = [];
+export class AsyncQueue<T> implements AsyncIterable<T> {
+  private items: { value: T; check?: () => void; resolve(): void; reject(e: unknown): void }[] = [];
   private waiters: ((r: IteratorResult<T>) => void)[] = [];
   private ended = false;
-  push(v: T) {
-    const w = this.waiters.shift();
-    if (w) w({ value: v, done: false });
-    else this.items.push(v);
+  private paused = false;
+  async push(v: T, check?: () => void): Promise<void> {
+    if (this.ended) throw new Error("The conversation closed before the message was sent.");
+    return new Promise<void>((resolve, reject) => {
+      this.items.push({ value: v, check, resolve, reject });
+      this.drain();
+    });
+  }
+  pause() { this.paused = true; }
+  resume() {
+    this.paused = false;
+    this.drain();
+  }
+  private drain() {
+    while (!this.paused && this.waiters.length && this.items.length) {
+      const item = this.items.shift()!;
+      try { item.check?.(); }
+      catch (e) { item.reject(e); continue; }
+      this.waiters.shift()!({ value: item.value, done: false });
+      item.resolve();
+    }
   }
   end() {
     this.ended = true;
+    for (const item of this.items.splice(0)) item.reject(new Error("The conversation closed before the message was sent."));
     for (const w of this.waiters.splice(0)) w({ value: undefined as any, done: true });
   }
   [Symbol.asyncIterator](): AsyncIterator<T> {
     return {
       next: () => {
-        if (this.items.length) return Promise.resolve({ value: this.items.shift()!, done: false });
         if (this.ended) return Promise.resolve({ value: undefined as any, done: true });
-        return new Promise((r) => this.waiters.push(r));
+        return new Promise((r) => {
+          this.waiters.push(r);
+          this.drain();
+        });
       },
     };
   }
@@ -189,6 +209,8 @@ interface Live {
   idleSince?: number;
   retryTimer?: NodeJS.Timeout;
   lastText?: string;
+  lastCheck?: () => void;
+  starting?: Promise<void>;
   retries: number;
   producedOutput: boolean;
   chat?: ChatOptions;
@@ -385,6 +407,8 @@ export class ClaudeBackend implements AgentBackend {
     } else {
       options.sessionId = l.nativeId;
     }
+    if (this.live.get(l.threadId) !== l) throw new Error("The conversation closed before the message was sent.");
+    if (!l.chat) options.permissionMode = PERMISSION_MODE[l.mode];
     l.q = sdk.query({ prompt: l.input, options });
     this.consume(l, l.q);
   }
@@ -408,17 +432,26 @@ export class ClaudeBackend implements AgentBackend {
       this.opts.log(`[claude] query error (${l.threadId}): ${msg}`);
       if (l.q !== q) return; // superseded
       l.q = undefined;
+      l.input?.end();
       l.input = undefined;
       const transient = /oauth|refresh|ECONNRESET|overloaded|529|socket hang up|rate.?limit/i.test(msg);
       if (l.running && transient && !l.producedOutput && l.retries < 3 && l.lastText) {
+        const text = l.lastText;
+        const check = l.lastCheck;
         const delay = [5_000, 15_000, 30_000][l.retries++];
         // Info, not an error: Familiar retries by itself, so it isn't something to catch up on.
         this.ev.emit({ type: "notice", threadId: l.threadId, message: `Claude hiccup (${msg.slice(0, 80)}); retrying in ${delay / 1000}s...` });
         l.retryTimer = setTimeout(() => {
           l.retryTimer = undefined;
           if (!this.live.has(l.threadId) || l.q) return; // closed, or a newer send already restarted it
-          this.startQuery(l)
-            .then(() => l.input!.push(userMessage(l.lastText!)))
+          Promise.resolve().then(() => {
+            check?.();
+            return this.ensureQuery(l);
+          })
+            .then(() => l.input!.push(userMessage(text), () => {
+              check?.();
+              l.input!.pause();
+            }))
             .catch((err) => {
               l.running = false;
               this.ev.emit({ type: "done", threadId: l.threadId, status: "failed", error: String(err?.message ?? err).slice(0, 400) });
@@ -434,6 +467,7 @@ export class ClaudeBackend implements AgentBackend {
     }
     if (l.q === q) {
       l.q = undefined;
+      l.input?.end();
       l.input = undefined;
       if (l.running) {
         l.running = false;
@@ -514,7 +548,7 @@ export class ClaudeBackend implements AgentBackend {
       case "result": {
         l.retries = 0;
         const failed = !!m.is_error;
-        // A message sent mid-turn is queued by the CLI: another turn (and result) follows.
+        // Wait for any additional work the CLI reports before releasing the next Familiar prompt.
         const more = (m.queued_turn_count ?? 0) > 0 && !failed;
         if (more) {
           this.ev.emit({ type: "usage", threadId, inputTokens: m.usage?.input_tokens, outputTokens: m.usage?.output_tokens, costUsd: m.total_cost_usd });
@@ -537,6 +571,7 @@ export class ClaudeBackend implements AgentBackend {
         });
         l.idleSince = Date.now();
         this.armIdle(l);
+        l.input?.resume();
         break;
       }
     }
@@ -584,7 +619,7 @@ export class ClaudeBackend implements AgentBackend {
     // Which tool asked, in which mode (no content): answers "why did Auto ask?" from the log.
     this.opts.log(`[claude] approval asked (${l.threadId}): ${toolName} in ${l.mode} mode`);
     return new Promise((resolve) => {
-      const pending: PendingApproval = { resolve, input, suggestions: opts?.suggestions, toolName };
+      const pending: PendingApproval = { resolve, input, toolName };
       let kind: "tool" | "question" | "planExit" = "tool";
       let title = opts?.title ?? `Allow ${opts?.displayName ?? toolName}?`;
       // The card's text within its limits, or (Infinity) the whole request for the control panel.
@@ -592,12 +627,15 @@ export class ClaudeBackend implements AgentBackend {
         const diff = editPreview(toolName, input, lines);
         if (diff) return diff;
         const body = approvalDetail(toolName, input, chars);
-        if (toolName === "Bash" && (input as any).description) return `${body}\n# ${(input as any).description}`;
         return opts?.description ? `${opts.description}\n${body}` : body;
       };
       let text = approvalText(describe(4000, 60), describe(Infinity, Infinity));
       if (toolName === "AskUserQuestion") {
         const q = (input as any).questions?.[0];
+        if ((input as any).questions?.length !== 1 || !q?.question || q.multiSelect || !q.options?.length) {
+          resolve({ behavior: "deny", message: "Ask one single-choice question at a time in Familiar." });
+          return;
+        }
         kind = "question";
         title = q?.question ?? "Claude has a question";
         pending.question = q?.question;
@@ -606,8 +644,12 @@ export class ClaudeBackend implements AgentBackend {
       } else if (toolName === "ExitPlanMode") {
         kind = "planExit";
         title = "Approve the plan and start implementing?";
-        const plan = String((input as any).plan ?? "");
+        const plan = Object.keys(input).every(k => k === "plan") ? String(input.plan ?? "") : JSON.stringify(input, null, 2);
         text = approvalText(truncatePreview(plan, 4000), plan);
+      } else if (!opts?.suppressAlwaysAllowRule && opts?.suggestions?.length) {
+        pending.suggestions = opts.suggestions.map((rule: any) => ({ ...rule, destination: "session" }));
+        const rules = "\n\nAlways would apply these rules for this quest:\n" + JSON.stringify(pending.suggestions, null, 2);
+        text = approvalText(truncatePreview(text.detail + rules, 4000), describe(Infinity, Infinity) + rules);
       }
       l.approvals.set(requestId, pending);
       opts?.signal?.addEventListener?.("abort", () => {
@@ -623,7 +665,7 @@ export class ClaudeBackend implements AgentBackend {
         kind,
         title,
         ...text,
-        canAlways: kind === "tool" && !opts?.suppressAlwaysAllowRule && (opts?.suggestions?.length ?? 0) > 0,
+        canAlways: !!pending.suggestions?.length && !text.incomplete,
         ...(pending.options ? { options: pending.options } : {}),
       } as AgentEvent);
     });
@@ -633,45 +675,53 @@ export class ClaudeBackend implements AgentBackend {
   answerQuestion(threadId: string, requestId: string, label: string) {
     const l = this.live.get(threadId);
     const a = l?.approvals.get(requestId);
-    if (!l || !a) return;
+    if (!l || a?.toolName !== "AskUserQuestion" || !a.question || !a.options?.includes(label)) return false;
     l.approvals.delete(requestId);
     a.resolve({ behavior: "allow", updatedInput: { ...a.input, answers: { [a.question ?? ""]: label } } });
     this.ev.emit({ type: "approvalResolved", threadId, requestId });
+    return true;
   }
 
   respondApproval(threadId: string, requestId: string, d: Decision) {
     const l = this.live.get(threadId);
     const a = l?.approvals.get(requestId);
     if (!l || !a) return;
-    if (a.options && (d === "allow" || d === "allowAlways")) {
-      return this.answerQuestion(threadId, requestId, a.options[0]);
-    }
+    if (a.options && (d === "allow" || d === "allowAlways")) return;
+    if (d === "allowAlways" && !a.suggestions?.length) return;
     l.approvals.delete(requestId);
     if (d === "allow") a.resolve({ behavior: "allow", updatedInput: a.input });
     else if (d === "allowAlways") {
-      const perms = (a.suggestions ?? []).map((s: any) => ({ ...s, destination: "session" }));
-      a.resolve({ behavior: "allow", updatedInput: a.input, updatedPermissions: perms });
+      a.resolve({ behavior: "allow", updatedInput: a.input, updatedPermissions: a.suggestions });
     } else a.resolve({ behavior: "deny", message: "Denied by the user (from World of Warcraft).", interrupt: d === "denyAndStop" });
     this.ev.emit({ type: "approvalResolved", threadId, requestId });
   }
 
-  async send(threadId: string, text: string) {
+  private ensureQuery(l: Live) {
+    return l.starting ??= this.startQuery(l).finally(() => { l.starting = undefined; });
+  }
+
+  async send(threadId: string, text: string, check?: () => void) {
     const l = this.live.get(threadId);
     if (!l) throw new Error("thread not open");
     if (l.idleTimer) clearTimeout(l.idleTimer);
-    if (l.retryTimer) {
-      clearTimeout(l.retryTimer);
-      l.retryTimer = undefined;
-    }
-    l.lastText = text;
-    l.producedOutput = false;
+    if (l.retryTimer) throw new Error("Claude is retrying the previous turn. Ctrl+Up recalls your message after it finishes.");
+    check?.();
     if (l.q && !l.running && (await this.changedElsewhere(l))) this.dropQuery(l);
-    if (!l.q) await this.startQuery(l);
-    if (!l.running) {
-      l.running = true;
-      this.ev.emit({ type: "turnStarted", threadId });
-    }
-    l.input!.push(userMessage(text));
+    check?.();
+    if (!l.q) await this.ensureQuery(l);
+    check?.();
+    await l.input!.push(userMessage(text), () => {
+      check?.();
+      // The SDK may eagerly request the next input. Keep it in Familiar until this turn's result.
+      l.input!.pause();
+      l.lastText = text;
+      l.lastCheck = check;
+      l.producedOutput = false;
+      if (!l.running) {
+        l.running = true;
+        this.ev.emit({ type: "turnStarted", threadId });
+      }
+    });
   }
 
   async interrupt(threadId: string) {
@@ -699,8 +749,9 @@ export class ClaudeBackend implements AgentBackend {
   async setMode(threadId: string, mode: Mode) {
     const l = this.live.get(threadId);
     if (!l) return;
+    await l.starting;
+    await l.q?.setPermissionMode(PERMISSION_MODE[mode]);
     l.mode = mode;
-    await l.q?.setPermissionMode(PERMISSION_MODE[mode]).catch((e: any) => this.opts.log("[claude] setPermissionMode: " + e));
   }
 
   async setModel(threadId: string, model: string) {

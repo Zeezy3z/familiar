@@ -5,6 +5,7 @@ import { PRIVACY, alwaysLabel, approveKeyStatus, familiarStatus, journey, keyToB
 import { buildPresentation, restartGuidance, updateLine, versionLabel, versionMismatch } from "./build";
 import type { ControlBridge } from "../shared/bridge";
 import { CUES, cueLabel, playCue } from "../shared/cues";
+import { INCOMPLETE_REQUEST } from "../shared/words";
 const bridge = window.familiar as ControlBridge;
 
 const $ = (id: string) => document.getElementById(id)!;
@@ -153,7 +154,7 @@ $("portrait").addEventListener("error", () => {
 // Every pending approval, with the whole text before the buttons (status.requests[] and the "decide" command are the
 // hub lane's). A request the game card shows only in part is marked. Only a real click or key press decides. Always
 // is worded as the Glass words it (alwaysLabel), and persistent grants are given here only.
-interface PanelRequest { thread: string; questTitle: string; project: string; agent: string; agentId?: string; requestId: string; title: string; detail?: string; full?: string; cut?: boolean; canAlways: boolean; at: number }
+interface PanelRequest { thread: string; questTitle: string; project: string; agent: string; agentId?: string; requestId: string; title: string; detail?: string; full?: string; cut?: boolean; incomplete?: boolean; canAlways: boolean; at: number }
 const SETTLE_MS = 800; // a row that just appeared ignores clicks briefly, so a layout shift cannot land one on it
 const requestRows = new Map<string, HTMLElement>();
 let requestSeq = 0;
@@ -209,7 +210,9 @@ function renderRequests(list: unknown) {
     set(".req-meta", [providerLabels[r.agent] ?? r.agent, r.project, r.questTitle].filter(Boolean).join(" · ") + since);
     set(".req-full", requestText(r)!); // left alone while unchanged, so a reader's scroll position stays put
     row.querySelector<HTMLElement>(".badge")!.hidden = r.cut !== true;
-    row.querySelector<HTMLElement>("[data-decide=allowAlways]")!.hidden = !r.canAlways;
+    set(".badge", r.incomplete ? INCOMPLETE_REQUEST : "Too long for the in-game card");
+    row.querySelector<HTMLElement>("[data-decide=allow]")!.hidden = !!r.incomplete;
+    row.querySelector<HTMLElement>("[data-decide=allowAlways]")!.hidden = !!r.incomplete || !r.canAlways;
   }
   for (const [key, row] of requestRows) if (!seen.has(key)) { row.remove(); requestRows.delete(key); }
 }
@@ -445,7 +448,7 @@ function renderQuest(q: unknown) {
 questSel.addEventListener("change", () => {
   const mode = questSel.value;
   showQuestWarn();
-  act(questSel, `This quest is now in ${modeNames[mode] ?? mode}`, async () => {
+  act(questSel, `Next turn: ${modeNames[mode] ?? mode}`, async () => {
     const r = await bridge.invoke("questMode", { mode, thread: questId });
     if (!r?.ok) {
       questSel.value = questMode; // still focused, so the status redraw would leave the refused choice showing

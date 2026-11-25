@@ -153,7 +153,7 @@ export async function controlRound4Journey(page, origin, width, snapshot = async
   let where = await place();
   check('projects: the card sits between Familiars and Troubleshooting, with its two buttons and no rows yet', where.visible && where.afterFamiliars && where.beforeTroubleshooting
     && JSON.stringify(where.buttons) === JSON.stringify(['Add a project folder…', 'Add a folder of projects…']) && where.rows.length === 0);
-  const lead = () => page.locator('#projects .hint').first().textContent();
+  const lead = () => page.locator('#projects > p.hint').textContent();
   check('projects: with no folder the hint starts in the familiar\'s voice and keeps today\'s sentence', (await lead()).startsWith("Give me a folder and I'll have somewhere to go. Zones in your Quest Log are project folders."));
   await snapshot(`control-${width}-projects-empty`);
   await page.locator('#b-project-add').click();

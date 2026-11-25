@@ -43,6 +43,7 @@ export interface EntryView {
   level?: string;
   /** approval: the text is a cut preview, so the card offers Deny only (approve on the PC). */
   cut?: boolean;
+  incomplete?: true;
   /** approval: why the last approving click was refused, as the line the card shows. */
   refused?: string;
 }
@@ -475,6 +476,7 @@ function threadDetail(hub: Hub, t: Thread): DetailModel {
       requestId: e.requestId,
       level: e.level,
       cut: e.cut,
+      incomplete: e.incomplete,
       refused: e.refused && e.approval === "pending" ? refusedLine(e.refused.why, hub.cfg()) : undefined,
     })),
   };

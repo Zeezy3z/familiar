@@ -81,6 +81,8 @@ export type AgentEvent =
       options?: string[]; // multiple-choice answers (Claude AskUserQuestion)
       /** `detail` is a cut preview: the whole request is `full`, and only the control panel approves it. */
       cut?: boolean;
+      /** The desktop review is incomplete as well. Familiar can only deny this request. */
+      incomplete?: true;
       full?: string;
     }
   | { type: "approvalResolved"; threadId: string; requestId: string }
@@ -136,10 +138,12 @@ export interface AgentBackend {
    * link that opens the same conversation in the agent's own app. Absent: the agent has no app. */
   handOff?(threadId: string | undefined, nativeId: string): Promise<string>;
   /** Open (start or resume) a thread. Returns the native id once known. */
-  open(o: StartOptions): Promise<string>;  send(threadId: string, text: string): Promise<void>;
+  open(o: StartOptions): Promise<string>;
+  /** Recheck authorization immediately before handing off input, including queued turns and retries. */
+  send(threadId: string, text: string, checkDispatch?: () => void): Promise<void>;
   interrupt(threadId: string): Promise<void>;
   respondApproval(threadId: string, requestId: string, d: Decision): void;
-  answerQuestion?(threadId: string, requestId: string, label: string): void;
+  answerQuestion?(threadId: string, requestId: string, label: string): boolean;
   setMode(threadId: string, mode: Mode): Promise<void>;
   setModel(threadId: string, model: string): Promise<void>;
   close(threadId: string): Promise<void>;
@@ -171,11 +175,12 @@ export class Emitter<T> {
 export const FULL_CAP = 200_000;
 
 /** An approval event's text: the card's `preview` and, when that is not the whole request, `cut`
- * plus the whole text (`full`, itself capped at FULL_CAP and saying so). A cut request is approved
- * only in the control panel, where `full` is shown; the game can only deny it. */
-export function approvalText(preview: string, whole: string): { detail: string; cut?: true; full?: string } {
+ * plus the panel text. If even the panel copy is capped, neither surface may grant it. */
+export function approvalText(preview: string, whole: string): { detail: string; cut?: true; full?: string; incomplete?: true } {
+  if (whole.length > FULL_CAP) return { detail: truncatePreview(preview, 4000), cut: true, incomplete: true,
+    full: `${whole.slice(0, FULL_CAP)}\n… (truncated at 200k)` };
   if (preview === whole) return { detail: preview };
-  return { detail: preview, cut: true, full: whole.length > FULL_CAP ? `${whole.slice(0, FULL_CAP)}\n… (truncated at 200k)` : whole };
+  return { detail: preview, cut: true, full: whole };
 }
 
 /** Keep provider preview limits explicit; expanding Glass cannot restore the omitted text. */
@@ -186,20 +191,22 @@ export function truncatePreview(text: string, maxChars: number): string {
 /** Unified-diff-ish preview of a Claude Edit/MultiEdit/Write tool call (for approvals and expansion). */
 export function editPreview(name: string, input: any, maxLines = 60): string | undefined {
   if (!input || typeof input !== "object") return undefined;
+  const only = (value: object, keys: string[]) => Object.keys(value).every(k => keys.includes(k));
   const lines: string[] = [];
   const add = (prefix: string, text: string) => {
     for (const l of String(text ?? "").split(/\r?\n/)) lines.push(prefix + l);
   };
-  if (name === "Edit" && input.old_string !== undefined) {
+  if (name === "Edit" && input.old_string !== undefined && only(input, ["file_path", "old_string", "new_string"])) {
     add("-", input.old_string);
     add("+", input.new_string);
-  } else if (name === "MultiEdit" && Array.isArray(input.edits)) {
+  } else if (name === "MultiEdit" && only(input, ["file_path", "edits"]) && Array.isArray(input.edits) &&
+    input.edits.every((e: any) => e && only(e, ["old_string", "new_string"]))) {
     for (const e of input.edits) {
       add("-", e.old_string);
       add("+", e.new_string);
       lines.push("…");
     }
-  } else if (name === "Write" && typeof input.content === "string") {
+  } else if (name === "Write" && typeof input.content === "string" && only(input, ["file_path", "content"])) {
     add("+", input.content);
   } else return undefined;
   const head = `${input.file_path ?? ""}`;
@@ -233,5 +240,9 @@ export function summarizeTool(name: string, input: any): string {
 /** What an approval card shows for a tool call: the whole request, never the transcript's short
  * summary; past `maxChars` the cut is marked (truncatePreview), so the card can warn about it. */
 export function approvalDetail(name: string, input: any, maxChars = 4000): string {
-  return truncatePreview(toolText(name, input), maxChars);
+  // Format the common shell request for reading. Other structured inputs retain every field and its name.
+  if (name === "Bash" && typeof input?.command === "string" && Object.keys(input).every(k => k === "command" || k === "description")) {
+    return truncatePreview(input.command + (input.description ? "\n# " + input.description : ""), maxChars);
+  }
+  return truncatePreview(JSON.stringify(input, null, 2) ?? name, maxChars);
 }
