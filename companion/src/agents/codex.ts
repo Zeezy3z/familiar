@@ -471,12 +471,10 @@ export class CodexBackend implements AgentBackend {
 
   respondApproval(_threadId: string, requestId: string, d: Decision) {
     const a = this.approvals.get(requestId);
-    if (!a || !this.rpc) return;
+    if (!a || a.threadId !== _threadId || !this.rpc) return;
     this.approvals.delete(requestId);
     const decision = d === "allow" ? "accept" : d === "allowAlways" ? "acceptForSession" : d === "deny" ? "decline" : "cancel";
-    if (a.method === "item/permissions/requestApproval") {
-      this.rpc.respond(a.rpcId, d === "allow" || d === "allowAlways" ? { permissions: {}, scope: d === "allowAlways" ? "session" : "turn" } : { permissions: {}, scope: "turn" });
-    } else if (a.method === "mcpServer/elicitation/request") {
+    if (a.method === "mcpServer/elicitation/request") {
       this.rpc.respond(a.rpcId, { action: d === "allow" || d === "allowAlways" ? "accept" : d === "deny" ? "decline" : "cancel", content: null, _meta: null });
     } else {
       this.rpc.respond(a.rpcId, { decision });
@@ -636,17 +634,21 @@ export class CodexBackend implements AgentBackend {
         });
         break;
       case "item/permissions/requestApproval":
+        // Familiar has no permission-subset picker. Keep the existing empty grant explicit.
+        this.rpc?.respond(id, { permissions: {}, scope: "turn" });
+        this.ev.emit({ type: "notice", threadId, message: "Codex requested additional permissions. Familiar granted none." });
+        break;
       case "mcpServer/elicitation/request": {
         this.approvals.set(requestId, { rpcId: id, threadId, method });
-        const whole = JSON.stringify(p?.permissions ?? p?.message ?? p, null, 1);
+        const whole = JSON.stringify(p, null, 1);
         this.ev.emit({
           type: "approval",
           threadId,
           requestId,
           kind: "permissions",
-          title: method === "mcpServer/elicitation/request" ? "Tool needs input" : "Grant permissions?",
+          title: "Tool needs input",
           ...approvalText(truncatePreview(whole, 600), whole),
-          canAlways: method === "item/permissions/requestApproval",
+          canAlways: false,
         });
         break;
       }

@@ -928,10 +928,15 @@ export class Hub {
         if (!t) return;
         const blocked = this.dispatchRefusal(t);
         if (blocked) return this.toast(blocked, "info");
-        // Mark it answered first, so the backend's approvalResolved doesn't call it "expired".
         const q = t.entries.find((x) => x.requestId === a.requestId && x.approval === "pending");
-        if (q) settle(q, "approved");
-        this.backends[t.agent]?.answerQuestion?.(t.id, a.requestId, a.label);
+        if (!q || q.cut || q.incomplete || !q.options?.includes(a.label)) return;
+        if (Date.now() - q.at < this.minCardAgeMs) return this.toast(oneMoment(this.cfg()), "info");
+        if (this.backends[t.agent]?.answerQuestion?.(t.id, a.requestId, a.label)) {
+          // A synchronous approvalResolved marks it expired until the adapter confirms our answer.
+          settle(q, "approved");
+          this.refreshStatus(t);
+          this.changed("answer");
+        }
         return;
       }
       case "tutorial": // the welcome page's "Replay A Familiar Face"
@@ -1237,6 +1242,7 @@ export class Hub {
     const e = t?.entries.find((x) => x.requestId === requestId && x.approval === "pending");
     if (!t || !e) return { ok: false, why: "no longer pending" };
     const grants = d !== "deny" && d !== "denyAndStop";
+    if (grants && e.options?.length) return { ok: false, why: "Choose an answer on the question card." };
     if (grants && e.incomplete) {
       this.toast(INCOMPLETE_REQUEST, "info");
       return { ok: false, why: INCOMPLETE_REQUEST };
@@ -1414,6 +1420,7 @@ export class Hub {
     if (this.applyingMode.has(t)) return { ok: false, why: "A mode change is already in progress." };
     this.dispatchKeys.delete(t);
     this.requestedModes.set(t, mode);
+    if (!this.saveNow()) return { ok: false, why: "Messages are paused. Fix saved-quest storage, then choose the mode again." };
     this.applyingMode.add(t);
     try {
       // A provider may still be opening with the previous mode.
@@ -1617,12 +1624,13 @@ export class Hub {
     }
     this.markCaughtUp(t);
     t.entries.push({ id: uid("u"), kind: "user", text, at: Date.now() });
-    t.status = "running";
+    const alreadyWorking = t.status === "running" || t.status === "approval";
+    if (!alreadyWorking) t.status = "running";
     t.updatedAt = Date.now();
     t.lastError = undefined;
     this.changed("send");
     if (!this.saveNow()) { // Provider work may start only after the user's words were saved.
-      t.status = "error";
+      if (!alreadyWorking) t.status = "error";
       t.lastError = "Not sent; this message is currently only in memory. Keep Familiar open, resolve saved-quest storage, then use Ctrl+Up and send again.";
       this.note(t, t.lastError, "error");
       throw new Error(t.lastError); // Outside provider-init handling: never claim this message is saved.
@@ -1674,7 +1682,7 @@ export class Hub {
       if (t.kind === "chat") await this.sendChat(t, text, check, ctx);
       else await b.send(t.id, text, check);
     } catch (e: any) {
-      t.status = "error";
+      if (!alreadyWorking || t.status === "idle") t.status = "error";
       // Initialization diagnostics may contain credentials or private paths. Keep setup failures
       // actionable in the saved transcript and toast without copying the provider's exception.
       const reportError = ready || e instanceof DispatchRefused;

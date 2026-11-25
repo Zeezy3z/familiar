@@ -93,13 +93,7 @@ const isUnsafe = (m: acp.SessionMode) => UNSAFE_MODE.test(`${m.id} ${m.name} ${m
 export function pickMode(available: acp.SessionMode[], mode: Mode): string | undefined {
   const safe = available.filter((m) => !isUnsafe(m));
   const want = MODE_WANT[mode];
-  return safe.find((m) => want.test(m.id) || want.test(m.name))?.id ??
-    (mode === "ask" ? safe.find((m) => MODE_WANT.plan.test(m.id) || MODE_WANT.plan.test(m.name))?.id : undefined);
-}
-
-/** Edits and Auto may fall back to asking. A Plan request requires the provider's read-only mode. */
-function targetMode(available: acp.SessionMode[], mode: Mode) {
-  return pickMode(available, mode) ?? (mode === "edits" || mode === "auto" ? pickMode(available, "ask") : undefined);
+  return safe.find((m) => want.test(m.id) || want.test(m.name))?.id;
 }
 
 export class AcpBackend implements AgentBackend {
@@ -345,7 +339,7 @@ export class AcpBackend implements AgentBackend {
   private runTurn(l: Live, text: string, check?: () => void) {
     check?.();
     const modes = l.modes?.availableModes;
-    if (!modes?.length || this.unsafeMode(l) || targetMode(modes, wanted(l)) !== l.modes?.currentModeId)
+    if (!modes?.length || this.unsafeMode(l) || pickMode(modes, wanted(l)) !== l.modes?.currentModeId)
       throw new Error("The provider's permission mode changed. Confirm the mode before sending.");
     const conn = this.conn;
     if (!conn) {
@@ -401,13 +395,23 @@ export class AcpBackend implements AgentBackend {
     const l = this.bySession.get(p.sessionId);
     if (!l || l.replaying) return Promise.resolve({ outcome: { outcome: "cancelled" } });
     this.flushMessage(l);
+    if (!p.options.some(o => o.kind === "allow_once")) {
+      this.ev.emit({ type: "notice", threadId: l.threadId, message: `${this.label}'s request was declined because it offers no one-time approval.` });
+      return Promise.resolve({ outcome: { outcome: "cancelled" } });
+    }
     const requestId = `${this.o.id}:${++this.reqSeq}`;
     const tc = p.toolCall;
-    const diff = (tc.content ?? []).find((c: any) => c.type === "diff") as any;
+    const parts = tc.content ?? [];
+    const part = parts.length === 1 ? parts[0] : undefined;
+    const diff = part?.type === "diff" && !tc.locations?.length && tc.rawInput == null &&
+      Object.keys(part).every(k => ["type", "path", "oldText", "newText"].includes(k)) ? part : undefined;
+    const structured = parts.length || tc.locations?.length
+      ? rawText({ rawInput: tc.rawInput, content: parts, locations: tc.locations })
+      : rawText(tc.rawInput);
     // The card's text within its limits, or (Infinity) the whole request for the control panel.
     const describe = (chars: number, lines: number) => diff
       ? editPreview("Edit", { file_path: diff.path, old_string: diff.oldText ?? "", new_string: diff.newText ?? "" }, lines) ?? ""
-      : truncatePreview(rawText(tc.rawInput) || contentText(tc.content), chars);
+      : truncatePreview(structured, chars);
     const text = approvalText(describe(4000, 60), describe(Infinity, Infinity));
     const kind = tc.kind === "edit" || tc.kind === "delete" || tc.kind === "move" ? "fileChange" : tc.kind === "execute" ? "command" : "tool";
     return new Promise((resolve) => {
@@ -426,7 +430,7 @@ export class AcpBackend implements AgentBackend {
 
   respondApproval(_threadId: string, requestId: string, d: Decision) {
     const a = this.approvals.get(requestId);
-    if (!a) return;
+    if (!a || a.threadId !== _threadId) return;
     this.approvals.delete(requestId);
     const want: acp.PermissionOptionKind[] =
       d === "allow" ? ["allow_once"] : d === "allowAlways" ? ["allow_always", "allow_once"] : ["reject_once", "reject_always"];
@@ -543,16 +547,12 @@ export class AcpBackend implements AgentBackend {
     l.mode = mode;
   }
 
-  /** Apply an advertised mode. Edits and Auto may safely fall back to asking. */
-  private async applyMode(l: Live, mode: Mode, announce = true) {
+  private async applyMode(l: Live, mode: Mode) {
     const available = l.modes?.availableModes ?? [];
     if (!this.conn) throw new Error("Provider disconnected during mode selection.");
     if (!available.length) throw new Error(`${this.label} did not advertise a permission mode Familiar can verify.`);
-    const exact = pickMode(available, mode);
-    const id = targetMode(available, mode);
-    if (!id) throw new Error(`it offers no other mode: ${available.map((m) => m.name || m.id).join(", ")}`);
-    if (!exact && announce)
-      this.ev.emit({ type: "error", threadId: l.threadId, message: `${this.label} has no "${mode}" mode; using ${modeName(l, id)}, which asks first.` });
+    const id = pickMode(available, mode);
+    if (!id) throw new Error(`${this.label} does not offer "${mode}". Choose an available mode: ${available.map(m => m.name || m.id).join(", ")}.`);
     if (id === l.modes!.currentModeId) return;
     await this.conn.setSessionMode({ sessionId: l.sessionId, modeId: id });
     l.modes!.currentModeId = id;
@@ -572,7 +572,7 @@ export class AcpBackend implements AgentBackend {
     const unsafe = this.unsafeMode(l);
     if (!unsafe) return;
     this.ev.emit({ type: "error", threadId: l.threadId, message: `${this.label} switched itself to ${unsafe}, which acts without asking. Familiar is switching it back to a mode that asks first.` });
-    this.applyMode(l, wanted(l), false)
+    this.applyMode(l, wanted(l))
       .then(() => {
         if (this.unsafeMode(l)) throw new Error(`still in ${this.unsafeMode(l)}`);
       })
@@ -636,11 +636,6 @@ export class AcpBackend implements AgentBackend {
 /** The mode Familiar wants for this session: chats read-only ("plan"), quests their in-game mode. */
 function wanted(l: Live): Mode {
   return l.chat ? "plan" : l.mode;
-}
-
-function modeName(l: Live, id: string): string {
-  const m = l.modes?.availableModes?.find((x) => x.id === id);
-  return m?.name || id;
 }
 
 function modelOption(config?: acp.SessionConfigOption[] | null) {

@@ -143,7 +143,7 @@ export interface AgentBackend {
   send(threadId: string, text: string, checkDispatch?: () => void): Promise<void>;
   interrupt(threadId: string): Promise<void>;
   respondApproval(threadId: string, requestId: string, d: Decision): void;
-  answerQuestion?(threadId: string, requestId: string, label: string): void;
+  answerQuestion?(threadId: string, requestId: string, label: string): boolean;
   setMode(threadId: string, mode: Mode): Promise<void>;
   setModel(threadId: string, model: string): Promise<void>;
   close(threadId: string): Promise<void>;
@@ -191,20 +191,22 @@ export function truncatePreview(text: string, maxChars: number): string {
 /** Unified-diff-ish preview of a Claude Edit/MultiEdit/Write tool call (for approvals and expansion). */
 export function editPreview(name: string, input: any, maxLines = 60): string | undefined {
   if (!input || typeof input !== "object") return undefined;
+  const only = (value: object, keys: string[]) => Object.keys(value).every(k => keys.includes(k));
   const lines: string[] = [];
   const add = (prefix: string, text: string) => {
     for (const l of String(text ?? "").split(/\r?\n/)) lines.push(prefix + l);
   };
-  if (name === "Edit" && input.old_string !== undefined) {
+  if (name === "Edit" && input.old_string !== undefined && only(input, ["file_path", "old_string", "new_string"])) {
     add("-", input.old_string);
     add("+", input.new_string);
-  } else if (name === "MultiEdit" && Array.isArray(input.edits)) {
+  } else if (name === "MultiEdit" && only(input, ["file_path", "edits"]) && Array.isArray(input.edits) &&
+    input.edits.every((e: any) => e && only(e, ["old_string", "new_string"]))) {
     for (const e of input.edits) {
       add("-", e.old_string);
       add("+", e.new_string);
       lines.push("…");
     }
-  } else if (name === "Write" && typeof input.content === "string") {
+  } else if (name === "Write" && typeof input.content === "string" && only(input, ["file_path", "content"])) {
     add("+", input.content);
   } else return undefined;
   const head = `${input.file_path ?? ""}`;
@@ -238,5 +240,9 @@ export function summarizeTool(name: string, input: any): string {
 /** What an approval card shows for a tool call: the whole request, never the transcript's short
  * summary; past `maxChars` the cut is marked (truncatePreview), so the card can warn about it. */
 export function approvalDetail(name: string, input: any, maxChars = 4000): string {
-  return truncatePreview(toolText(name, input), maxChars);
+  // Format the common shell request for reading. Other structured inputs retain every field and its name.
+  if (name === "Bash" && typeof input?.command === "string" && Object.keys(input).every(k => k === "command" || k === "description")) {
+    return truncatePreview(input.command + (input.description ? "\n# " + input.description : ""), maxChars);
+  }
+  return truncatePreview(JSON.stringify(input, null, 2) ?? name, maxChars);
 }

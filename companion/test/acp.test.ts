@@ -162,9 +162,9 @@ describe("AcpBackend", () => {
     expect(agent.configCalls).toMatchObject([{ sessionId: "s1", configId: "model", value: "m2" }]);
     await b.setMode("q1", "plan");
     expect(agent.modeCalls.at(-1)).toBe("plan");
-    await b.setMode("q1", "auto");
+    await expect(b.setMode("q1", "auto")).rejects.toThrow(/does not offer/);
     expect(agent.modeCalls).not.toContain("yolo");
-    expect(events.find((e) => e.type === "error")).toBeTruthy();
+    expect(agent.modeCalls.at(-1)).toBe("plan");
     const list = await b.listThreads({});
     expect(list).toMatchObject([{ nativeId: "old", agent: "hermes", title: "Earlier work", cwd: "D:\\src\\X" }]);
     expect(list[0].updatedAt).toBe(Date.parse("2026-10-01T10:00:00Z"));
@@ -180,6 +180,24 @@ describe("AcpBackend", () => {
 });
 
 describe("AcpBackend approval cards show the whole request", () => {
+  it("reviews every part of a compound change and cancels requests without a one-time option", async () => {
+    const { b, events, agent } = setup();
+    await b.init();
+    const sessionId = await b.open({ threadId: "q", cwd: "fixture", mode: "ask" });
+    const content = ["one.txt", "two.txt"].map(path => ({ type: "diff" as const, path, oldText: "one", newText: "two" }));
+    const toolCall = { toolCallId: "change", kind: "edit" as const, title: "Review fixture", rawInput: { scope: "both" }, content };
+    const result = agent.conn.requestPermission({ sessionId, toolCall, options: [
+      { optionId: "once", kind: "allow_once", name: "Allow once" }, { optionId: "no", kind: "reject_once", name: "Deny" },
+    ] });
+    await until(() => events.some(e => e.type === "approval"));
+    const card = events.find(e => e.type === "approval")!;
+    expect(JSON.parse(card.detail)).toMatchObject({ rawInput: { scope: "both" }, content });
+    b.respondApproval("q", card.requestId, "deny");
+    expect((await result).outcome).toMatchObject({ outcome: "selected", optionId: "no" });
+    const persistent = await agent.conn.requestPermission({ sessionId, toolCall, options: [{ optionId: "always", kind: "allow_always", name: "Always" }] });
+    expect(persistent.outcome).toMatchObject({ outcome: "cancelled" });
+    expect(events.filter(e => e.type === "approval")).toHaveLength(1);
+  });
   it("keeps the end of a long command, and marks a cut only past the card's limit", async () => {
     const { b, events } = setup();
     await b.init();
@@ -240,17 +258,16 @@ describe("AcpBackend keeps Ask first", () => {
     modes: { currentModeId, availableModes },
   });
 
-  it("allows a stricter fallback for edits and refuses a chat when the read-only mode is missing", async () => {
-    const { agent, b, events } = setup();
+  it("refuses unavailable Edits and chat modes without reporting them as confirmed", async () => {
+    const { agent, b } = setup();
     await b.init();
     agent.newSession = session("s1", NO_PLAN);
-    await b.open({ threadId: "q1", cwd: "D:\\src\\X", mode: "edits" });
-    expect(agent.modeCalls).toEqual(["default"]); // not left in "yolo"
-    expect(events.find((e) => e.type === "error")).toMatchObject({ threadId: "q1", message: expect.stringMatching(/Default/) });
+    await expect(b.open({ threadId: "q1", cwd: "fixture", mode: "edits" })).rejects.toThrow(/does not offer/);
+    expect(b.isOpen("q1")).toBe(false);
     agent.newSession = session("s2", NO_PLAN);
     await expect(b.open({ threadId: "q2", cwd: "fixture", mode: "ask", chat: { instructions: "x" } })).rejects.toThrow();
     expect(b.isOpen("q2")).toBe(false);
-    expect(agent.modeCalls).toEqual(["default"]);
+    expect(agent.modeCalls).toEqual([]);
   });
 
   it("requires a verifiable mode when a provider omits its mode list", async () => {

@@ -74,6 +74,7 @@ class FakeBackend implements AgentBackend {
   respondApproval(_t: string, requestId: string, d: Decision) {
     this.decisions.push({ requestId, d });
   }
+  answerQuestion() { return true; }
   async setMode(_t: string, m: Mode) {
     this.modes.push(m);
   }
@@ -563,6 +564,8 @@ describe("Hub", () => {
     ack.reject(new Error("fixture refusal"));
     expect(await change).toMatchObject({ ok: false });
     await expect(hub.prompt("after refusal")).rejects.toThrow(/paused/);
+    await hub.key("stop");
+    expect(claude.interrupted).toEqual([id]);
     expect(claude.sent.map(s => s.text)).toEqual(["first"]);
     hub.saveNow();
     const saved = JSON.parse(fs.readFileSync(path.join(appData, "Familiar", "threads.json"), "utf8"));
@@ -1887,7 +1890,12 @@ describe("always-on companion and offline honesty", () => {
     await hub.quick("claude", "@familiar synthetic question");
     const id = hub.view.selected!;
     claude.emit({ type: "approval", threadId: id, requestId: "q1", kind: "question", title: "Which?", detail: "", canAlways: false, options: ["A", "B"] } as any);
+    const answer = vi.spyOn(claude, "answerQuestion");
+    hub.action({ type: "answer", thread: id, requestId: "q1", label: "C" }, OK);
+    expect(answer).not.toHaveBeenCalled();
+    expect(hub.decide(id, "q1", "allow", "panel").ok).toBe(false);
     hub.action({ type: "answer", thread: id, requestId: "q1", label: "A" }, OK);
+    expect(answer).toHaveBeenCalledOnce();
     claude.emit({ type: "approvalResolved", threadId: id, requestId: "q1" });
     const t = hub.threads.get(id)!;
     expect(t.entries.find(e => e.requestId === "q1")?.approval).toBe("approved");
