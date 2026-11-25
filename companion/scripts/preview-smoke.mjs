@@ -11,6 +11,8 @@ import { glassRound3Journey } from './glass-round3-journey.mjs';
 import { controlRound4Journey } from './control-round4-journey.mjs';
 
 if (process.env.GITHUB_ACTIONS !== 'true') throw new Error('Run this browser smoke on GitHub Actions only.');
+await import('./height-diagnosis.mjs');
+process.exit(process.exitCode ?? 0);
 if (!process.env.FAMILIAR_QA_MODULE) throw new Error('FAMILIAR_QA_MODULE must point to the pinned Playwright installation.');
 const { chromium } = await import(pathToFileURL(process.env.FAMILIAR_QA_MODULE).href);
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
