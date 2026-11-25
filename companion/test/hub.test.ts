@@ -7,6 +7,7 @@ import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { activity } from "../src/hub/activity";
 import { describeOverlayAction } from "../src/main/log-file";
+import { CodexBackend } from "../src/agents/codex";
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import { buildSnapshot } from "../src/main/wow";
 import type { AgentBackend, AgentEvent, BackendStatus, Decision, HistoryEntry, Mode, StartOptions, ThreadInfo } from "../src/agents/types";
@@ -2503,6 +2504,49 @@ describe("physical corroboration (any addon can forge strip messages)", () => {
     expect(claude.decisions).toEqual([]);
     expect(hub.decide(id, "partial", "deny", "panel").ok).toBe(true);
     expect(claude.decisions).toEqual([{ requestId: "partial", d: "deny" }]);
+  });
+
+  it("routes real Codex command cards through the game and desktop review limits", async () => {
+    await hub.quick("codex", "@familiar fixture");
+    const id = hub.view.selected!;
+    const adapter = new CodexBackend({ log: () => {}, version: "fixture" });
+    adapter.on(e => codex.emit(e));
+    const respond = vi.fn();
+    const respondError = vi.fn();
+    (adapter as any).rpc = { respond, respondError };
+    (adapter as any).byNative.set("fixture", id);
+    vi.spyOn(codex, "respondApproval").mockImplementation((t, r, d) => adapter.respondApproval(t, r, d));
+    function request(n: number, fields: Record<string, unknown>) {
+      (adapter as any).onRequest(n, "item/commandExecution/requestApproval", { threadId: "fixture", ...fields });
+      return hub.pendingRequests().find(r => r.thread === id)!;
+    }
+    const long = request(1, { command: "read fixture", reason: "x".repeat(4000), availableDecisions: ["accept", "decline"] });
+    expect(long).toMatchObject({ cut: true, canAlways: false });
+    expect(long.full).toContain("x".repeat(4000));
+    expect(hub.decide(id, long.requestId, "allow", "game").ok).toBe(false);
+    expect(respond).not.toHaveBeenCalled();
+    expect(hub.decide(id, long.requestId, "allow", "panel").ok).toBe(true);
+    expect(respond).toHaveBeenLastCalledWith(1, { decision: "accept" });
+    for (const [i, input] of [
+      { command: "x".repeat(200001) }, { reason: "Read a fixture" },
+      { command: "read fixture", availableDecisions: ["decline"] },
+      { command: "read fixture", extension: "synthetic-private-marker", availableDecisions: ["accept", "cancel"] },
+    ].entries()) {
+      const card = request(i + 2, input);
+      expect(card).toMatchObject({ incomplete: true, canAlways: false });
+      expect(JSON.stringify([card, hub.selectedThread()!.entries])).not.toContain("synthetic-private-marker");
+      expect(hub.decide(id, card.requestId, "allow", "panel").ok).toBe(false);
+      expect(hub.decide(id, card.requestId, "deny", "panel").ok).toBe(true);
+      expect(respond).toHaveBeenLastCalledWith(i + 2, { decision: i === 3 ? "cancel" : "decline" });
+    }
+    const short = request(6, { command: "read fixture", cwd: "fixture" });
+    expect(short).toMatchObject({ detail: "read fixture\nin fixture", canAlways: true });
+    expect(hub.decide(id, short.requestId, "allow", "game").ok).toBe(true);
+    expect(respond).toHaveBeenLastCalledWith(6, { decision: "accept" });
+    const noRefusal = request(7, { command: "read fixture", availableDecisions: ["accept"] });
+    expect(hub.decide(id, noRefusal.requestId, "deny", "panel").ok).toBe(true);
+    expect(respondError).toHaveBeenCalledWith(7, expect.any(String));
+    expect(respond).toHaveBeenCalledTimes(6);
   });
 
   it("a cut request is never approved from the game, even with proof; the control panel approves it whole", async () => {
