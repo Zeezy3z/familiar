@@ -2530,7 +2530,7 @@ describe("physical corroboration (any addon can forge strip messages)", () => {
     for (const [i, input] of [
       { command: "x".repeat(200001) }, { reason: "Read a fixture" },
       { command: "read fixture", availableDecisions: ["decline"] },
-      { command: "read fixture", extension: "synthetic-private-marker", availableDecisions: ["cancel"] },
+      { command: "read fixture", extension: "synthetic-private-marker", availableDecisions: ["accept", "cancel"] },
     ].entries()) {
       const card = request(i + 2, input);
       expect(card).toMatchObject({ incomplete: true, canAlways: false });
