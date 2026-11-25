@@ -2484,6 +2484,19 @@ describe("physical corroboration (any addon can forge strip messages)", () => {
     }
   });
 
+  it("retains Deny when the desktop cannot show a complete request", async () => {
+    await hub.quick("claude", "@familiar synthetic request");
+    const id = hub.selectedThread()!.id;
+    claude.emit({ type: "approval", threadId: id, requestId: "partial", kind: "tool", title: "Review",
+      detail: "preview", cut: true, full: "bounded preview", incomplete: true, canAlways: true });
+    expect(hub.pendingRequests()[0]).toMatchObject({ incomplete: true });
+    for (const decision of ["allow", "allowAlways"] as const)
+      expect(hub.decide(id, "partial", decision, "panel").ok).toBe(false);
+    expect(claude.decisions).toEqual([]);
+    expect(hub.decide(id, "partial", "deny", "panel").ok).toBe(true);
+    expect(claude.decisions).toEqual([{ requestId: "partial", d: "deny" }]);
+  });
+
   it("a cut request is never approved from the game, even with proof; the control panel approves it whole", async () => {
     await hub.quick("claude", "@familiar long command");
     const id = hub.view.selected!;
@@ -2822,6 +2835,12 @@ describe("game-side budgets and the start toast", () => {
 const { CLAUDE_NOT_DOWNLOADED, claudeStatus, companionDir, downloadClaude } = await import("../src/agents/claude-download");
 const { ClaudeBackend } = await import("../src/agents/claude");
 const { providerSetup } = await import("../src/agents/setup");
+
+it("describes a custom provider without copying its arguments or executable folder into status", () => {
+  const row = providerSetup(() => true, { fixture: { command: process.execPath, args: ["fixture-private-argument"] } }).find(p => p.id === "fixture")!;
+  expect(row.detail).toBe(`ACP agent: ${path.basename(process.execPath)} (1 args)`);
+  expect(JSON.stringify(row)).not.toContain("fixture-private-argument");
+});
 describe("release download before Claude is downloaded", () => {
   function prebuilt() {
     const root = fs.mkdtempSync(path.join(tmp, "prebuilt-"));

@@ -29,7 +29,7 @@ import { providerAvailable } from "../agents/setup";
 import { CHAT_INSTRUCTIONS, withGameContext } from "./chat";
 import { CHATS_KEY, isChatPath, Project, ProjectRegistry, projectRootOf, zoneRefusal } from "./projects";
 import { rewards } from "./rewards";
-import { NEEDS_YOU, needYou } from "../shared/words";
+import { INCOMPLETE_REQUEST, NEEDS_YOU, needYou } from "../shared/words";
 import { visibleText } from "./visible-text";
 import { TUTORIAL_AGENT, TUTORIAL_NO_MODE, tutorialDecide, tutorialReply, tutorialSetOut, tutorialThread } from "./tutorial";
 
@@ -53,6 +53,7 @@ export interface Entry {
   options?: string[];
   /** approval: the card's text is a cut preview; `full` is the whole request, approved only on the PC. */
   cut?: boolean;
+  incomplete?: true;
   full?: string;
   /** approval: why the last approving click or key was refused (shown on the card until a decision). */
   refused?: { why: Refusal; at: number };
@@ -166,6 +167,7 @@ export interface PendingRequest {
   full?: string;
   /** Too long for the in-game card: approved only here, never from the game. */
   cut: boolean;
+  incomplete?: true;
   canAlways: boolean;
   at: number;
 }
@@ -1235,6 +1237,10 @@ export class Hub {
     const e = t?.entries.find((x) => x.requestId === requestId && x.approval === "pending");
     if (!t || !e) return { ok: false, why: "no longer pending" };
     const grants = d !== "deny" && d !== "denyAndStop";
+    if (grants && e.incomplete) {
+      this.toast(INCOMPLETE_REQUEST, "info");
+      return { ok: false, why: INCOMPLETE_REQUEST };
+    }
     const blocked = grants && this.dispatchRefusal(t);
     if (blocked) {
       this.toast(blocked, "info");
@@ -1277,7 +1283,8 @@ export class Hub {
       t.entries
         .filter((e) => e.kind === "approval" && e.approval === "pending" && e.requestId && !e.options?.length)
         .map((e) => ({ thread: t.id, questTitle: t.title, project: this.projectName(t), agent: agentName(t.agent), agentId: t.agent, requestId: e.requestId!,
-          title: e.title ?? "", detail: e.text, ...(e.cut ? { full: e.full ?? e.text } : {}), cut: !!e.cut, canAlways: !!e.canAlways, at: e.at })),
+          title: e.title ?? "", detail: e.text, ...(e.cut ? { full: e.full ?? e.text } : {}), cut: !!e.cut,
+          ...(e.incomplete ? { incomplete: true as const } : {}), canAlways: !!e.canAlways, at: e.at })),
     );
   }
 
@@ -1753,6 +1760,7 @@ export class Hub {
           canAlways: e.canAlways,
           options: e.options,
           ...(e.cut ? { cut: true, full: e.full ?? e.detail } : {}),
+          ...(e.incomplete || (e.cut && e.full === undefined) ? { incomplete: true } : {}),
           approval: "pending",
           at: Date.now(),
         });
@@ -1760,7 +1768,7 @@ export class Hub {
         t.unread = this.view.selected !== t.id;
         {
           // A cut request is approved only on the PC: the toast says where, and main makes the panel easy to reach.
-          const onPc = e.cut ? ` · ${CUT_TOAST}` : "";
+          const onPc = e.cut ? ` · ${e.incomplete || e.full === undefined ? INCOMPLETE_REQUEST : CUT_TOAST}` : "";
           this.toast(`${NEEDS_YOU} · ${agentName(t.agent)} · ${this.projectName(t)} · ${e.title}${onPc}`, "approval", t.id, `${NEEDS_YOU} · ${agentName(t.agent)}${onPc}`, e.requestId);
         }
         this.sound("approval");

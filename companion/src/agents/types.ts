@@ -81,6 +81,8 @@ export type AgentEvent =
       options?: string[]; // multiple-choice answers (Claude AskUserQuestion)
       /** `detail` is a cut preview: the whole request is `full`, and only the control panel approves it. */
       cut?: boolean;
+      /** The desktop review is incomplete as well. Familiar can only deny this request. */
+      incomplete?: true;
       full?: string;
     }
   | { type: "approvalResolved"; threadId: string; requestId: string }
@@ -173,11 +175,12 @@ export class Emitter<T> {
 export const FULL_CAP = 200_000;
 
 /** An approval event's text: the card's `preview` and, when that is not the whole request, `cut`
- * plus the whole text (`full`, itself capped at FULL_CAP and saying so). A cut request is approved
- * only in the control panel, where `full` is shown; the game can only deny it. */
-export function approvalText(preview: string, whole: string): { detail: string; cut?: true; full?: string } {
+ * plus the panel text. If even the panel copy is capped, neither surface may grant it. */
+export function approvalText(preview: string, whole: string): { detail: string; cut?: true; full?: string; incomplete?: true } {
+  if (whole.length > FULL_CAP) return { detail: truncatePreview(preview, 4000), cut: true, incomplete: true,
+    full: `${whole.slice(0, FULL_CAP)}\n… (truncated at 200k)` };
   if (preview === whole) return { detail: preview };
-  return { detail: preview, cut: true, full: whole.length > FULL_CAP ? `${whole.slice(0, FULL_CAP)}\n… (truncated at 200k)` : whole };
+  return { detail: preview, cut: true, full: whole };
 }
 
 /** Keep provider preview limits explicit; expanding Glass cannot restore the omitted text. */

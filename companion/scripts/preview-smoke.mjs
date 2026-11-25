@@ -266,6 +266,15 @@ async function controlRequestsJourney(width) {
   await page.locator('.req[data-request="r2"] [data-decide="allow"]').click();
   await page.waitForFunction(() => window.preview.decisions.length === 3);
   check(`${size}: Approve sends allow`, await page.evaluate(() => window.preview.decisions.at(-1).decision) === 'allow');
+  await page.evaluate(() => {
+    const p = window.preview;
+    p.state.requests = [{ ...p.state.requests[0], requestId: 'partial', detail: 'Synthetic preview', full: 'Synthetic partial text', cut: true, incomplete: true, canAlways: true }];
+    p.emit('status', p.state);
+  });
+  const partial = page.locator('.req[data-request="partial"]');
+  check(`${size}: an incomplete desktop request offers only Deny`,
+    await partial.locator('[data-decide="deny"]').isVisible() && !await partial.locator('[data-decide="allow"]').isVisible()
+    && !await partial.locator('[data-decide="allowAlways"]').isVisible());
   await page.evaluate(() => { const p = window.preview; p.state.requests = []; p.emit('status', p.state); });
   check(`${size}: the card goes away with the last request`, !await page.locator('#requests').isVisible());
 }

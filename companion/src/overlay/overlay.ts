@@ -9,7 +9,7 @@ import { threadState } from "./thread-state";
 import { approvalPreview } from "./approval-preview";
 import type { GlassBridge } from "../main/preload-overlay";
 import { CUES, type Cue, DEFAULT_CUE_VOLUME, playCue } from "../shared/cues";
-import { REPLY_READY, needYou, repliesReady } from "../shared/words";
+import { INCOMPLETE_REQUEST, REPLY_READY, needYou, repliesReady } from "../shared/words";
 import { alwaysLabel } from "../control/journey"; // one "Always" wording, the control panel's
 const bridge = window.familiar as GlassBridge;
 
@@ -658,7 +658,7 @@ function approvalCard(e: EntryR3, d: ThreadDetail, pinned: boolean): string {
   if (pending) {
     // How this card is approved: the Approve key (its "Press <key>" line is what the key acts on), or a
     // click when click approval is on. A cut request is approved only on the PC, where it is shown whole.
-    const grant = e.cut ? `<span class="approve-pc">Approve on your PC</span>`
+    const grant = e.incomplete ? "" : e.cut ? `<span class="approve-pc">Approve on your PC</span>`
       : !pinned ? `<span class="approve-pc">Decide the request below first</span>`
       : e.options?.length ? e.options.map((o) => `<span class="btn grant" data-act="${attr({ type: "answer", thread: d.id, requestId: e.requestId, label: o })}">${esc(o)}</span>`).join("")
       : approve.byClick ? `<span class="btn ok grant" data-act="${attr(decide("allow"))}">Approve</span>`
@@ -674,7 +674,7 @@ function approvalCard(e: EntryR3, d: ThreadDetail, pinned: boolean): string {
   return `<div class="card ${pending ? "pending" : e.approval}${unseen ? " tail-unseen" : ""}" data-request="${esc(`${d.id}:${e.requestId}`)}">
     <div class="card-h">${pending ? '<span class="bang">!</span> ' : ""}${esc(e.title ?? "Approval")}</div>
     ${pending && where ? `<div class="card-where">In ${esc(where)}</div>` : ""}
-    ${pending && e.cut ? `<div class="preview-cut" role="alert">! Part of this request is not shown here. To approve it, read it in full in Familiar's control panel on your PC — or Deny.</div>` : ""}
+    ${pending && e.cut ? `<div class="preview-cut" role="alert">! ${e.incomplete ? INCOMPLETE_REQUEST : "Part of this request is not shown here. To approve it, read it in full in Familiar's control panel on your PC — or Deny."}</div>` : ""}
     ${preview.shortened ? `<span class="btn preview-toggle" aria-expanded="${!!e.expanded}" data-act="${attr({ type: "approvalPreview", thread: d.id, id: e.id })}"><span aria-hidden="${!!e.expanded}">Show more of preview</span><span aria-hidden="${!e.expanded}">Collapse preview</span></span>` : ""}
     <pre class="card-b approval-preview">${diffHtml(preview.text)}${preview.shortened && !e.expanded ? "\n… [More preview text hidden]" : ""}</pre>
     ${pending ? `<div class="card-what">${effect} <span class="preview-note">The agent wrote this itself. Unsure? Deny: nothing has happened yet.</span></div>${ask}` : `<div class="card-s">${approvalText(e.approval, d.agent)}</div>`}

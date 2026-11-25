@@ -981,7 +981,7 @@ function surfaceRequests() {
   const fresh = hub.pendingRequests().filter((r) => r.cut && !noticed.has(noticeKey(r.thread, r.requestId)));
   if (!fresh.length) return;
   for (const r of fresh) markNoticed(noticeKey(r.thread, r.requestId));
-  tray?.displayBalloon({ title: "A request is waiting on your PC", content: "Too long for the in-game card. Open Familiar to read it in full and approve it, or Deny it in game.", noSound: true, respectQuietTime: true });
+  tray?.displayBalloon({ title: "A request is waiting on your PC", content: "Too long for the in-game card. Open Familiar to review it, or Deny it in game.", noSound: true, respectQuietTime: true });
 }
 
 /** Nothing waits any more (decided, expired): stop asking for attention. */

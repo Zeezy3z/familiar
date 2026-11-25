@@ -73,7 +73,8 @@ describe("display helpers", () => {
     // The whole request travels with a cut card, capped (and saying so) past 200k characters.
     expect(approvalText(preview, preview)).toEqual({ detail: preview });
     expect(approvalText(preview, text)).toEqual({ detail: preview, cut: true, full: text });
-    expect(approvalText("v", "v".repeat(FULL_CAP + 5)).full).toBe("v".repeat(FULL_CAP) + "\n… (truncated at 200k)");
+    expect(approvalText("v", "v".repeat(FULL_CAP + 5))).toMatchObject({ incomplete: true, full: "v".repeat(FULL_CAP) + "\n… (truncated at 200k)" });
+    expect(approvalText("v", "v".repeat(FULL_CAP)).incomplete).toBeUndefined();
   });
 
   it("Claude's actual file write approval is cut past 60 lines and carries the whole write", async () => {
